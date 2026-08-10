@@ -16,7 +16,7 @@ export const FeatureGrid: React.FC = () => {
             <span className="gradient-text">아이패스케어 핵심 4대 솔루션</span>
           </h2>
           <p className="text-slate-600 mt-3 text-base sm:text-lg">
-            단순 셔틀 조회를 넘어 원비 수납, 출결, 마일리지 포인트 혜택까지 하나의 앱으로 완성했습니다.
+            단순 셔틀 조회를 넘어 원비 수납, 출결, 다양한 마일리지 포인트 활용 혜택까지 하나의 앱으로 완성했습니다.
           </p>
         </div>
 
@@ -68,7 +68,7 @@ export const FeatureGrid: React.FC = () => {
                 수강권 & KSPay 원비 결제
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                모바일 원비 청구서 일괄 발행 및 간편 수납 지원. 번거로운 전화 독촉 없이 미납 수납율이 85% 이상 상승합니다.
+                모바일 원비 청구서 일괄 발행 및 간편 수납 지원. 번거로운 전화 독촉 없이 미납 수납율이 획기적으로 상승합니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-indigo-600 gap-1">
@@ -83,14 +83,14 @@ export const FeatureGrid: React.FC = () => {
                 <Gift className="w-7 h-7" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-amber-600 transition-colors">
-                VOG SPORTS 쇼핑몰 포인트
+                어플결제 · 자사몰 · 제휴 쇼핑몰 포인트
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                수강료 결제 시 쌓인 포인트를 제휴 스포츠 쇼핑몰(영카트) 포인트로 1:1 전환하거나 지정 계좌로 출금 가능합니다.
+                적립된 포인트를 <strong>어플 내 수강료 바로 차감 결제</strong>에 사용하거나 <strong>자사몰 & VOG SPORTS 제휴 쇼핑몰</strong> 포인트로 전환 및 출금 신청이 가능합니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-amber-600 gap-1">
-              <span>추천 리워드 혜택 지원</span>
+              <span>3가지 방식의 차원 다른 포인트 사용</span>
             </div>
           </div>
 
