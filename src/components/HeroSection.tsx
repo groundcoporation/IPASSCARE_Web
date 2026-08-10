@@ -48,9 +48,10 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
             </h1>
 
             <p className="text-base sm:text-lg text-slate-600 max-w-2xl font-medium leading-relaxed">
-              실시간 GPS 셔틀 관제, 원터치 출결 알림, KSPay 원비 결제, 그리고 어플 수강료 차감·자사몰·VOG SPORTS 쇼핑몰 전용 포인트 활용까지! 아이패스케어(IPASSCARE) 모바일 앱으로 구현한 올인원 솔루션을 경험해 보세요.
+              실시간 GPS 셔틀 관제, 원터치 출결 알림, 모바일 원비 결제, 그리고 어플 수강료 차감·자사몰·VOG SPORTS 쇼핑몰 전용 포인트 전환까지! 아이패스케어(IPASSCARE) 모바일 앱으로 구현한 올인원 솔루션을 경험해 보세요.
             </p>
 
+            {/* CTA & Video Buttons */}
             <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto pt-2">
               <button 
                 onClick={onOpenInquiry}
@@ -59,6 +60,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
                 <span>무료 도입 상담 신청</span>
                 <ArrowRight className="w-5 h-5" />
               </button>
+              
               <a 
                 href="#manuals"
                 className="btn-secondary text-base sm:text-lg px-8 py-4 w-full sm:w-auto justify-center"
@@ -68,19 +70,21 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
               </a>
             </div>
 
-            {/* Safe & Authentic Value Badges */}
-            <div className="pt-6 border-t border-slate-200/80 w-full grid grid-cols-3 gap-4 text-center sm:text-left">
-              <div>
-                <div className="text-xl sm:text-2xl font-extrabold text-blue-600">0.1초</div>
-                <div className="text-xs sm:text-sm text-slate-500 font-bold">실시간 출결 알림</div>
-              </div>
-              <div>
-                <div className="text-xl sm:text-2xl font-extrabold text-indigo-600">KSPay</div>
-                <div className="text-xs sm:text-sm text-slate-500 font-bold">원비 모바일 수납</div>
-              </div>
-              <div>
-                <div className="text-xl sm:text-2xl font-extrabold text-slate-800">VOG SPORTS</div>
-                <div className="text-xs sm:text-sm text-slate-500 font-bold">앱결제·자사몰·쇼핑몰 포인트</div>
+            {/* Key Value Badges - Clean & Premium Bar */}
+            <div className="pt-4 w-full">
+              <div className="bg-white/80 backdrop-blur-md p-4 rounded-2xl border border-slate-200/90 shadow-sm grid grid-cols-3 gap-3 text-center">
+                <div className="border-r border-slate-100 pr-2">
+                  <div className="text-base sm:text-xl font-black text-blue-600">0.1초</div>
+                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">실시간 출결 알림</div>
+                </div>
+                <div className="border-r border-slate-100 px-2">
+                  <div className="text-base sm:text-xl font-black text-indigo-600">모바일 결제</div>
+                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">원비 간편 수납</div>
+                </div>
+                <div className="pl-2">
+                  <div className="text-base sm:text-xl font-black text-slate-800">포인트 전환</div>
+                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">앱결제·자사몰·쇼핑몰</div>
+                </div>
               </div>
             </div>
 
@@ -232,12 +236,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
                         <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-200 space-y-1.5">
                           <div className="flex justify-between items-center text-xs">
                             <span className="font-bold text-slate-800">8월 수강료 청구서</span>
-                            <span className="text-[10px] bg-emerald-100 text-emerald-700 font-bold px-2 py-0.5 rounded">KSPay 결제완료</span>
+                            <span className="text-[10px] bg-emerald-100 text-emerald-700 font-bold px-2 py-0.5 rounded">결제 완료</span>
                           </div>
                           <div className="text-xs font-extrabold text-slate-900">180,000 원</div>
                         </div>
 
-                        {/* Enhanced 3-Way Points Usage Details */}
                         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-3 rounded-2xl shadow-sm border border-blue-100 space-y-1">
                           <div className="flex items-center justify-between text-xs">
                             <span className="font-extrabold text-slate-900">통합 적립 마일리지</span>
@@ -245,7 +248,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
                           </div>
                           <div className="text-[9.5px] text-slate-600 leading-tight">
                             • 어플 내 수강료 수납 시 차감결제 가능<br />
-                            • 자사몰 & VOG SPORTS 쇼핑몰 전환 사용
+                            • 앱에서 자사몰 & 쇼핑몰 포인트 간편 전환
                           </div>
                         </div>
                       </div>

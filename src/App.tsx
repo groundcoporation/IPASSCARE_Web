@@ -1,13 +1,14 @@
 import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
-import { RoleTabSwitcher } from './components/RoleTabSwitcher';
 import { FeatureGrid } from './components/FeatureGrid';
+import { RoleTabSwitcher } from './components/RoleTabSwitcher';
 import { RoiCalculator } from './components/RoiCalculator';
 import { VideoManualCenter } from './components/VideoManualCenter';
 import { GroundCorpSection } from './components/GroundCorpSection';
-import { InquiryFormSection } from './components/InquiryFormSection';
 import { FaqSection } from './components/FaqSection';
+import { InquiryFormSection } from './components/InquiryFormSection';
 import { Footer } from './components/Footer';
+import { FloatingKakaoWidget } from './components/FloatingKakaoWidget';
 
 export function App() {
   const handleScrollToInquiry = () => {
@@ -18,20 +19,20 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-500 selection:text-white">
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-500 selection:text-white relative">
       {/* Top Glassmorphic Navigation */}
       <Navbar onOpenInquiry={handleScrollToInquiry} />
 
-      {/* Main Page Content (1안 Official Final Production Design) */}
+      {/* Main Page Content (Logical Top-to-Bottom Flow) */}
       <main>
         {/* 1. Hero Section */}
         <HeroSection onOpenInquiry={handleScrollToInquiry} />
 
-        {/* 2. Role-based Interactive Demo Switcher */}
-        <RoleTabSwitcher onOpenInquiry={handleScrollToInquiry} />
-
-        {/* 3. Key 4 Features Grid */}
+        {/* 2. Key 4 Features Grid */}
         <FeatureGrid />
+
+        {/* 3. Role-based Interactive Demo Switcher */}
+        <RoleTabSwitcher onOpenInquiry={handleScrollToInquiry} />
 
         {/* 4. Real-time ROI Calculator */}
         <RoiCalculator onOpenInquiry={handleScrollToInquiry} />
@@ -42,15 +43,18 @@ export function App() {
         {/* 6. Corporate Trust & Synergy (Ground Corporation) */}
         <GroundCorpSection />
 
-        {/* 7. B2B Consultation Inquiry Form */}
-        <InquiryFormSection />
-
-        {/* 8. FAQ Section */}
+        {/* 7. FAQ Section */}
         <FaqSection />
+
+        {/* 8. B2B Consultation Inquiry Form */}
+        <InquiryFormSection />
       </main>
 
       {/* Page Footer */}
       <Footer />
+
+      {/* Official Floating Kakao Channel / Inquiry Floating Widget */}
+      <FloatingKakaoWidget onOpenInquiry={handleScrollToInquiry} />
     </div>
   );
 }

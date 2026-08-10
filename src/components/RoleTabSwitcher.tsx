@@ -108,8 +108,8 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                       <Wallet className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold text-slate-900 text-base">수강권 간편 결제 & VOG SPORTS 포인트 전환</h4>
-                      <p className="text-slate-500 text-xs sm:text-sm">KSPay PG 연동으로 미납 원비를 앱에서 간편 수납하고, 적립된 포인트를 제휴 쇼핑몰에서 현금처럼 사용합니다.</p>
+                      <h4 className="font-bold text-slate-900 text-base">수강권 간편 결제 & 포인트 전환 혜택</h4>
+                      <p className="text-slate-500 text-xs sm:text-sm">모바일 원비를 앱에서 간편 수납하고, 적립된 포인트를 어플 결제 차감 및 제휴 쇼핑몰에서 활용합니다.</p>
                     </div>
                   </div>
                 </div>
@@ -157,7 +157,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                       <div className="text-lg font-black text-white">24,500 P</div>
                     </div>
                     <span className="bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-xl hover:bg-white/30 cursor-pointer">
-                      쇼핑몰 전환
+                      앱 내 전환
                     </span>
                   </div>
 
@@ -175,7 +175,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                   학원장 / 관리자 (Directors)
                 </div>
                 <h3 className="text-2xl sm:text-3xl font-bold text-slate-900">
-                  "학원 행정 업무 시간 85% 단축, 미납 원비 자동 회수로 수납율 급증"
+                  "학원 행정 업무 시간 단축, 미납 원비 자동 회수로 수납율 급증"
                 </h3>
                 <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
                   원생 출결 관리, 미납 청구서 일괄 발행, 셔틀 노선 지정 및 정산까지 학원 운영에 필요한 모든 기능을 하나의 통합 관리자 대시보드에서 처리하세요.
@@ -187,7 +187,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                       <LineChart className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold text-slate-900 text-base">원비 청구서 스마트 일괄 발행 & KSPay 연동</h4>
+                      <h4 className="font-bold text-slate-900 text-base">원비 청구서 스마트 일괄 발행 & 수납 연동</h4>
                       <p className="text-slate-500 text-xs sm:text-sm">매월 미납 청구서를 원 클릭으로 수강생 학부모에게 카카오 알림톡으로 전송 및 간편 결제 유도.</p>
                     </div>
                   </div>
