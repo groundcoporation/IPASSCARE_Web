@@ -32,11 +32,11 @@ export const FeatureGrid: React.FC = () => {
                 실시간 GPS 셔틀 관제
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                차량의 실시간 위치, 속도, 예상 도착 시간을 지도에 노출하며, 도착 전 자동 카카오 알림톡을 발송합니다.
+                차량의 실시간 위치와 정류장별 예상 도착 시간을 지도에 노출하며, 도착 전 안심 알림을 발송합니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-blue-600 gap-1">
-              <span>도착 전 알림톡 지원</span>
+              <span>도착 전 안심 알림 지원</span>
             </div>
           </div>
 

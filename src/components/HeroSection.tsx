@@ -86,6 +86,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
                   <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">앱결제·자사몰·쇼핑몰</div>
                 </div>
               </div>
+
+              {/* Clean Sub-Text Tagline */}
+              <div className="mt-3 text-center lg:text-left text-[11px] sm:text-xs text-slate-500 font-medium">
+                ※ 학부모, 학원장, 셔틀 기사님 모두를 위한 (주)그라운드코퍼레이션의 통합 안심 케어 플랫폼 아이패스케어입니다.
+              </div>
             </div>
 
           </div>
@@ -171,7 +176,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
                               <div className="bg-blue-600 text-white p-2 rounded-full shadow-lg border-2 border-white">
                                 <Bus className="w-5 h-5" />
                               </div>
-                              <span className="text-[9px] font-extrabold bg-slate-900 text-white px-2 py-0.5 rounded shadow mt-1">시속 32km</span>
+                              <span className="text-[9px] font-extrabold bg-slate-900 text-white px-2 py-0.5 rounded shadow mt-1">실시간 GPS 수신 중</span>
                             </div>
 
                             <div className="absolute bottom-2 left-2 right-2 bg-white/95 backdrop-blur p-2 rounded-lg text-[10px] flex justify-between items-center text-slate-800 font-bold shadow-sm">

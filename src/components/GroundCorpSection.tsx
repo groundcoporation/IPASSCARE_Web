@@ -44,7 +44,7 @@ export const GroundCorpSection: React.FC = () => {
               </div>
               <div className="flex items-center gap-2.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200/60">
                 <Globe className="w-5 h-5 text-sky-600 shrink-0" />
-                <span className="text-xs font-bold text-slate-800">전국 500+ 학원 인프라</span>
+                <span className="text-xs font-bold text-slate-800">검증된 학원 전문 케어 인프라</span>
               </div>
             </div>
 

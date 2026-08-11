@@ -4,6 +4,7 @@ import {
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Play, Trash2, X
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
+import iLogo from "../../assets/i_logo.png";
 
 const MAX_SLOTS = 20;
 type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "settings";
@@ -86,6 +87,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [newVideoStepsText, setNewVideoStepsText] = useState("1. 앱 실행 후 메인 화면의 [셔틀 위치 지도] 터치\n2. 자녀가 탑승하는 노선 차량 선택\n3. 도착 전 알림 푸시 켜기");
   const [newVideoUrl, setNewVideoUrl] = useState("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
   const [newVideoTheme, setNewVideoTheme] = useState("from-blue-600 to-indigo-700");
+  const [newVideoIsRestricted, setNewVideoIsRestricted] = useState(false);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
   const [litePrice, setLitePrice] = useState("99000");
@@ -397,6 +399,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       youtube_url: newVideoUrl, 
       youtube_id: currentPreviewYoutubeId,
       thumbnail_bg: newVideoTheme,
+      is_restricted: newVideoIsRestricted,
+      access_level: newVideoIsRestricted ? 'staff' : 'public',
       is_visible: true 
     }]);
     
@@ -684,6 +688,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       {/* BranchHeader Component */}
       <header className="bg-white border-b border-slate-200 px-6 py-4 fixed top-0 left-0 right-0 z-40 flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-3">
+          <img src={iLogo} alt="IPASSCARE" className="w-8 h-8 object-contain rounded-lg" />
           <span className="text-xl font-black text-slate-900 tracking-tight">IPASSCARE</span>
           <span className="text-xs bg-slate-100 font-bold px-2.5 py-1 rounded-full text-slate-600">
             {activeBranchName ? `${activeBranchName} 지점` : "전체 지점 관리"}
@@ -985,6 +990,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                           </button>
                         ))}
                       </div>
+                    </div>
+
+                    {/* Restricted Access Control Checkbox */}
+                    <div className="pt-1">
+                      <label className="flex items-center gap-2 cursor-pointer bg-slate-50 p-3 rounded-2xl border border-slate-200 hover:bg-amber-50/50 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={newVideoIsRestricted}
+                          onChange={(e) => setNewVideoIsRestricted(e.target.checked)}
+                          className="rounded border-slate-300 text-amber-600 focus:ring-amber-500 w-4 h-4"
+                        />
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                          <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>🔒 권한 제한 (로그인된 관리자/코치 전용 매뉴얼 설정)</span>
+                        </div>
+                      </label>
                     </div>
                   </div>
 

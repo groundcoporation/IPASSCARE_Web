@@ -2,10 +2,10 @@ import React, { useState } from 'react';
 import { MessageCircle, X } from 'lucide-react';
 
 interface FloatingKakaoWidgetProps {
-  onOpenInquiry: () => void;
+  onOpenInquiry?: () => void;
 }
 
-export const FloatingKakaoWidget: React.FC<FloatingKakaoWidgetProps> = ({ onOpenInquiry }) => {
+export const FloatingKakaoWidget: React.FC<FloatingKakaoWidgetProps> = () => {
   const [showTooltip, setShowTooltip] = useState(true);
 
   return (
@@ -25,9 +25,9 @@ export const FloatingKakaoWidget: React.FC<FloatingKakaoWidgetProps> = ({ onOpen
         </div>
       )}
 
-      {/* Floating Action Button (Kakao Yellow + Slate) */}
+      {/* Floating Action Button (Official Kakao Channel Link Integration) */}
       <button
-        onClick={onOpenInquiry}
+        onClick={() => window.open('https://pf.kakao.com/_nhxhsX/friend', '_blank')}
         className="group flex items-center gap-2 bg-[#FEE500] hover:bg-[#FADA00] text-[#191919] font-extrabold px-4 py-3 rounded-full shadow-lg shadow-yellow-500/20 hover:scale-105 transition-all cursor-pointer border border-yellow-400/80"
         title="카카오톡 1:1 상담하기"
       >

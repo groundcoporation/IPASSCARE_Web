@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Bus, Menu, X, QrCode, Smartphone, LogIn, LogOut, ChevronRight, Settings, UserCheck } from 'lucide-react';
+import { Menu, X, QrCode, Smartphone, LogIn, LogOut, ChevronRight, Settings, UserCheck } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
+import iLogo from '../assets/i_logo.png';
 
 interface NavbarProps {
   onOpenInquiry: () => void;
@@ -39,9 +40,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
           
           {/* Brand Logo */}
           <a href="#" className="flex items-center gap-3 text-decoration-none shrink-0 group">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl gradient-bg-primary text-white shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
-              <Bus className="w-5 h-5" />
-            </div>
+            <img 
+              src={iLogo} 
+              alt="IPASSCARE" 
+              className="w-10 h-10 object-contain rounded-xl shadow-xs group-hover:scale-105 transition-transform" 
+            />
             <div className="flex flex-col whitespace-nowrap">
               <div className="flex items-center gap-2">
                 <span className="text-xl font-extrabold tracking-tight text-slate-900 leading-none">

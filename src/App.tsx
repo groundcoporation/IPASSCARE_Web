@@ -101,8 +101,11 @@ export function App() {
         {/* 4. Real-time ROI Calculator (Lite 99,000 / Pro 118,000 Rates Integrated) */}
         <RoiCalculator onOpenInquiry={handleScrollToInquiry} />
 
-        {/* 5. Video Manual Center */}
-        <VideoManualCenter />
+        {/* 5. Video Manual Center (Restricted Access Permission Support) */}
+        <VideoManualCenter 
+          userProfile={loggedInProfile} 
+          onOpenLogin={() => setCurrentView('admin')} 
+        />
 
         {/* 6. Corporate Trust & Synergy (Ground Corporation) */}
         <GroundCorpSection />

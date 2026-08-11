@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Video, X } from 'lucide-react';
+import { Play, Video, X, Lock, KeyRound } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 
 interface VideoManual {
@@ -13,6 +13,13 @@ interface VideoManual {
   thumbnailBg: string;
   youtubeUrl?: string;
   youtubeId?: string;
+  isRestricted?: boolean;
+  accessLevel?: 'public' | 'staff';
+}
+
+interface VideoManualCenterProps {
+  userProfile?: { name?: string | null; role?: string } | null;
+  onOpenLogin?: () => void;
 }
 
 function extractYoutubeId(url?: string): string | null {
@@ -72,13 +79,13 @@ const STATIC_MANUAL_DATA: VideoManual[] = [
     id: 'm4',
     category: 'admin',
     categoryLabel: '학원장 매뉴얼',
-    title: '학원 원생 등록 및 미납 청구서 카카오톡 일괄 발송',
+    title: '학원 원생 등록 및 이용권 청구서 어플 일괄 발송',
     duration: '3분 10초',
-    description: '관리자 대시보드에서 신규 원생을 등록하고 수강 청구서를 일괄 발송하여 원비 미납을 예방합니다.',
+    description: '관리자 대시보드에서 신규 원생을 등록하고 수강 청구서를 어플로 일괄 발송하여 정산 수납을 진행합니다.',
     steps: [
       '관리자 대시보드 > [청구/정산] 메뉴 이동',
       '이번 달 발송 대상 수강생 선택 후 [청구서 작성]',
-      '[카카오 알림톡 일괄 발송] 버튼 클릭 시 학부모 전송'
+      '[어플 내 이용권 청구서 일괄 발송] 버튼 클릭 시 학부모 전송'
     ],
     thumbnailBg: 'from-slate-800 to-slate-950',
     youtubeId: 'dQw4w9WgXcQ'
@@ -115,10 +122,13 @@ const STATIC_MANUAL_DATA: VideoManual[] = [
   }
 ];
 
-export const VideoManualCenter: React.FC = () => {
+export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfile, onOpenLogin }) => {
   const [activeCategory, setActiveCategory] = useState<'all' | 'parent' | 'admin' | 'driver'>('all');
   const [selectedManual, setSelectedManual] = useState<VideoManual | null>(null);
+  const [restrictedNoticeManual, setRestrictedNoticeManual] = useState<VideoManual | null>(null);
   const [manualsList, setManualsList] = useState<VideoManual[]>(STATIC_MANUAL_DATA);
+
+  const isStaffUser = userProfile && ['admin', 'coach'].includes(userProfile.role || '');
 
   // Fetch registered dynamic videos from Supabase DB
   useEffect(() => {
@@ -136,9 +146,12 @@ export const VideoManualCenter: React.FC = () => {
             steps: Array.isArray(item.steps) ? item.steps : ['동영상 설명 참고'],
             thumbnailBg: item.thumbnail_bg || 'from-blue-600 to-indigo-700',
             youtubeUrl: item.youtube_url,
-            youtubeId: item.youtube_id || extractYoutubeId(item.youtube_url) || undefined
+            youtubeId: item.youtube_id || extractYoutubeId(item.youtube_url) || undefined,
+            isRestricted: item.is_restricted || item.access_level === 'staff',
+            accessLevel: item.access_level || (item.is_restricted ? 'staff' : 'public')
           }));
-          setManualsList([...dbManuals, ...STATIC_MANUAL_DATA]);
+          // When dynamic DB videos exist, replace sample videos with DB registered videos!
+          setManualsList(dbManuals);
         }
       } catch (err) {
         console.warn('Manual videos fetch fallback to static', err);
@@ -148,7 +161,7 @@ export const VideoManualCenter: React.FC = () => {
 
   // Lock background body scroll when video modal is open
   useEffect(() => {
-    if (selectedManual) {
+    if (selectedManual || restrictedNoticeManual) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = '';
@@ -156,7 +169,7 @@ export const VideoManualCenter: React.FC = () => {
     return () => {
       document.body.style.overflow = '';
     };
-  }, [selectedManual]);
+  }, [selectedManual, restrictedNoticeManual]);
 
   const filteredManuals = activeCategory === 'all' 
     ? manualsList 
@@ -226,11 +239,19 @@ export const VideoManualCenter: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
           {filteredManuals.map((manual) => {
             const ytId = manual.youtubeId || extractYoutubeId(manual.youtubeUrl);
+            const isLocked = manual.isRestricted && !isStaffUser;
+
             return (
               <div 
                 key={manual.id}
-                className="glass-card overflow-hidden flex flex-col justify-between group cursor-pointer"
-                onClick={() => setSelectedManual(manual)}
+                className="glass-card overflow-hidden flex flex-col justify-between group cursor-pointer relative"
+                onClick={() => {
+                  if (isLocked) {
+                    setRestrictedNoticeManual(manual);
+                  } else {
+                    setSelectedManual(manual);
+                  }
+                }}
               >
                 <div>
                   <div className={`relative h-48 bg-gradient-to-br ${manual.thumbnailBg} p-6 flex flex-col justify-between text-white overflow-hidden`}>
@@ -251,19 +272,33 @@ export const VideoManualCenter: React.FC = () => {
                       <span className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-black/40 backdrop-blur">
                         {manual.categoryLabel}
                       </span>
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded bg-black/50 backdrop-blur">
-                        ⏱️ {manual.duration}
-                      </span>
+
+                      {/* Lock Badge if Restricted & User is Not Staff */}
+                      {isLocked ? (
+                        <span className="text-[11px] font-extrabold px-2.5 py-1 rounded-md bg-amber-500/90 text-white backdrop-blur flex items-center gap-1 shadow-md">
+                          <Lock className="w-3 h-3" /> 코치/관리자 전용
+                        </span>
+                      ) : (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded bg-black/50 backdrop-blur">
+                          ⏱️ {manual.duration}
+                        </span>
+                      )}
                     </div>
 
                     <div className="absolute inset-0 flex items-center justify-center z-10">
-                      <div className="w-14 h-14 rounded-full bg-red-600 text-white flex items-center justify-center group-hover:scale-110 transition-all shadow-2xl">
-                        <Play className="w-7 h-7 fill-current ml-1" />
-                      </div>
+                      {isLocked ? (
+                        <div className="w-14 h-14 rounded-full bg-amber-500 text-white flex items-center justify-center group-hover:scale-110 transition-all shadow-2xl">
+                          <Lock className="w-7 h-7" />
+                        </div>
+                      ) : (
+                        <div className="w-14 h-14 rounded-full bg-red-600 text-white flex items-center justify-center group-hover:scale-110 transition-all shadow-2xl">
+                          <Play className="w-7 h-7 fill-current ml-1" />
+                        </div>
+                      )}
                     </div>
 
                     <div className="z-10 text-[11px] text-slate-100 font-bold drop-shadow">
-                      클릭 시 영상 재생 & 상세 가이드 보기
+                      {isLocked ? '🔒 관리자 로그인 후 시청 가능' : '클릭 시 영상 재생 & 상세 가이드 보기'}
                     </div>
                   </div>
 
@@ -277,9 +312,9 @@ export const VideoManualCenter: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-blue-600">
-                  <span>단계별 주요 설명 ({manual.steps.length}단계)</span>
-                  <span className="group-hover:translate-x-1 transition-transform">영상 재생 &rarr;</span>
+                <div className={`px-6 py-4 border-t flex items-center justify-between text-xs font-bold ${isLocked ? 'bg-amber-50/70 border-amber-100 text-amber-700' : 'bg-slate-50 border-slate-100 text-blue-600'}`}>
+                  <span>{isLocked ? '🔒 코치/관리자 권한 가이드' : `단계별 주요 설명 (${manual.steps.length}단계)`}</span>
+                  <span className="group-hover:translate-x-1 transition-transform">{isLocked ? '로그인 필요 🔒' : '영상 재생 \u2192'}</span>
                 </div>
               </div>
             );
@@ -358,6 +393,58 @@ export const VideoManualCenter: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Restricted Permission Notice Modal */}
+      {restrictedNoticeManual && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-slate-200 text-center space-y-5 relative">
+            <button 
+              onClick={() => setRestrictedNoticeManual(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-2"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto shadow-md">
+              <Lock className="w-8 h-8" />
+            </div>
+
+            <div className="space-y-2">
+              <div className="inline-block px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-bold border border-amber-200">
+                코치 / 관리자 전용 가이드
+              </div>
+              <h3 className="text-xl font-extrabold text-slate-900">
+                권한 제한 동영상 매뉴얼입니다
+              </h3>
+              <p className="text-slate-600 text-xs sm:text-sm leading-relaxed pt-1">
+                <strong>[{restrictedNoticeManual.title}]</strong> 영상은 학원 세팅 및 지점 전용 관리자 가이드입니다.<br />
+                코치/관리자 계정으로 로그인 후 시청하실 수 있습니다.
+              </p>
+            </div>
+
+            <div className="pt-2 flex flex-col gap-2">
+              {onOpenLogin && (
+                <button
+                  onClick={() => {
+                    setRestrictedNoticeManual(null);
+                    onOpenLogin();
+                  }}
+                  className="btn-primary w-full justify-center text-sm py-3 shadow-lg"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>🔑 관리자 계정으로 로그인하기</span>
+                </button>
+              )}
+              <button
+                onClick={() => setRestrictedNoticeManual(null)}
+                className="text-xs font-bold text-slate-500 hover:text-slate-800 py-2"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </section>
   );

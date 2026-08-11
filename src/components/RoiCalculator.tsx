@@ -199,9 +199,12 @@ export const RoiCalculator: React.FC<RoiCalculatorProps> = ({ onOpenInquiry }) =
             </div>
 
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>실제 학원 운영 고정비 단가 수식 기반 안전 산출 데이터입니다.</span>
+              <div className="flex items-start gap-2 text-xs text-slate-500 font-medium">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div>
+                  <div>실제 학원 운영 고정비 단가 수식 기반 산출 데이터입니다.</div>
+                  <div className="text-[11px] text-slate-400 font-normal mt-0.5">(※ 이해를 돕기 위한 참고용 예상 시뮬레이션 수치)</div>
+                </div>
               </div>
               <button
                 type="button"

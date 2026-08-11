@@ -181,7 +181,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
                     </div>
                     <div>
                       <h4 className="font-bold text-slate-900 text-base">원비 청구서 스마트 일괄 발행 & 수납 연동</h4>
-                      <p className="text-slate-500 text-xs sm:text-sm">매월 미납 청구서를 원 클릭으로 수강생 학부모에게 카카오 알림톡으로 전송 및 간편 결제 유도.</p>
+                      <p className="text-slate-500 text-xs sm:text-sm">매월 이용권 청구서를 원클릭으로 학부모 어플에 일괄 발송하여 편리한 수납을 진행합니다.</p>
                     </div>
                   </div>
 
@@ -227,11 +227,11 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
 
                   <div className="bg-slate-800/90 p-3.5 rounded-2xl border border-slate-700 space-y-2">
                     <div className="flex justify-between text-xs font-bold text-slate-200">
-                      <span>청구서 일괄발행 (8월분)</span>
-                      <span className="text-blue-400 text-[10px]">128건 전송준비</span>
+                      <span>이용권 청구서 일괄발행 (8월분)</span>
+                      <span className="text-blue-400 text-[10px]">128건 발송준비</span>
                     </div>
                     <div className="w-full bg-blue-600 text-white py-2 rounded-xl text-center font-bold text-xs hover:bg-blue-500 cursor-pointer shadow-lg shadow-blue-500/20">
-                      카카오 알림톡 일괄 전송 (1 클릭)
+                      어플 내 이용권 청구서 일괄 발송 (1 클릭)
                     </div>
                   </div>
 
