@@ -1,3 +1,4 @@
+import { useState, useEffect, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
 import { FeatureGrid } from './components/FeatureGrid';
@@ -9,21 +10,84 @@ import { FaqSection } from './components/FaqSection';
 import { InquiryFormSection } from './components/InquiryFormSection';
 import { Footer } from './components/Footer';
 import { FloatingKakaoWidget } from './components/FloatingKakaoWidget';
+import { AdminPage } from './components/admin/AdminPage';
+import { supabase } from './lib/supabaseClient';
 
 export function App() {
-  const handleScrollToInquiry = () => {
+  const [currentView, setCurrentView] = useState<'main' | 'admin'>('main');
+  const [loggedInProfile, setLoggedInProfile] = useState<{ id: string; name: string | null; role: string; branch_id: string | null } | null>(null);
+
+  // Initial user session check on app start (Runs ONCE on mount)
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        if (auth?.user) {
+          const { data } = await supabase.from("users").select("id,name,role,branch_id").eq("id", auth.user.id).maybeSingle();
+          if (data) {
+            setLoggedInProfile(data);
+          }
+        }
+      } catch (err) {
+        console.warn("App session check warning", err);
+      }
+    })();
+  }, []);
+
+  // Check URL query param ?admin=true or pathname /admin
+  useEffect(() => {
+    const handleCheckUrl = () => {
+      const isAdminRoute = window.location.pathname.includes('/admin') || window.location.search.includes('admin=true');
+      if (isAdminRoute) {
+        setCurrentView('admin');
+      }
+    };
+    handleCheckUrl();
+    window.addEventListener('popstate', handleCheckUrl);
+    return () => window.removeEventListener('popstate', handleCheckUrl);
+  }, []);
+
+  const handleScrollToInquiry = useCallback(() => {
     const el = document.getElementById('inquiry');
     if (el) {
       el.scrollIntoView({ behavior: 'smooth' });
     }
-  };
+  }, []);
+
+  const handleLoginSuccess = useCallback((profile: any) => {
+    setLoggedInProfile(profile);
+  }, []);
+
+  const handleBackToSite = useCallback(() => {
+    setCurrentView('main');
+    if (window.location.pathname.includes('/admin') || window.location.search.includes('admin=true')) {
+      window.history.pushState({}, '', '/');
+    }
+  }, []);
+
+  // If Admin View: Render Full-Screen Dedicated Admin Portal Page (Pass initialProfile to eliminate flicker!)
+  if (currentView === 'admin') {
+    return (
+      <AdminPage 
+        initialProfile={loggedInProfile}
+        onBackToSite={handleBackToSite} 
+        onLoginSuccess={handleLoginSuccess}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-500 selection:text-white relative">
-      {/* Top Glassmorphic Navigation */}
-      <Navbar onOpenInquiry={handleScrollToInquiry} />
+      {/* Top Glassmorphic Navigation with Login & Admin Center Buttons */}
+      <Navbar 
+        onOpenInquiry={handleScrollToInquiry} 
+        onOpenLogin={() => setCurrentView('admin')}
+        userProfile={loggedInProfile}
+        onOpenAdminPortal={() => setCurrentView('admin')}
+        onLogout={() => setLoggedInProfile(null)}
+      />
 
-      {/* Main Page Content (Logical Top-to-Bottom Flow) */}
+      {/* Main Page Content */}
       <main>
         {/* 1. Hero Section */}
         <HeroSection onOpenInquiry={handleScrollToInquiry} />
@@ -34,7 +98,7 @@ export function App() {
         {/* 3. Role-based Interactive Demo Switcher */}
         <RoleTabSwitcher onOpenInquiry={handleScrollToInquiry} />
 
-        {/* 4. Real-time ROI Calculator */}
+        {/* 4. Real-time ROI Calculator (Lite 99,000 / Pro 118,000 Rates Integrated) */}
         <RoiCalculator onOpenInquiry={handleScrollToInquiry} />
 
         {/* 5. Video Manual Center */}

@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { Bus, PhoneCall, ChevronRight, Menu, X, QrCode, Smartphone } from 'lucide-react';
+import { Bus, Menu, X, QrCode, Smartphone, LogIn, LogOut, ChevronRight, Settings, UserCheck } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
 
 interface NavbarProps {
   onOpenInquiry: () => void;
+  onOpenLogin: () => void;
+  userProfile?: { name?: string | null; role?: string } | null;
+  onOpenAdminPortal?: () => void;
+  onLogout?: () => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
+export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, userProfile, onOpenAdminPortal, onLogout }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -18,6 +23,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  const isAdminOrCoach = userProfile && ['admin', 'coach'].includes(userProfile.role || '');
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    localStorage.removeItem("auto_login_check");
+    if (onLogout) onLogout();
+  };
 
   return (
     <header className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${isScrolled ? 'glass-header shadow-sm py-3' : 'bg-white/80 backdrop-blur-md py-4 border-b border-slate-100'}`}>
@@ -44,7 +57,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
             </div>
           </a>
 
-          {/* Desktop Nav Links (Chronological Top-to-Bottom Order) */}
+          {/* Desktop Nav Links */}
           <nav className="hidden lg:flex items-center gap-7 shrink-0">
             <a href="#features" className="text-sm font-bold text-slate-700 hover:text-blue-600 transition-colors whitespace-nowrap">
               주요 기능
@@ -64,7 +77,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
             </a>
           </nav>
 
-          {/* Right Actions */}
+          {/* Right Actions: QR Popover & Sleek LOGIN / ADMIN Button */}
           <div className="hidden sm:flex items-center gap-3 shrink-0 relative">
             
             {/* Dual QR Code Download Button */}
@@ -77,7 +90,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
                 <span>QR 앱 다운로드</span>
               </button>
 
-              {/* QR Popover Box with iOS / Android Tabs */}
+              {/* QR Popover Box */}
               {showQrModal && (
                 <div className="absolute right-0 top-12 w-64 bg-white rounded-2xl p-4 shadow-2xl border border-slate-200 z-50 text-center animate-in fade-in zoom-in-95 duration-200">
                   <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-2">
@@ -92,7 +105,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
                     </button>
                   </div>
 
-                  {/* iOS vs Android QR Tab selector */}
                   <div className="flex p-1 bg-slate-100 rounded-xl mb-3 text-[10px] font-bold">
                     <button
                       onClick={() => setQrTab('ios')}
@@ -108,7 +120,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
                     </button>
                   </div>
 
-                  {/* QR Box Placeholder */}
                   <div className="w-32 h-32 mx-auto bg-slate-50 border-2 border-dashed border-blue-400 rounded-xl flex flex-col items-center justify-center p-2 mb-2">
                     <QrCode className="w-8 h-8 text-blue-600 mb-1 opacity-70" />
                     <span className="text-[10px] font-extrabold text-blue-600">
@@ -123,21 +134,42 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
               )}
             </div>
 
-            <a 
-              href="tel:010-7563-2520" 
-              className="hidden xl:flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-blue-600 px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
-            >
-              <PhoneCall className="w-3.5 h-3.5 text-blue-600" />
-              <span>010-7563-2520</span>
-            </a>
+            {/* Logged in state vs Logged out state */}
+            {userProfile ? (
+              <div className="flex items-center gap-2">
+                {/* Staff / Admin get the Admin Portal button */}
+                {isAdminOrCoach ? (
+                  <button 
+                    onClick={onOpenAdminPortal || onOpenLogin}
+                    className="bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center gap-2 border border-slate-700 transition-all hover:scale-105"
+                  >
+                    <Settings className="w-4 h-4 text-blue-400" />
+                    <span>⚙️ 관리자 센터</span>
+                  </button>
+                ) : (
+                  <span className="text-xs font-bold text-slate-700 bg-slate-100 px-3 py-2 rounded-xl flex items-center gap-1.5 border border-slate-200">
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>{userProfile.name || '회원'}님</span>
+                  </span>
+                )}
 
-            <button 
-              onClick={onOpenInquiry}
-              className="btn-primary text-sm shadow-blue-500/20 whitespace-nowrap px-5 py-2.5"
-            >
-              <span>무료 도입 상담</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
+                <button
+                  onClick={handleLogout}
+                  className="text-xs font-bold text-slate-500 hover:text-slate-900 p-2 rounded-lg"
+                  title="로그아웃"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={onOpenLogin}
+                className="btn-primary text-sm shadow-blue-500/20 whitespace-nowrap px-6 py-2.5 flex items-center gap-2"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>로그인</span>
+              </button>
+            )}
           </div>
 
           {/* Mobile Menu Toggle */}
@@ -192,12 +224,49 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry }) => {
             </a>
           </nav>
           <div className="pt-2 border-t border-slate-200 flex flex-col gap-2">
+            {userProfile ? (
+              <div className="space-y-2">
+                {isAdminOrCoach && (
+                  <button 
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      if (onOpenAdminPortal) onOpenAdminPortal();
+                    }}
+                    className="bg-slate-900 text-white font-extrabold w-full justify-center py-3 rounded-xl text-sm flex items-center gap-2"
+                  >
+                    <Settings className="w-4 h-4 text-blue-400" />
+                    <span>⚙️ 관리자 센터 이동</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleLogout();
+                  }}
+                  className="w-full text-center text-xs font-bold text-slate-500 py-2"
+                >
+                  로그아웃
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onOpenLogin();
+                }}
+                className="btn-primary w-full justify-center text-sm"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>로그인하기</span>
+              </button>
+            )}
+
             <button 
               onClick={() => {
                 setMobileMenuOpen(false);
                 onOpenInquiry();
               }}
-              className="btn-primary w-full justify-center text-sm"
+              className="btn-secondary w-full justify-center text-sm"
             >
               <span>무료 도입 상담 신청하기</span>
               <ChevronRight className="w-4 h-4" />

@@ -65,7 +65,7 @@ export const FeatureGrid: React.FC = () => {
                 <CreditCard className="w-7 h-7" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-indigo-600 transition-colors">
-                수강권 & KSPay 원비 결제
+                수강권 & 원스톱 원비 결제
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
                 모바일 원비 청구서 일괄 발행 및 간편 수납 지원. 번거로운 전화 독촉 없이 미납 수납율이 획기적으로 상승합니다.

@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Users, Shield, Car, ArrowRight, MapPin, BellRing, Wallet, Smartphone, LineChart, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Users, Shield, Car, MapPin, BellRing, Wallet, Smartphone, LineChart, Sparkles, CheckCircle2 } from 'lucide-react';
 
 interface RoleTabSwitcherProps {
-  onOpenInquiry: () => void;
+  onOpenInquiry?: () => void;
 }
 
-export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry }) => {
+export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
   const [activeRole, setActiveRole] = useState<'parent' | 'admin' | 'driver'>('parent');
 
   return (
@@ -113,13 +113,6 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                     </div>
                   </div>
                 </div>
-
-                <div className="pt-4">
-                  <button onClick={onOpenInquiry} className="btn-primary text-sm">
-                    <span>학부모 무료 가이드 다운로드</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </div>
               </div>
 
               <div className="lg:col-span-5 flex justify-center">
@@ -197,8 +190,8 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                       <Smartphone className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold text-slate-900 text-base">결합 이용권 자동 분할 시스템</h4>
-                      <p className="text-slate-500 text-xs sm:text-sm">수업+셔틀 세트 상품 구매 시 데이터베이스 트리거로 수강권과 셔틀권이 원생 계정에 자동 분할 지급됩니다.</p>
+                      <h4 className="font-bold text-slate-900 text-base">수강권 & 셔틀권 개별 독립 관리</h4>
+                      <p className="text-slate-500 text-xs sm:text-sm">학원 수업 수강권과 셔틀 전용 이용권이 원생 계정에 각각 독립적으로 안전하게 발급 및 차감 관리됩니다.</p>
                     </div>
                   </div>
 
@@ -207,17 +200,10 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                       <Sparkles className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold text-slate-900 text-base">추천 포인트 마케팅 유입 솔루션</h4>
-                      <p className="text-slate-500 text-xs sm:text-sm">기존 학부모가 지인을 추천하면 다단계 등급 정책에 기반해 포인트가 정산되어 자연스러운 신규 수강생 유입 창출.</p>
+                      <h4 className="font-bold text-slate-900 text-base">지인 추천 포인트 리워드 솔루션</h4>
+                      <p className="text-slate-500 text-xs sm:text-sm">기존 학부모가 학원을 지인에게 추천 시 포인트 적립 혜택이 부여되어 신규 수강생 유입을 지속 유도합니다.</p>
                     </div>
                   </div>
-                </div>
-
-                <div className="pt-4">
-                  <button onClick={onOpenInquiry} className="btn-primary text-sm">
-                    <span>학원장 전용 도입 상담 신청</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
                 </div>
               </div>
 
@@ -289,13 +275,6 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = ({ onOpenInquiry 
                       <p className="text-slate-500 text-xs sm:text-sm">정류장 도착 시 미탑승 학생을 바로 확인하고 수동 클릭 또는 NFC로 즉각 승하차 기록 완료.</p>
                     </div>
                   </div>
-                </div>
-
-                <div className="pt-4">
-                  <button onClick={onOpenInquiry} className="btn-primary text-sm">
-                    <span>기사님 운행 매뉴얼 보기</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
                 </div>
               </div>
 
