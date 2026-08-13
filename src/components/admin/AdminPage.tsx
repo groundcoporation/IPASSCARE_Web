@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
-  Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Play, Trash2, X
+  Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 
@@ -87,6 +87,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [newVideoUrl, setNewVideoUrl] = useState("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
   const [newVideoTheme, setNewVideoTheme] = useState("from-blue-600 to-indigo-700");
   const [newVideoIsRestricted, setNewVideoIsRestricted] = useState(false);
+  const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
   const [litePrice, setLitePrice] = useState("99000");
@@ -365,7 +366,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   }, []);
 
   const parsedSteps = useMemo(() => {
-    return newVideoStepsText.split("\n").map(s => s.trim()).filter(Boolean);
+    return newVideoStepsText
+      .split("\n")
+      .map((step) => step.trim().replace(/^\d+[.)]\s*/, ""))
+      .filter(Boolean);
   }, [newVideoStepsText]);
 
   // Extracted YouTube Video ID for Real Thumbnail & Embed Player
@@ -380,31 +384,71 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     return "2분 분량";
   }, [newVideoDuration, currentPreviewYoutubeId]);
 
-  const handleAddVideo = async (e: React.FormEvent) => {
+  const resetVideoForm = () => {
+    setEditingVideoId(null);
+    setNewVideoTitle("");
+    setNewVideoCategory("parent");
+    setNewVideoDuration("");
+    setNewVideoDescription("");
+    setNewVideoStepsText("");
+    setNewVideoUrl("");
+    setNewVideoTheme("from-blue-600 to-indigo-700");
+    setNewVideoIsRestricted(false);
+  };
+
+  const handleEditVideo = (video: any) => {
+    setEditingVideoId(video.id);
+    setNewVideoTitle(video.title || "");
+    setNewVideoCategory(video.category || "parent");
+    setNewVideoDuration(video.duration || "");
+    setNewVideoDescription(video.description || "");
+    setNewVideoStepsText(Array.isArray(video.steps) ? video.steps.join("\n") : "");
+    setNewVideoUrl(video.youtube_url || "");
+    setNewVideoTheme(video.thumbnail_bg || "from-blue-600 to-indigo-700");
+    setNewVideoIsRestricted(Boolean(video.is_restricted || video.access_level === "staff"));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleSaveVideo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newVideoTitle.trim() || !newVideoUrl.trim()) {
       alert("제목과 유튜브 URL을 입력하세요.");
       return;
     }
 
-    const { error } = await supabase
-      .from("web_manual_videos")
-      .insert([{
-        title: newVideoTitle.trim(),
-        category: newVideoCategory,
-        description: newVideoDescription.trim() || null,
-        youtube_url: newVideoUrl.trim(),
-        display_order: 0,
-        is_visible: true,
-      }]);
+    const categoryLabels: Record<string, string> = {
+      parent: "학부모 매뉴얼",
+      admin: "학원장 매뉴얼",
+      driver: "기사님 매뉴얼",
+    };
+    const videoValues = {
+      title: newVideoTitle.trim(),
+      category: newVideoCategory,
+      category_label: categoryLabels[newVideoCategory],
+      duration: effectiveDuration,
+      description: newVideoDescription.trim() || null,
+      steps: parsedSteps,
+      youtube_url: newVideoUrl.trim(),
+      youtube_id: currentPreviewYoutubeId,
+      thumbnail_bg: newVideoTheme,
+      is_restricted: newVideoIsRestricted,
+      access_level: newVideoIsRestricted ? "staff" : "public",
+      is_visible: true,
+    };
+
+    const query = editingVideoId
+      ? supabase.from("web_manual_videos").update(videoValues).eq("id", editingVideoId)
+      : supabase.from("web_manual_videos").insert([{ ...videoValues, display_order: 0 }]);
+    const { error } = await query;
 
     if (error) {
-      console.error("영상 등록 실패:", error);
-      alert(`영상 등록에 실패했습니다.\n${error.message}`);
+      console.error("영상 저장 실패:", error);
+      alert(`영상 저장에 실패했습니다.\n${error.message}`);
       return;
     }
 
-    alert("신규 유튜브 매뉴얼이 등록되었습니다.");
+    alert(editingVideoId ? "영상 매뉴얼이 수정되었습니다." : "신규 유튜브 매뉴얼이 등록되었습니다.");
+    resetVideoForm();
     await loadVideos();
   };
 
@@ -872,11 +916,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                 
                 {/* Form Column */}
-                <form onSubmit={handleAddVideo} className="lg:col-span-7 bg-white p-6 sm:p-8 rounded-3xl ring-1 ring-slate-200 space-y-5 shadow-sm">
+                <form onSubmit={handleSaveVideo} className="lg:col-span-7 bg-white p-6 sm:p-8 rounded-3xl ring-1 ring-slate-200 space-y-5 shadow-sm">
                   <div>
                     <h3 className="font-black text-lg text-slate-900 flex items-center gap-2">
                       <Video className="text-blue-600" size={22} />
-                      유튜브 매뉴얼 1:1 라이브 편집기
+                      {editingVideoId ? "유튜브 매뉴얼 수정" : "유튜브 매뉴얼 1:1 라이브 편집기"}
                     </h3>
                     <p className="text-xs text-slate-500 mt-1">
                       유튜브 URL을 입력하면 <b>실제 썸네일 이미지</b>와 <b>실제 동영상 플레이어</b>가 자동 추출되어 미리보기에 적용됩니다!
@@ -1009,9 +1053,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                     </div>
                   </div>
 
-                  <button type="submit" className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl text-base hover:bg-blue-700 shadow-md">
-                    + 홈페이지에 영상 매뉴얼 실시간 등록하기
-                  </button>
+                  <div className="flex gap-3">
+                    {editingVideoId && (
+                      <button type="button" onClick={resetVideoForm} className="flex-1 bg-slate-200 text-slate-700 font-black py-4 rounded-2xl text-base hover:bg-slate-300">
+                        수정 취소
+                      </button>
+                    )}
+                    <button type="submit" className="flex-1 bg-blue-600 text-white font-black py-4 rounded-2xl text-base hover:bg-blue-700 shadow-md">
+                      {editingVideoId ? "변경 내용 저장하기" : "+ 홈페이지에 영상 매뉴얼 실시간 등록하기"}
+                    </button>
+                  </div>
                 </form>
 
                 {/* Live Card Preview Box Column with REAL YouTube Thumbnail Image! */}
@@ -1108,13 +1159,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                             <b className="text-sm text-slate-900 block truncate mt-1">{v.title}</b>
                             <p className="text-xs text-slate-500 truncate">{v.description}</p>
                           </div>
-                          <button
-                            onClick={() => handleDeleteVideo(v.id)}
-                            className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl shrink-0"
-                            title="삭제"
-                          >
-                            <Trash2 size={18} />
-                          </button>
+                          <div className="flex shrink-0">
+                            <button
+                              onClick={() => handleEditVideo(v)}
+                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl"
+                              title="수정"
+                            >
+                              <Pencil size={18} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteVideo(v.id)}
+                              className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl"
+                              title="삭제"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
                         </div>
                       );
                     })}
