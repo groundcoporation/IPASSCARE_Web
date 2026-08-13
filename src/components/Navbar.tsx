@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, X, QrCode, Smartphone, LogIn, LogOut, ChevronRight, Settings, UserCheck } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
+import appStoreQr from '../assets/앱스토어_qr.png';
+import playStoreQr from '../assets/플레이스토어_qr.png';
 
 interface NavbarProps {
   onOpenInquiry: () => void;
@@ -122,11 +124,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
                     </button>
                   </div>
 
-                  <div className="w-32 h-32 mx-auto bg-slate-50 border-2 border-dashed border-blue-400 rounded-xl flex flex-col items-center justify-center p-2 mb-2">
-                    <QrCode className="w-8 h-8 text-blue-600 mb-1 opacity-70" />
-                    <span className="text-[10px] font-extrabold text-blue-600">
-                      {qrTab === 'ios' ? 'App Store QR' : 'Google Play QR'}
-                    </span>
+                  <div className="w-36 h-36 mx-auto bg-white border border-slate-200 rounded-xl flex items-center justify-center p-2 mb-2 shadow-sm">
+                    <img
+                      src={qrTab === 'ios' ? appStoreQr : playStoreQr}
+                      alt={qrTab === 'ios' ? '아이패스케어 앱스토어 다운로드 QR 코드' : '아이패스케어 플레이스토어 다운로드 QR 코드'}
+                      className="w-full h-full object-contain"
+                    />
                   </div>
 
                   <p className="text-[10px] text-slate-500 font-medium">
