@@ -382,29 +382,30 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   const handleAddVideo = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newVideoTitle || !newVideoUrl) {
+    if (!newVideoTitle.trim() || !newVideoUrl.trim()) {
       alert("제목과 유튜브 URL을 입력하세요.");
       return;
     }
-    const categoryLabels: Record<string, string> = { parent: "학부모 매뉴얼", admin: "학원장 매뉴얼", driver: "기사님 매뉴얼" };
-    
-    await supabase.from("web_manual_videos").insert([{ 
-      title: newVideoTitle, 
-      category: newVideoCategory, 
-      category_label: categoryLabels[newVideoCategory] || "매뉴얼",
-      duration: effectiveDuration,
-      description: newVideoDescription,
-      steps: parsedSteps,
-      youtube_url: newVideoUrl, 
-      youtube_id: currentPreviewYoutubeId,
-      thumbnail_bg: newVideoTheme,
-      is_restricted: newVideoIsRestricted,
-      access_level: newVideoIsRestricted ? 'staff' : 'public',
-      is_visible: true 
-    }]);
-    
-    alert("✅ 신규 유튜브 매뉴얼이 등록되었습니다! 실시간 썸네일과 재생 팝업이 적용됩니다.");
-    loadVideos();
+
+    const { error } = await supabase
+      .from("web_manual_videos")
+      .insert([{
+        title: newVideoTitle.trim(),
+        category: newVideoCategory,
+        description: newVideoDescription.trim() || null,
+        youtube_url: newVideoUrl.trim(),
+        display_order: 0,
+        is_visible: true,
+      }]);
+
+    if (error) {
+      console.error("영상 등록 실패:", error);
+      alert(`영상 등록에 실패했습니다.\n${error.message}`);
+      return;
+    }
+
+    alert("신규 유튜브 매뉴얼이 등록되었습니다.");
+    await loadVideos();
   };
 
   const handleDeleteVideo = async (id: string) => {
