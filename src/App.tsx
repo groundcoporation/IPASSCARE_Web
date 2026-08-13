@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
+import { IntroVideoSection } from './components/IntroVideoSection';
 import { FeatureGrid } from './components/FeatureGrid';
 import { RoleTabSwitcher } from './components/RoleTabSwitcher';
 import { RoiCalculator } from './components/RoiCalculator';
@@ -91,6 +92,9 @@ export function App() {
       <main>
         {/* 1. Hero Section */}
         <HeroSection onOpenInquiry={handleScrollToInquiry} />
+
+        {/* Product introduction video */}
+        <IntroVideoSection />
 
         {/* 2. Key 4 Features Grid */}
         <FeatureGrid />
