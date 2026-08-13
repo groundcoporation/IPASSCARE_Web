@@ -86,7 +86,7 @@ export const FeatureGrid: React.FC = () => {
                 어플결제 · 자사몰 · 제휴 쇼핑몰 포인트
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                적립된 포인트를 <strong>어플 내 수강료 바로 차감 결제</strong>에 사용하거나 <strong>자사몰 & VOG SPORTS 제휴 쇼핑몰</strong> 포인트로 전환 및 출금 신청이 가능합니다.
+                적립된 포인트를 <strong>어플 내 수강료 바로 차감 결제</strong>에 사용하거나 <strong>자사몰 & VOG SPORTS 제휴 쇼핑몰</strong> 포인트로 1:1 간편 전환하여 사용이 가능합니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-amber-600 gap-1">
