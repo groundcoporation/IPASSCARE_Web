@@ -4,7 +4,7 @@ import {
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Play, Trash2, X
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
-import iLogo from "../../assets/i_logo.png";
+import iLogo from "/src/assets/i_logo.png";
 
 const MAX_SLOTS = 20;
 type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "settings";

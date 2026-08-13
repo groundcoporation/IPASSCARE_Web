@@ -1,6 +1,6 @@
 import React from 'react';
 import { Phone, MapPin, ExternalLink, ShieldCheck, FileText } from 'lucide-react';
-import iLogo from '../assets/i_logo.png';
+import iLogo from '/src/assets/i_logo.png';
 
 export const Footer: React.FC = () => {
   return (

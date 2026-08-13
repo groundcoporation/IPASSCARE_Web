@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, X, QrCode, Smartphone, LogIn, LogOut, ChevronRight, Settings, UserCheck } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
-import iLogo from '../assets/i_logo.png';
+import iLogo from '/src/assets/i_logo.png';
 
 interface NavbarProps {
   onOpenInquiry: () => void;
