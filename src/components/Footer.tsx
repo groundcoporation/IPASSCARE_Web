@@ -1,6 +1,5 @@
 import React from 'react';
 import { Phone, MapPin, ExternalLink, ShieldCheck, FileText } from 'lucide-react';
-import iLogo from '/src/assets/i_logo.png';
 
 export const Footer: React.FC = () => {
   return (
@@ -13,7 +12,7 @@ export const Footer: React.FC = () => {
           {/* Col 1 & 2: Brand & Corporate Info */}
           <div className="lg:col-span-2 space-y-4">
             <div className="flex items-center gap-3">
-              <img src={iLogo} alt="IPASSCARE" className="w-10 h-10 object-contain rounded-xl bg-white p-0.5" />
+              <img src="/i_logo.png" alt="IPASSCARE" className="w-10 h-10 object-contain rounded-xl bg-white p-0.5" />
               <div className="flex flex-col">
                 <span className="text-xl font-extrabold text-white">IPASSCARE <span className="text-xs text-blue-400">아이패스케어</span></span>
                 <span className="text-[10px] text-slate-500 font-bold tracking-wider">BY (주)그라운드코퍼레이션</span>

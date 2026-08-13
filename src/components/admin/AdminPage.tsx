@@ -4,7 +4,6 @@ import {
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Play, Trash2, X
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
-import iLogo from "/src/assets/i_logo.png";
 
 const MAX_SLOTS = 20;
 type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "settings";
@@ -688,7 +687,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       {/* BranchHeader Component */}
       <header className="bg-white border-b border-slate-200 px-6 py-4 fixed top-0 left-0 right-0 z-40 flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-3">
-          <img src={iLogo} alt="IPASSCARE" className="w-8 h-8 object-contain rounded-lg" />
+          <img src="/i_logo.png" alt="IPASSCARE" className="w-8 h-8 object-contain rounded-lg" />
           <span className="text-xl font-black text-slate-900 tracking-tight">IPASSCARE</span>
           <span className="text-xs bg-slate-100 font-bold px-2.5 py-1 rounded-full text-slate-600">
             {activeBranchName ? `${activeBranchName} 지점` : "전체 지점 관리"}

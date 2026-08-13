@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, X, QrCode, Smartphone, LogIn, LogOut, ChevronRight, Settings, UserCheck } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
-import iLogo from '/src/assets/i_logo.png';
 
 interface NavbarProps {
   onOpenInquiry: () => void;
@@ -41,7 +40,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
           {/* Brand Logo */}
           <a href="#" className="flex items-center gap-3 text-decoration-none shrink-0 group">
             <img 
-              src={iLogo} 
+              src="/i_logo.png" 
               alt="IPASSCARE" 
               className="w-10 h-10 object-contain rounded-xl shadow-xs group-hover:scale-105 transition-transform" 
             />
