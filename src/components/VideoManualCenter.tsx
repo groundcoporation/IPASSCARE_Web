@@ -143,7 +143,17 @@ export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfil
             title: item.title,
             duration: item.duration || '유튜브 가이드',
             description: item.description,
-            steps: Array.isArray(item.steps) ? item.steps : ['동영상 설명 참고'],
+            steps: (() => {
+              if (Array.isArray(item.steps)) return item.steps;
+              if (typeof item.steps === 'string') {
+                try {
+                  const parsed = JSON.parse(item.steps);
+                  if (Array.isArray(parsed)) return parsed;
+                } catch {}
+                return item.steps.split('\n').map((s: string) => s.trim()).filter(Boolean);
+              }
+              return ['동영상 설명 참고'];
+            })(),
             thumbnailBg: item.thumbnail_bg || 'from-blue-600 to-indigo-700',
             youtubeUrl: item.youtube_url,
             youtubeId: item.youtube_id || extractYoutubeId(item.youtube_url) || undefined,

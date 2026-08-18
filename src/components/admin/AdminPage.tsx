@@ -90,6 +90,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
+  // Partner Logos Management State
+  const [partners, setPartners] = useState<any[]>([]);
+  const [partnerName, setPartnerName] = useState("");
+  const [partnerDescription, setPartnerDescription] = useState("");
+  const [partnerLogoUrl, setPartnerLogoUrl] = useState("");
+  const [partnerDisplayOrder, setPartnerDisplayOrder] = useState("0");
+  const [partnerIsVisible, setPartnerIsVisible] = useState(true);
+  const [editingPartnerId, setEditingPartnerId] = useState<string | null>(null);
+  const [partnerTableError, setPartnerTableError] = useState(false);
+  const [partnerFile, setPartnerFile] = useState<File | null>(null);
+  const [partnerPreviewUrl, setPartnerPreviewUrl] = useState("");
+
   const [litePrice, setLitePrice] = useState("99000");
   const [proPrice, setProPrice] = useState("118000");
   const [saveMsg, setSaveMsg] = useState("");
@@ -109,6 +121,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   useEffect(() => {
     onLoginSuccessRef.current = onLoginSuccess;
   }, [onLoginSuccess]);
+
+  // Set Tab Title on Mount
+  useEffect(() => {
+    document.title = "아이패스케어 - 통합 관리자 포털";
+  }, []);
 
   // Session Check
   useEffect(() => {
@@ -365,6 +382,126 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setLoading(false);
   }, []);
 
+  const loadPartners = useCallback(async () => {
+    setLoading(true);
+    setPartnerTableError(false);
+    const { data, error } = await supabase.from("web_partner_logos").select("*").order("display_order", { ascending: true });
+    if (error) {
+      console.warn("web_partner_logos table missing or error:", error.message);
+      setPartnerTableError(true);
+      setPartners([]);
+    } else {
+      setPartners(data || []);
+    }
+    setLoading(false);
+  }, []);
+
+  const resetPartnerForm = () => {
+    setEditingPartnerId(null);
+    setPartnerName("");
+    setPartnerDescription("");
+    setPartnerLogoUrl("");
+    setPartnerDisplayOrder("0");
+    setPartnerIsVisible(true);
+    setPartnerFile(null);
+    setPartnerPreviewUrl("");
+  };
+
+  const handleEditPartner = (p: any) => {
+    setEditingPartnerId(p.id);
+    setPartnerName(p.name || "");
+    setPartnerDescription(p.description || "");
+    setPartnerLogoUrl(p.logo_url || "");
+    setPartnerPreviewUrl(p.logo_url || "");
+    setPartnerDisplayOrder(String(p.display_order ?? 0));
+    setPartnerIsVisible(p.is_visible !== false);
+    setPartnerFile(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handlePartnerFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setPartnerFile(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setPartnerPreviewUrl(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSavePartner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!partnerName.trim()) {
+      alert("브랜드 이름을 입력해주세요.");
+      return;
+    }
+
+    let finalLogoUrl = partnerLogoUrl;
+
+    if (partnerFile) {
+      setLoading(true);
+      // Try to upload to supabase storage first
+      const fileExt = partnerFile.name.split(".").pop();
+      const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const filePath = `logos/${fileName}`;
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from("web_partner_logos")
+        .upload(filePath, partnerFile);
+        
+      if (!uploadError && uploadData) {
+        const { data: urlData } = supabase.storage
+          .from("web_partner_logos")
+          .getPublicUrl(filePath);
+        if (urlData) {
+          finalLogoUrl = urlData.publicUrl;
+        }
+      } else {
+        console.warn("Storage upload failed, falling back to base64 encoding", uploadError);
+        // Fallback: use base64 url
+        finalLogoUrl = partnerPreviewUrl;
+      }
+      setLoading(false);
+    } else if (!editingPartnerId && !finalLogoUrl) {
+      alert("로고 이미지 파일을 선택해주세요.");
+      return;
+    }
+
+    const partnerValues = {
+      name: partnerName.trim(),
+      description: partnerDescription.trim() || null,
+      logo_url: finalLogoUrl,
+      display_order: parseInt(partnerDisplayOrder, 10) || 0,
+      is_visible: partnerIsVisible
+    };
+
+    const query = editingPartnerId
+      ? supabase.from("web_partner_logos").update(partnerValues).eq("id", editingPartnerId)
+      : supabase.from("web_partner_logos").insert([partnerValues]);
+
+    const { error } = await query;
+    if (error) {
+      alert(`저장에 실패했습니다: ${error.message}`);
+      return;
+    }
+
+    alert(editingPartnerId ? "파트너 정보가 수정되었습니다." : "새로운 파트너 브랜드가 추가되었습니다.");
+    resetPartnerForm();
+    await loadPartners();
+  };
+
+  const handleDeletePartner = async (id: string) => {
+    if (!confirm("이 파트너 브랜드를 삭제하시겠습니까?")) return;
+    const { error } = await supabase.from("web_partner_logos").delete().eq("id", id);
+    if (error) {
+      alert(`삭제 실패: ${error.message}`);
+    } else {
+      loadPartners();
+    }
+  };
+
   const parsedSteps = useMemo(() => {
     return newVideoStepsText
       .split("\n")
@@ -466,7 +603,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     else if (tab === "inquiries") void loadInquiries();
     else if (tab === "settings") void loadSettings();
     else if (tab === "videos") void loadVideos();
-  }, [loadAttendance, loadPayments, loadSchedules, loadInquiries, loadSettings, loadVideos, profile, tab]);
+    else if (tab === "partners") void loadPartners();
+  }, [loadAttendance, loadPayments, loadSchedules, loadInquiries, loadSettings, loadVideos, loadPartners, profile, tab]);
 
   // Handlers
   const getRefundInfo = (item: any) => {
@@ -771,6 +909,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
             <button onClick={() => { setTab("inquiries"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "inquiries" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><FileText size={18} /> B2B 도입 문의</button>
             <button onClick={() => { setTab("videos"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "videos" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Video size={18} /> 유튜브 매뉴얼 편집기</button>
+            <button onClick={() => { setTab("partners"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "partners" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><UsersRound size={18} /> 🤝 협력 브랜드 관리</button>
             <button onClick={() => { setTab("settings"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "settings" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Settings size={18} /> ⚙️ 요금제 설정</button>
           </div>
 
@@ -1295,6 +1434,229 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB 6: PARTNER BRAND LOGOS */}
+          {tab === "partners" && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+              
+              {/* Partner Logo Registration / Edit Form */}
+              <div className="lg:col-span-4 bg-white p-6 rounded-3xl ring-1 ring-slate-200 space-y-6">
+                <div>
+                  <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full uppercase tracking-wider">
+                    {editingPartnerId ? "PARTNER EDIT" : "PARTNER REGISTER"}
+                  </span>
+                  <h2 className="text-xl font-black text-slate-900 mt-2">
+                    {editingPartnerId ? "협력 브랜드 정보 수정" : "새 협력 브랜드 추가"}
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    메인 홈 화면 상단에 롤링되는 협력 기업/학원 로고 정보를 관리합니다.
+                  </p>
+                </div>
+
+                {partnerTableError ? (
+                  <div className="bg-amber-50 border border-amber-200 p-5 rounded-2xl space-y-3">
+                    <div className="flex items-center gap-2 text-amber-800 font-extrabold text-sm">
+                      <Lock className="w-5 h-5" />
+                      <span>데이터 테이블 생성 필요</span>
+                    </div>
+                    <p className="text-xs text-amber-700 leading-relaxed">
+                      이 기능을 이용하려면 Supabase Dashboard ➔ SQL Editor에 접속하여 아래 쿼리를 붙여넣고 <b>Run</b>을 실행해 주세요!
+                    </p>
+                    <textarea
+                      readOnly
+                      rows={8}
+                      className="w-full bg-slate-950 text-slate-200 text-[10px] font-mono p-3 rounded-xl border border-slate-800 focus:outline-none"
+                      value={`CREATE TABLE public.web_partner_logos (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  description TEXT,
+  logo_url TEXT NOT NULL,
+  display_order INT DEFAULT 0,
+  is_visible BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.web_partner_logos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public read" ON public.web_partner_logos FOR SELECT USING (true);
+CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (true);`}
+                      onClick={(e) => {
+                        (e.target as HTMLTextAreaElement).select();
+                        navigator.clipboard.writeText((e.target as HTMLTextAreaElement).value);
+                        alert("📋 SQL 쿼리가 클립보드에 복사되었습니다! Supabase SQL Editor에 붙여넣어 실행해 주세요.");
+                      }}
+                    />
+                    <p className="text-[10px] text-slate-500 font-bold text-center">
+                      💡 텍스트 상자를 누르면 자동으로 전체 SQL이 복사됩니다.
+                    </p>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSavePartner} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">브랜드/학원 이름</label>
+                      <input
+                        type="text"
+                        placeholder="예: 해법영어교실, 잉글리시아이"
+                        value={partnerName}
+                        onChange={(e) => setPartnerName(e.target.value)}
+                        className="w-full bg-slate-100 px-4 py-3 rounded-xl text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">브랜드 한 줄 설명/비고 (선택)</label>
+                      <input
+                        type="text"
+                        placeholder="예: 전국 학원 인프라, 우수 파트너 교육원"
+                        value={partnerDescription}
+                        onChange={(e) => setPartnerDescription(e.target.value)}
+                        className="w-full bg-slate-100 px-4 py-3 rounded-xl text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">로고 이미지 파일 업로드 (PNG/SVG 권장)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handlePartnerFileChange}
+                        className="w-full bg-slate-100 px-4 py-3 rounded-xl text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                        required={!editingPartnerId}
+                      />
+                    </div>
+
+                    {partnerPreviewUrl && (
+                      <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50 flex flex-col items-center gap-2">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">업로드 이미지 미리보기</span>
+                        <div className="w-24 h-24 bg-white border border-slate-100 rounded-xl flex items-center justify-center p-2 shadow-xs">
+                          <img
+                            src={partnerPreviewUrl}
+                            alt="Logo preview"
+                            className="max-w-full max-h-full object-contain"
+                          />
+                        </div>
+                        <span className="text-[10px] text-slate-400 text-center font-semibold">
+                          {partnerFile ? `${(partnerFile.size / 1024).toFixed(1)} KB` : '기존 이미지'}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">정렬 순서 (오름차순)</label>
+                        <input
+                          type="number"
+                          placeholder="0"
+                          value={partnerDisplayOrder}
+                          onChange={(e) => setPartnerDisplayOrder(e.target.value)}
+                          className="w-full bg-slate-100 px-4 py-3 rounded-xl text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="flex flex-col justify-end">
+                        <label className="flex items-center gap-2 cursor-pointer bg-slate-50 p-3 rounded-xl border border-slate-200 hover:bg-slate-100 select-none">
+                          <input
+                            type="checkbox"
+                            checked={partnerIsVisible}
+                            onChange={(e) => setPartnerIsVisible(e.target.checked)}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                          />
+                          <span className="text-xs font-bold text-slate-700">홈페이지 노출</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      {editingPartnerId && (
+                        <button
+                          type="button"
+                          onClick={resetPartnerForm}
+                          className="flex-1 bg-slate-200 text-slate-700 font-black py-3 rounded-xl text-sm hover:bg-slate-300 transition-colors"
+                        >
+                          취소
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        className="flex-1 bg-blue-600 text-white font-black py-3 rounded-xl text-sm hover:bg-blue-700 shadow-md transition-colors"
+                      >
+                        {editingPartnerId ? "수정 완료" : "브랜드 등록"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              {/* Registered Partner Logos List */}
+              <div className="lg:col-span-8 bg-white p-6 rounded-3xl ring-1 ring-slate-200 space-y-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-sm text-slate-900">
+                    현재 등록된 협력 브랜드 ({partners.length}개)
+                  </h3>
+                  {partnerTableError && (
+                    <span className="text-xs font-bold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full">
+                      데이터베이스 미연동 상태
+                    </span>
+                  )}
+                </div>
+
+                {partners.length ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {partners.map((p) => (
+                      <div key={p.id} className="flex gap-4 items-center bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                        <div className="w-16 h-16 bg-white rounded-xl flex items-center justify-center shrink-0 border border-slate-200 p-2">
+                          <img
+                            src={p.logo_url}
+                            alt={p.name}
+                            className="max-w-full max-h-full object-contain"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        </div>
+                        <div className="min-w-0 flex-1 pr-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded">
+                              순서: {p.display_order ?? 0}
+                            </span>
+                            {!p.is_visible && (
+                              <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded">
+                                숨김
+                              </span>
+                            )}
+                          </div>
+                          <b className="text-sm text-slate-900 block truncate mt-1">{p.name}</b>
+                          <p className="text-[10px] text-slate-400 font-mono truncate">{p.logo_url}</p>
+                        </div>
+                        <div className="flex shrink-0">
+                          <button
+                            onClick={() => handleEditPartner(p)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl"
+                            title="수정"
+                          >
+                            <Pencil size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleDeletePartner(p.id)}
+                            className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl"
+                            title="삭제"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center text-xs font-bold text-slate-400 py-16 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                    {partnerTableError 
+                      ? "데이터베이스 테이블(web_partner_logos)이 생성되지 않았습니다. 좌측 안내 박스를 참조하여 테이블을 신설해 주세요!"
+                      : "등록된 협력 브랜드가 없습니다. 새로운 브랜드를 추가해 주세요!"}
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
 

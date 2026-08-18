@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Bus, Bell, CreditCard, Play, ArrowRight, MapPin, Sparkles, ChevronDown, CheckCircle, Navigation } from 'lucide-react';
+import { PartnerMarquee } from './PartnerMarquee';
 
 interface HeroSectionProps {
   onOpenInquiry: () => void;
@@ -21,7 +22,13 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
   }, []);
 
   return (
-    <section className="relative pt-32 pb-20 md:pt-36 md:pb-24 overflow-hidden bg-gradient-to-b from-blue-50/70 via-slate-50 to-white">
+    <section className="relative pt-24 pb-20 md:pt-28 md:pb-24 overflow-hidden bg-gradient-to-b from-blue-50/70 via-slate-50 to-white">
+      
+      {/* 0. Sliding Partner Marquee right below Navbar */}
+      <div className="w-full mb-8">
+        <PartnerMarquee />
+      </div>
+
       {/* Background Ambient Glows */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-blue-400/15 rounded-full blur-3xl pointer-events-none animate-glow" />
       <div className="absolute top-1/3 right-10 w-[400px] h-[400px] bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />

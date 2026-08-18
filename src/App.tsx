@@ -20,6 +20,7 @@ export function App() {
 
   // Initial user session check on app start (Runs ONCE on mount)
   useEffect(() => {
+    document.title = "아이패스케어 - (주)그라운드코퍼레이션 통합 안심 케어 플랫폼";
     (async () => {
       try {
         const { data: auth } = await supabase.auth.getUser();
