@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
-  Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X
+  Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
+  GitFork
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
+import { ReferralTreeTab } from "./ReferralTreeTab";
 
 const MAX_SLOTS = 20;
-type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "settings";
+type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "partners" | "referrals" | "settings";
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
 type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
@@ -910,6 +912,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             <button onClick={() => { setTab("inquiries"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "inquiries" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><FileText size={18} /> B2B 도입 문의</button>
             <button onClick={() => { setTab("videos"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "videos" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Video size={18} /> 유튜브 매뉴얼 편집기</button>
             <button onClick={() => { setTab("partners"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "partners" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><UsersRound size={18} /> 🤝 협력 브랜드 관리</button>
+            <button onClick={() => { setTab("referrals"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "referrals" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><GitFork size={18} /> 🌳 추천인 포인트 트리</button>
             <button onClick={() => { setTab("settings"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "settings" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Settings size={18} /> ⚙️ 요금제 설정</button>
           </div>
 
@@ -1381,7 +1384,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               )}
 
             </div>
-          ) : (
+          ) : tab === "settings" ? (
             <div className="bg-white p-8 rounded-3xl ring-1 ring-slate-200 space-y-4 max-w-2xl">
               <h2 className="font-black text-lg text-slate-900">⚙️ 요금제 단가 & 기대효과 설정</h2>
               <p className="text-xs text-slate-500">
@@ -1401,7 +1404,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 setSaveMsg("✅ 요금제 단가가 성공적으로 저장되었습니다! 홈페이지 단가 및 도입효과 계산기에 즉시 반영됩니다.");
               }} className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold text-sm hover:bg-blue-700">설정 DB 저장하기</button>
             </div>
-          )}
+          ) : null}
 
           {loading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/65 backdrop-blur-xs"><Loader2 className="animate-spin text-blue-600" size={38} /></div>}
 
@@ -1659,6 +1662,9 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
 
             </div>
           )}
+
+          {/* TAB 7: REFERRAL TREE */}
+          {tab === "referrals" && <ReferralTreeTab />}
 
           {/* Manual Attendance Modal */}
           {attendanceModal && (
