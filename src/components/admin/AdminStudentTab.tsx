@@ -9,6 +9,7 @@ interface Student {
   child_id: string | null;
   branch_id: string;
   student_name: string;
+  parent_name: string | null;
   attendance_code: string;
   mother_phone: string | null;
   father_phone: string | null;
@@ -86,6 +87,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedBranchId, setSelectedBranchId] = useState('');
   const [studentName, setStudentName] = useState('');
+  const [parentName, setParentName] = useState('');
   const [attendanceCode, setAttendanceCode] = useState('');
   const [motherPhone, setMotherPhone] = useState('');
   const [fatherPhone, setFatherPhone] = useState('');
@@ -157,6 +159,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setEditingId(student.id);
       setSelectedBranchId(student.branch_id);
       setStudentName(student.student_name);
+      setParentName(student.parent_name || student.parent_user?.name || '');
       setAttendanceCode(student.attendance_code);
       setMotherPhone(student.mother_phone || '');
       setFatherPhone(student.father_phone || '');
@@ -182,6 +185,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setEditingId(null);
       setSelectedBranchId(activeBranchId && activeBranchId !== 'all' ? activeBranchId : (branches.length > 0 ? branches[0].id : ''));
       setStudentName('');
+      setParentName('');
       setAttendanceCode('');
       setMotherPhone('');
       setFatherPhone('');
@@ -239,6 +243,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       const studentPayload = {
         branch_id: selectedBranchId,
         student_name: studentName.trim(),
+        parent_name: parentName.trim() || null,
         attendance_code: attendanceCode.trim(),
         mother_phone: motherPhone.trim() || null,
         father_phone: fatherPhone.trim() || null,
@@ -250,7 +255,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         admission_date: admissionDate || null,
         memo: memo.trim() || null,
         is_sms_enabled: isSmsEnabled,
-        parent_user_id: parentId
+        parent_user_id: parentId || (editingId ? students.find((student) => student.id === editingId)?.parent_user_id : null)
       };
 
       let studentId = editingId;
@@ -328,6 +333,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       worksheet.getRow(1).values = [
         '클래스명 (선택 - 예: 초등축구반)',
         '이름 (필수)',
+        '보호자 이름 (선택)',
         '출결번호 (필수)',
         '어머니 연락처',
         '아버지 연락처',
@@ -399,18 +405,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
             const className = row.getCell(1).text?.trim();
             const name = row.getCell(2).text?.trim();
-            const code = row.getCell(3).text?.trim();
-            const motherPhoneVal = row.getCell(4).text?.trim().replace(/[^0-9]/g, '');
-            const fatherPhoneVal = row.getCell(5).text?.trim().replace(/[^0-9]/g, '');
-            const studentPhoneVal = row.getCell(6).text?.trim().replace(/[^0-9]/g, '');
-            const rawBirth = row.getCell(7).text?.trim();
-            const school = row.getCell(8).text?.trim();
-            const grade = row.getCell(9).text?.trim();
-            const rawAdmission = row.getCell(10).text?.trim();
-            const packageNameText = row.getCell(11).text?.trim(); // 요금제명
-            const cycleText = row.getCell(12).text?.trim();       // 납부 주기
-            const dayText = row.getCell(13).text?.trim();         // 수납일
-            const memoText = row.getCell(14).text?.trim();
+            const parentNameText = row.getCell(3).text?.trim();
+            const code = row.getCell(4).text?.trim();
+            const motherPhoneVal = row.getCell(5).text?.trim().replace(/[^0-9]/g, '');
+            const fatherPhoneVal = row.getCell(6).text?.trim().replace(/[^0-9]/g, '');
+            const studentPhoneVal = row.getCell(7).text?.trim().replace(/[^0-9]/g, '');
+            const rawBirth = row.getCell(8).text?.trim();
+            const school = row.getCell(9).text?.trim();
+            const grade = row.getCell(10).text?.trim();
+            const rawAdmission = row.getCell(11).text?.trim();
+            const packageNameText = row.getCell(12).text?.trim(); // 요금제명
+            const cycleText = row.getCell(13).text?.trim();       // 납부 주기
+            const dayText = row.getCell(14).text?.trim();         // 수납일
+            const memoText = row.getCell(15).text?.trim();
 
             if (!name || !code) return;
 
@@ -437,6 +444,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             importedStudents.push({
               branch_id: currentBranch,
               student_name: name,
+              parent_name: parentNameText || null,
               attendance_code: code,
               mother_phone: motherPhoneVal || null,
               father_phone: fatherPhoneVal || null,
@@ -532,9 +540,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     const assignedClasses = (student.academy_student_classes || [])
       .map((assignment) => assignment.class_schedules?.target_class || '이용권 단독')
       .join(' ');
+    const displayParentName = student.parent_name || student.parent_user?.name || '';
     
     return (
       student.student_name.toLowerCase().includes(query) ||
+      displayParentName.toLowerCase().includes(query) ||
       (student.mother_phone && student.mother_phone.includes(query)) ||
       (student.father_phone && student.father_phone.includes(query)) ||
       (student.student_phone && student.student_phone.includes(query)) ||
@@ -594,7 +604,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
         <input 
           type="text"
-          placeholder="학생 이름, 연락처, 소속반, 학교명으로 검색..."
+          placeholder="학생·보호자 이름, 연락처, 소속반, 학교명으로 검색..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-full rounded-2xl bg-slate-100 py-3.5 pl-11 pr-4 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
@@ -608,6 +618,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
               <tr>
                 <th scope="col" className="px-6 py-4">이름 (출결번호)</th>
+                <th scope="col" className="px-6 py-4">보호자 성함</th>
                 <th scope="col" className="px-6 py-4">수강 수업반</th>
                 <th scope="col" className="px-6 py-4">부모 연락망</th>
                 <th scope="col" className="px-6 py-4">학교 / 학년</th>
@@ -619,7 +630,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             <tbody className="divide-y divide-slate-100 border-t border-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-16">
+                  <td colSpan={8} className="text-center py-16">
                     <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
                     <span className="text-xs font-bold text-slate-400 block mt-2">원생 명부 불러오는 중...</span>
                   </td>
@@ -628,6 +639,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 filteredStudents.map((student) => {
                   const hasAppLinked = student.parent_user_id !== null;
                   const assignments = student.academy_student_classes || [];
+                  const displayParentName = student.parent_name || student.parent_user?.name || '미기입';
                   
                   return (
                     <tr key={student.id} className="hover:bg-slate-50">
@@ -636,6 +648,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                           <span className="font-extrabold text-slate-900 text-sm">{student.student_name}</span>
                           <span className="text-[11px] text-slate-400 font-mono">코드: {student.attendance_code}</span>
                         </div>
+                      </td>
+                      <td className="px-6 py-4 text-xs font-extrabold text-slate-900">
+                        {displayParentName}
+                        {student.parent_user?.name && <span className="ml-1 text-[10px] font-bold text-blue-500">(App)</span>}
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex max-w-xs flex-wrap gap-1.5">
@@ -700,7 +716,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
+                  <td colSpan={8} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
                     일치하는 학생 정보가 없습니다. 첫 원생을 등록해 보세요!
                   </td>
                 </tr>
@@ -757,6 +773,18 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                   />
                 </div>
                 <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1.5">보호자(학부모) 성함</label>
+                  <input
+                    type="text"
+                    placeholder="예: 홍길동 (수기 입력용)"
+                    value={parentName}
+                    onChange={(e) => setParentName(e.target.value)}
+                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
                   <label className="block text-xs font-bold text-slate-500 mb-1.5">출결 등원 번호 *</label>
                   <input 
                     type="text" 
@@ -766,7 +794,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                     className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
                     required
                   />
-                </div>
               </div>
 
               {/* Multiple class and package assignments */}
