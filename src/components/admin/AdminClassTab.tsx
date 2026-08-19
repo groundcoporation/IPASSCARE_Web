@@ -52,7 +52,7 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
     try {
       // 1. Fetch Teachers
       let teachersQuery = supabase.from('academy_teachers').select('id, name, branch_id');
-      if (activeBranchId) {
+      if (activeBranchId && activeBranchId !== 'all') {
         teachersQuery = teachersQuery.eq('branch_id', activeBranchId);
       }
       const { data: teachersData } = await teachersQuery;
@@ -63,7 +63,7 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
         id, branch_id, target_class, day_of_week, start_time, end_time, max_people, teacher_id,
         academy_teachers(name)
       `);
-      if (activeBranchId) {
+      if (activeBranchId && activeBranchId !== 'all') {
         classesQuery = classesQuery.eq('branch_id', activeBranchId);
       }
       const { data: classesData, error } = await classesQuery;
@@ -94,7 +94,7 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
       setMaxPeople(cls.max_people ? String(cls.max_people) : '');
     } else {
       setEditingId(null);
-      setSelectedBranchId(activeBranchId || (branches.length > 0 ? branches[0].id : ''));
+      setSelectedBranchId(activeBranchId && activeBranchId !== 'all' ? activeBranchId : (branches.length > 0 ? branches[0].id : ''));
       setTargetClass('');
       setTeacherId('');
       setDayOfWeek('월요일');

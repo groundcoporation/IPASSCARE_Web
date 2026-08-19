@@ -6,7 +6,7 @@ interface Bill {
   id: string;
   branch_id: string;
   student_id: string;
-  class_schedule_id: string;
+  class_schedule_id: string | null;
   bill_month: string;
   amount_due: number;
   amount_paid: number;
@@ -21,7 +21,6 @@ interface Bill {
   } | null;
   class_schedules: {
     target_class: string;
-    package_option_id: string | null;
   } | null;
   package_options?: {
     label: string;
@@ -35,7 +34,7 @@ interface Bill {
 interface StudentClassRow {
   id: string;
   student_id: string;
-  class_schedule_id: string;
+  class_schedule_id: string | null;
   package_option_id: string | null;
   billing_cycle: string | null;
   payment_day: string | null;
@@ -212,7 +211,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       );
 
       if (branchMappings.length === 0) {
-        alert('이 지점에 현재 수강중(active) 상태인 학생 배정 내역이 없습니다. 학생 관리 탭에서 학생을 반에 먼저 배정해 주세요.');
+        alert('이 지점에 현재 수강중(active) 상태인 학생 배정 내역이 없습니다. 학생 관리 탭에서 학생을 등록하고 요금제를 먼저 배정해 주세요.');
         setActionLoading(false);
         return;
       }
@@ -228,17 +227,23 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         }
 
         const price = map.package_options.price;
-        const className = map.class_schedules?.target_class || '수강반';
+        const className = map.class_schedules?.target_class || '이용권 회원';
         const packageName = map.package_options.packages?.name || '수강료';
 
         // Check if invoice already exists
-        const { data: existing } = await supabase
+        let query = supabase
           .from('academy_bills')
           .select('id')
           .eq('student_id', map.student_id)
-          .eq('class_schedule_id', map.class_schedule_id)
-          .eq('bill_month', selectedMonth)
-          .limit(1);
+          .eq('bill_month', selectedMonth);
+          
+        if (map.class_schedule_id) {
+          query = query.eq('class_schedule_id', map.class_schedule_id);
+        } else {
+          query = query.is('class_schedule_id', null);
+        }
+
+        const { data: existing } = await query.limit(1);
 
         if (existing && existing.length > 0) {
           skippedCount++;
@@ -251,13 +256,16 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           .insert([{
             branch_id: currentBranch,
             student_id: map.student_id,
-            class_schedule_id: map.class_schedule_id,
+            class_schedule_id: map.class_schedule_id || null,
+            package_option_id: map.package_option_id,
             bill_month: selectedMonth,
             amount_due: price,
             amount_paid: 0,
             billing_date: new Date().toISOString().slice(0, 10),
             status: 'unpaid',
-            memo: `${packageName} (${map.package_options.label}) - ${className}`
+            memo: map.class_schedule_id 
+              ? `${packageName} (${map.package_options.label}) - ${className}`
+              : `${packageName} (${map.package_options.label}) [이용권 단독]`
           }]);
 
         if (!insErr) {
@@ -410,7 +418,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           <div className="flex justify-between items-center bg-blue-50 border border-blue-100/60 p-4 rounded-2xl">
             <div className="text-xs text-blue-800 font-medium">
               💡 <b>청구대상 관리:</b> 학원에 재학 중인 원생들의 수업반 요금 배정 장부입니다. <br />
-              매월 초 우측의 버튼을 통해 청구 대상을 기준으로 이번 달 청구서를 일괄 발행할 수 있습니다.
+              매월 초 우측의 버튼을 통해 청구 대상을 기준으로 이번 달 청구서를 일괄 발행할 수 있습니다. (수업반이 지정되지 않은 회원은 이용권 단독으로 청구됩니다.)
             </div>
             <div className="flex items-center gap-2">
               <input 
@@ -457,7 +465,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     </tr>
                   ) : billingTargets.length > 0 ? (
                     billingTargets.map((row) => {
-                      const className = row.class_schedules?.target_class || '수강반';
+                      const className = row.class_schedules?.target_class || '🎫 이용권 단독 수강';
                       const studentName = row.academy_students?.student_name || '원생';
                       const isSmsEnabled = row.academy_students?.is_sms_enabled !== false;
                       const price = row.package_options ? `${row.package_options.price.toLocaleString()}원` : '단가 미지정';
@@ -467,7 +475,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       
                       return (
                         <tr key={row.id} className="hover:bg-slate-50 text-slate-700 font-bold">
-                          <td className="px-6 py-4 text-xs font-black text-slate-900">{className}</td>
+                          <td className="px-6 py-4 text-xs font-black">
+                            <span className={row.class_schedule_id ? 'text-slate-900' : 'text-amber-600 bg-amber-50 px-2 py-1 rounded'}>
+                              {className}
+                            </span>
+                          </td>
                           <td className="px-6 py-4">{studentName}</td>
                           <td className="px-6 py-4 text-xs text-slate-500">{row.billing_cycle || '월 기간제'}</td>
                           <td className="px-6 py-4 text-xs text-slate-500">{row.payment_day || '매월 1일'}</td>
@@ -592,7 +604,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   ) : filteredBills.length > 0 ? (
                     filteredBills.map((bill) => {
                       const studentName = bill.academy_students?.student_name || '원생';
-                      const className = bill.class_schedules?.target_class || '수강반';
+                      const className = bill.class_schedules?.target_class || '🎫 이용권 단독 수강';
                       const packageLabel = bill.package_options
                         ? `[${bill.package_options.packages?.name || ''}] ${bill.package_options.label}`
                         : bill.memo || '수강 정보 연동 안 됨';

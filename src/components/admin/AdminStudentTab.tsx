@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download } from 'lucide-react';
 import ExcelJS from 'exceljs';
 
 interface Student {
@@ -28,7 +28,7 @@ interface Student {
   } | null;
   // Joined classes
   academy_student_classes?: Array<{
-    class_schedule_id: string;
+    class_schedule_id: string | null;
     package_option_id: string | null;
     billing_cycle: string | null;
     payment_day: string | null;
@@ -83,8 +83,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [admissionDate, setAdmissionDate] = useState('');
   const [memo, setMemo] = useState('');
   const [isSmsEnabled, setIsSmsEnabled] = useState(true);
-  const [selectedClassId, setSelectedClassId] = useState(''); // Target Class selection
-  const [packageOptionId, setPackageOptionId] = useState(''); // Target Package Option selection
+  const [selectedClassId, setSelectedClassId] = useState(''); // Target Class selection (optional)
+  const [packageOptionId, setPackageOptionId] = useState(''); // Target Package Option selection (required)
   const [billingCycle, setBillingCycle] = useState('월 기간제');
   const [paymentDay, setPaymentDay] = useState('매월 1일');
   const [saveLoading, setSaveLoading] = useState(false);
@@ -95,7 +95,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     try {
       // 1. Load class schedules for assigning
       let classesQuery = supabase.from('class_schedules').select('id, target_class, branch_id');
-      if (activeBranchId) {
+      if (activeBranchId && activeBranchId !== 'all') {
         classesQuery = classesQuery.eq('branch_id', activeBranchId);
       }
       const { data: classesData } = await classesQuery;
@@ -103,7 +103,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
       // 2. Load package options for pricing
       let packagesQuery = supabase.from('package_options').select('id, label, price, branch_id, packages(name)');
-      if (activeBranchId) {
+      if (activeBranchId && activeBranchId !== 'all') {
         packagesQuery = packagesQuery.eq('branch_id', activeBranchId);
       }
       const { data: packageData } = await packagesQuery;
@@ -121,7 +121,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           class_schedules(target_class)
         )
       `);
-      if (activeBranchId) {
+      if (activeBranchId && activeBranchId !== 'all') {
         studentsQuery = studentsQuery.eq('branch_id', activeBranchId);
       }
       const { data: studentsData, error } = await studentsQuery;
@@ -165,7 +165,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setPaymentDay(firstClass?.payment_day || '매월 1일');
     } else {
       setEditingId(null);
-      setSelectedBranchId(activeBranchId || (branches.length > 0 ? branches[0].id : ''));
+      setSelectedBranchId(activeBranchId && activeBranchId !== 'all' ? activeBranchId : (branches.length > 0 ? branches[0].id : ''));
       setStudentName('');
       setAttendanceCode('');
       setMotherPhone('');
@@ -193,7 +193,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
     if (!cleanMother && !cleanFather) return null;
 
-    // Search users table for a matching phone number
     const phones = [cleanMother, cleanFather].filter(Boolean);
     const { data } = await supabase
       .from('users')
@@ -210,11 +209,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     if (!studentName.trim()) return alert('학생 이름을 입력해주세요.');
     if (!attendanceCode.trim()) return alert('출결번호를 입력해주세요.');
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
-    if (selectedClassId && !packageOptionId) return alert('수업반을 배정할 때는 수강료 요금제(패키지)도 반드시 지정해 주셔야 합니다.');
+    if (!packageOptionId) return alert('수강료 교습비(이용권 요금제)를 지정해 주세요.');
 
     setSaveLoading(true);
     try {
-      // Auto-check and link parent account
       const parentId = await linkParentAccount(motherPhone, fatherPhone);
 
       const studentPayload = {
@@ -236,14 +234,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
       let studentId = editingId;
       if (editingId) {
-        // Update Student
         const { error } = await supabase
           .from('academy_students')
           .update(studentPayload)
           .eq('id', editingId);
         if (error) throw error;
       } else {
-        // Insert Student
         const { data, error } = await supabase
           .from('academy_students')
           .insert([studentPayload])
@@ -253,9 +249,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         studentId = data.id;
       }
 
-      // Manage Class Assignment Mapping with specific pricing option!
+      // Manage Class Assignment Mapping
       if (studentId) {
-        // Delete existing mapping if editing
         if (editingId) {
           await supabase
             .from('academy_student_classes')
@@ -263,19 +258,16 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             .eq('student_id', studentId);
         }
 
-        // Insert new class mapping if a class is selected
-        if (selectedClassId) {
-          await supabase
-            .from('academy_student_classes')
-            .insert([{
-              student_id: studentId,
-              class_schedule_id: selectedClassId,
-              package_option_id: packageOptionId || null,
-              billing_cycle: billingCycle,
-              payment_day: paymentDay,
-              status: 'active'
-            }]);
-        }
+        await supabase
+          .from('academy_student_classes')
+          .insert([{
+            student_id: studentId,
+            class_schedule_id: selectedClassId || null,
+            package_option_id: packageOptionId,
+            billing_cycle: billingCycle,
+            payment_day: paymentDay,
+            status: 'active'
+          }]);
       }
 
       setIsModalOpen(false);
@@ -304,14 +296,52 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
   };
 
+  // Download Excel Registration template
+  const downloadTemplate = async () => {
+    try {
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('원생 등록 양식');
+
+      worksheet.getRow(1).values = [
+        '클래스명 (선택 - 예: 초등축구반)',
+        '이름 (필수)',
+        '출결번호 (필수)',
+        '어머니 연락처',
+        '아버지 연락처',
+        '학생 연락처',
+        '생년월일 (예: 2016-05-12)',
+        '학교명',
+        '학년',
+        '입회일 (예: 2026-08-01)',
+        '수강 요금제명 (필수 - 예: 주 2회 패키지)',
+        '납부 주기 (선택 - 월 기간제/분기제 등)',
+        '매월 수납일 (선택 - 매월 1일/매월 5일 등)',
+        '비공개 메모'
+      ];
+
+      worksheet.columns.forEach(column => {
+        column.width = 25;
+      });
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = '아이패스케어_원생일괄등록_양식.xlsx';
+      link.click();
+    } catch (err) {
+      alert('템플릿 생성 중 에러가 발생했습니다.');
+    }
+  };
+
   // Excel File Batch Import Handler
   const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     const file = files[0];
 
-    const currentBranch = activeBranchId || (branches.length > 0 ? branches[0].id : '');
-    if (!currentBranch || currentBranch === 'all') {
+    const currentBranch = activeBranchId && activeBranchId !== 'all' ? activeBranchId : (branches.length > 0 ? branches[0].id : '');
+    if (!currentBranch) {
       alert('지점을 먼저 특정해주세요. (상단 지점 필터에서 특정 지점을 선택해야 엑셀 일괄 등록이 가능합니다.)');
       e.target.value = '';
       return;
@@ -333,39 +363,53 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           const worksheet = workbook.worksheets[0];
 
           const importedStudents: any[] = [];
-          const classMappingRequests: Array<{ studentIndex: number; className: string; amountText: string }> = [];
+          const mappingRequests: Array<{
+            studentIndex: number;
+            className: string;
+            packageName: string;
+            cycle: string;
+            day: string;
+          }> = [];
 
-          // Read row by row starting from index 2 (skip header)
           worksheet.eachRow((row, rowNumber) => {
-            if (rowNumber === 1) return; // Header row
+            if (rowNumber === 1) return;
 
-            const className = row.getCell(1).text?.trim(); // 클래스
-            const name = row.getCell(2).text?.trim();      // 이름
-            const code = row.getCell(3).text?.trim();      // 출결번호
-            
-            // Collect SMS check values to parse amount fallback if needed
-            const motherPhoneVal = row.getCell(7).text?.trim().replace(/[^0-9]/g, '');
-            const fatherPhoneVal = row.getCell(8).text?.trim().replace(/[^0-9]/g, '');
-            const studentPhoneVal = row.getCell(9).text?.trim().replace(/[^0-9]/g, '');
-            
-            const rawBirth = row.getCell(10).text?.trim(); // 생년월일 YYYYMMDD
+            const className = row.getCell(1).text?.trim();
+            const name = row.getCell(2).text?.trim();
+            const code = row.getCell(3).text?.trim();
+            const motherPhoneVal = row.getCell(4).text?.trim().replace(/[^0-9]/g, '');
+            const fatherPhoneVal = row.getCell(5).text?.trim().replace(/[^0-9]/g, '');
+            const studentPhoneVal = row.getCell(6).text?.trim().replace(/[^0-9]/g, '');
+            const rawBirth = row.getCell(7).text?.trim();
+            const school = row.getCell(8).text?.trim();
+            const grade = row.getCell(9).text?.trim();
+            const rawAdmission = row.getCell(10).text?.trim();
+            const packageNameText = row.getCell(11).text?.trim(); // 요금제명
+            const cycleText = row.getCell(12).text?.trim();       // 납부 주기
+            const dayText = row.getCell(13).text?.trim();         // 수납일
+            const memoText = row.getCell(14).text?.trim();
+
+            if (!name || !code) return;
+
             let birthStr = null;
-            if (rawBirth && rawBirth.length === 8) {
-              birthStr = `${rawBirth.slice(0, 4)}-${rawBirth.slice(4, 6)}-${rawBirth.slice(6, 8)}`;
+            if (rawBirth) {
+              const cleanBirth = rawBirth.replace(/[^0-9]/g, '');
+              if (cleanBirth.length === 8) {
+                birthStr = `${cleanBirth.slice(0, 4)}-${cleanBirth.slice(4, 6)}-${cleanBirth.slice(6, 8)}`;
+              } else if (rawBirth.includes('-')) {
+                birthStr = rawBirth;
+              }
             }
 
-            const school = row.getCell(11).text?.trim(); // 학교
-            const grade = row.getCell(12).text?.trim();  // 학년
-            const addr = row.getCell(13).text?.trim();   // 주소
-            const memoText = row.getCell(14).text?.trim(); // 메모
-            
-            const rawAdmission = row.getCell(15).text?.trim(); // 입회일 YYYYMMDD
             let admissionStr = new Date().toISOString().slice(0, 10);
-            if (rawAdmission && rawAdmission.length === 8) {
-              admissionStr = `${rawAdmission.slice(0, 4)}-${rawAdmission.slice(4, 6)}-${rawAdmission.slice(6, 8)}`;
+            if (rawAdmission) {
+              const cleanAdm = rawAdmission.replace(/[^0-9]/g, '');
+              if (cleanAdm.length === 8) {
+                admissionStr = `${cleanAdm.slice(0, 4)}-${cleanAdm.slice(4, 6)}-${cleanAdm.slice(6, 8)}`;
+              } else if (rawAdmission.includes('-')) {
+                admissionStr = rawAdmission;
+              }
             }
-
-            if (!name || !code) return; // 필수값 유무 체크
 
             importedStudents.push({
               branch_id: currentBranch,
@@ -377,21 +421,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               birth_date: birthStr,
               school_name: school || null,
               grade_level: grade || null,
-              address: addr || null,
+              address: null,
               admission_date: admissionStr,
               memo: memoText || null,
               is_sms_enabled: true
             });
 
-            // Read the class name cell.
-            if (className) {
-              classMappingRequests.push({
-                studentIndex: importedStudents.length - 1,
-                className,
-                // We fallback mapping based on weekly limits or default pricing options in package options.
-                amountText: ''
-              });
-            }
+            mappingRequests.push({
+              studentIndex: importedStudents.length - 1,
+              className: className || '',
+              packageName: packageNameText || '',
+              cycle: cycleText || '월 기간제',
+              day: dayText || '매월 1일'
+            });
           });
 
           if (importedStudents.length === 0) {
@@ -400,16 +442,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             return;
           }
 
-          // Fetch matching app accounts and insert
           let insertedCount = 0;
           for (let i = 0; i < importedStudents.length; i++) {
             const student = importedStudents[i];
-            
-            // Real-time link parent
             const parentId = await linkParentAccount(student.mother_phone || '', student.father_phone || '');
             student.parent_user_id = parentId;
 
-            // Insert Student record
             const { data: sData, error: sErr } = await supabase
               .from('academy_students')
               .insert([student])
@@ -419,26 +457,30 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             if (!sErr && sData) {
               insertedCount++;
 
-              // Assign to Class & Map default pricing option!
-              const mappingReq = classMappingRequests.find(r => r.studentIndex === i);
-              if (mappingReq) {
-                // Find class by name in this branch
-                const matchedClass = classes.find(c => c.target_class.trim() === mappingReq.className);
-                if (matchedClass) {
-                  // Find a default/first package option for this branch as fallback
-                  const defaultOpt = packageOptions.find(p => p.branch_id === currentBranch) || null;
-                  
-                  await supabase
-                    .from('academy_student_classes')
-                    .insert([{
-                      student_id: sData.id,
-                      class_schedule_id: matchedClass.id,
-                      package_option_id: defaultOpt?.id || null,
-                      billing_cycle: '월 기간제',
-                      payment_day: '매월 1일',
-                      status: 'active'
-                    }]);
-                }
+              const req = mappingRequests[i];
+              const matchedClass = req.className 
+                ? classes.find(c => c.target_class.trim() === req.className) 
+                : null;
+              
+              let matchedOpt = req.packageName 
+                ? packageOptions.find(p => p.label.trim() === req.packageName) 
+                : null;
+              
+              if (!matchedOpt) {
+                matchedOpt = packageOptions.find(p => p.branch_id === currentBranch) || null;
+              }
+
+              if (matchedOpt) {
+                await supabase
+                  .from('academy_student_classes')
+                  .insert([{
+                    student_id: sData.id,
+                    class_schedule_id: matchedClass ? matchedClass.id : null,
+                    package_option_id: matchedOpt.id,
+                    billing_cycle: req.cycle,
+                    payment_day: req.day,
+                    status: 'active'
+                  }]);
               }
             }
           }
@@ -464,7 +506,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     const query = searchQuery.toLowerCase().trim();
     if (!query) return true;
     
-    const assignedClass = student.academy_student_classes?.[0]?.class_schedules?.target_class || '';
+    const assignedClass = student.academy_student_classes?.[0]?.class_schedules?.target_class || '이용권 단독';
     
     return (
       student.student_name.toLowerCase().includes(query) ||
@@ -490,6 +532,15 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </div>
         
         <div className="flex flex-wrap gap-2.5">
+          {/* Template Download Button */}
+          <button 
+            onClick={downloadTemplate}
+            className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs"
+          >
+            <Download size={16} />
+            엑셀 양식 다운로드
+          </button>
+
           {/* Excel Upload Input */}
           <label className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs cursor-pointer">
             <Upload size={16} />
@@ -526,30 +577,35 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       </div>
 
       {/* Student List View */}
-      {loading ? (
-        <div className="py-24 text-center text-sm font-bold text-slate-400 flex flex-col items-center justify-center gap-3">
-          <Loader2 className="animate-spin text-blue-500" size={24} />
-          <span>원생 명부 불러오는 중...</span>
-        </div>
-      ) : filteredStudents.length > 0 ? (
-        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm text-slate-500">
-              <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
+      <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-sm text-slate-500">
+            <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
+              <tr>
+                <th scope="col" className="px-6 py-4">이름 (출결번호)</th>
+                <th scope="col" className="px-6 py-4">수강 수업반</th>
+                <th scope="col" className="px-6 py-4">부모 연락망</th>
+                <th scope="col" className="px-6 py-4">학교 / 학년</th>
+                <th scope="col" className="px-6 py-4">입회일</th>
+                <th scope="col" className="px-6 py-4">어플 연동 여부</th>
+                <th scope="col" className="px-6 py-4 text-right">관리</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 border-t border-slate-100">
+              {loading ? (
                 <tr>
-                  <th scope="col" className="px-6 py-4">이름 (출결번호)</th>
-                  <th scope="col" className="px-6 py-4">수강 수업반</th>
-                  <th scope="col" className="px-6 py-4">부모 연락망</th>
-                  <th scope="col" className="px-6 py-4">학교 / 학년</th>
-                  <th scope="col" className="px-6 py-4">입회일</th>
-                  <th scope="col" className="px-6 py-4">어플 연동 여부</th>
-                  <th scope="col" className="px-6 py-4 text-right">관리</th>
+                  <td colSpan={7} className="text-center py-16">
+                    <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
+                    <span className="text-xs font-bold text-slate-400 block mt-2">원생 명부 불러오는 중...</span>
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 border-t border-slate-100">
-                {filteredStudents.map((student) => {
+              ) : filteredStudents.length > 0 ? (
+                filteredStudents.map((student) => {
                   const hasAppLinked = student.parent_user_id !== null;
-                  const assignedClassName = student.academy_student_classes?.[0]?.class_schedules?.target_class || '배정 안 됨';
+                  const firstClass = student.academy_student_classes?.[0];
+                  const assignedClassName = firstClass 
+                    ? (firstClass.class_schedules?.target_class || '🎫 이용권 단독 수강') 
+                    : '미배정';
                   
                   return (
                     <tr key={student.id} className="hover:bg-slate-50">
@@ -561,7 +617,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       </td>
                       <td className="px-6 py-4">
                         <span className={`inline-flex items-center text-xs px-2.5 py-1 rounded-full font-bold ${
-                          student.academy_student_classes?.length ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-400'
+                          firstClass 
+                            ? (firstClass.class_schedule_id ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700') 
+                            : 'bg-slate-100 text-slate-400'
                         }`}>
                           {assignedClassName}
                         </span>
@@ -613,16 +671,18 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       </td>
                     </tr>
                   );
-                })}
-              </tbody>
-            </table>
-          </div>
+                })
+              ) : (
+                <tr>
+                  <td colSpan={7} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
+                    일치하는 학생 정보가 없습니다. 첫 원생을 등록해 보세요!
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-      ) : (
-        <div className="text-center py-20 text-slate-400 font-bold text-sm bg-white rounded-2xl border border-dashed border-slate-200">
-          일치하는 학생 정보가 없습니다. 첫 원생을 등록해 보세요!
-        </div>
-      )}
+      </div>
 
       {/* Modal Dialog */}
       {isModalOpen && (
@@ -686,13 +746,13 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               {/* Class & Package Assignment Split */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">수강 반 배정</label>
+                  <label className="block text-xs font-bold text-slate-500 mb-1.5">수강 반 배정 (선택)</label>
                   <select 
                     value={selectedClassId}
                     onChange={(e) => setSelectedClassId(e.target.value)}
                     className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="">수업반 배정 안함 (미지정)</option>
+                    <option value="">수업반 없음 / 이용권 단독 수강</option>
                     {classes.map(c => (
                       <option key={c.id} value={c.id}>{c.target_class}</option>
                     ))}
@@ -700,14 +760,14 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">수강료 요금제(패키지) *</label>
+                  <label className="block text-xs font-bold text-slate-500 mb-1.5">수강료 요금제(패키지) 지정 *</label>
                   <select 
                     value={packageOptionId}
                     onChange={(e) => setPackageOptionId(e.target.value)}
                     className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                    required={!!selectedClassId}
+                    required
                   >
-                    <option value="">수강 요금제 선택</option>
+                    <option value="">수강 요금제(이용권) 선택</option>
                     {packageOptions.map(p => (
                       <option key={p.id} value={p.id}>
                         [{p.packages?.name || '패키지'}] {p.label} ({p.price.toLocaleString()}원)
@@ -718,37 +778,35 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               </div>
 
               {/* Billing Cycle Details */}
-              {selectedClassId && (
-                <div className="grid grid-cols-2 gap-3 bg-blue-50/50 p-3 rounded-2xl border border-blue-100/50">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1.5">납부 주기 방식</label>
-                    <select 
-                      value={billingCycle}
-                      onChange={(e) => setBillingCycle(e.target.value)}
-                      className="w-full rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-700 border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="월 기간제">월 기간제</option>
-                      <option value="분기제">분기제</option>
-                      <option value="횟수 쿠폰제">횟수 쿠폰제</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1.5">매월 수납 기준일</label>
-                    <select 
-                      value={paymentDay}
-                      onChange={(e) => setPaymentDay(e.target.value)}
-                      className="w-full rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-700 border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="매월 1일">매월 1일</option>
-                      <option value="매월 5일">매월 5일</option>
-                      <option value="매월 10일">매월 10일</option>
-                      <option value="매월 15일">매월 15일</option>
-                      <option value="매월 25일">매월 25일</option>
-                      <option value="등록일 기준">등록일 기준</option>
-                    </select>
-                  </div>
+              <div className="grid grid-cols-2 gap-3 bg-blue-50/50 p-3 rounded-2xl border border-blue-100/50">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1.5">납부 주기 방식</label>
+                  <select 
+                    value={billingCycle}
+                    onChange={(e) => setBillingCycle(e.target.value)}
+                    className="w-full rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-700 border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="월 기간제">월 기간제</option>
+                    <option value="분기제">분기제</option>
+                    <option value="횟수 쿠폰제">횟수 쿠폰제</option>
+                  </select>
                 </div>
-              )}
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1.5">매월 수납 기준일</label>
+                  <select 
+                    value={paymentDay}
+                    onChange={(e) => setPaymentDay(e.target.value)}
+                    className="w-full rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-700 border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="매월 1일">매월 1일</option>
+                    <option value="매월 5일">매월 5일</option>
+                    <option value="매월 10일">매월 10일</option>
+                    <option value="매월 15일">매월 15일</option>
+                    <option value="매월 25일">매월 25일</option>
+                    <option value="등록일 기준">등록일 기준</option>
+                  </select>
+                </div>
+              </div>
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
