@@ -2,13 +2,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
-  GitFork
+  GitFork, BookOpen, GraduationCap, Users, DollarSign
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { ReferralTreeTab } from "./ReferralTreeTab";
+import { AdminStudentTab } from "./AdminStudentTab";
+import { AdminTeacherTab } from "./AdminTeacherTab";
+import { AdminClassTab } from "./AdminClassTab";
+import { AdminBillingTab } from "./AdminBillingTab";
 
 const MAX_SLOTS = 20;
-type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "partners" | "referrals" | "settings";
+type Tab = "payments" | "attendance" | "schedule" | "inquiries" | "videos" | "partners" | "referrals" | "students" | "teachers" | "classes" | "billing" | "settings";
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
 type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
@@ -901,22 +905,33 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               <LogOut size={17} /> 로그아웃
             </button>
           </header>
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white p-1.5 shadow-sm ring-1 ring-slate-200">
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => { setTab("payments"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "payments" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><CreditCard size={18} /> 결제 내역</button>
+              <button onClick={() => { setTab("attendance"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "attendance" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><CalendarCheck size={18} /> 출결표</button>
+              <button onClick={() => { setTab("schedule"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "schedule" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Clock3 size={18} /> 시간표</button>
+              
+              <div className="h-6 w-[1px] bg-slate-200 my-auto mx-1" />
 
-          <div className="mb-5 flex flex-wrap gap-2 rounded-2xl bg-white p-1.5 shadow-sm ring-1 ring-slate-200">
-            <button onClick={() => { setTab("payments"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "payments" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><CreditCard size={18} /> 결제 내역</button>
-            <button onClick={() => { setTab("attendance"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "attendance" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><CalendarCheck size={18} /> 출결표</button>
-            <button onClick={() => { setTab("schedule"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "schedule" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Clock3 size={18} /> 시간표</button>
-            
-            <div className="h-6 w-[1px] bg-slate-200 my-auto mx-1" />
+              <button onClick={() => { setTab("students"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "students" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Users size={18} /> 👥 학생 관리</button>
+              <button onClick={() => { setTab("teachers"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "teachers" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><GraduationCap size={18} /> 👩‍🏫 강사 관리</button>
+              <button onClick={() => { setTab("classes"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "classes" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><BookOpen size={18} /> ⏰ 수업반 관리</button>
+              <button onClick={() => { setTab("billing"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "billing" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><DollarSign size={18} /> 💳 수납 관리</button>
 
-            <button onClick={() => { setTab("inquiries"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "inquiries" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><FileText size={18} /> B2B 도입 문의</button>
-            <button onClick={() => { setTab("videos"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "videos" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Video size={18} /> 유튜브 매뉴얼 편집기</button>
-            <button onClick={() => { setTab("partners"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "partners" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><UsersRound size={18} /> 🤝 협력 브랜드 관리</button>
-            <button onClick={() => { setTab("referrals"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "referrals" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><GitFork size={18} /> 🌳 추천인 포인트 트리</button>
-            <button onClick={() => { setTab("settings"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "settings" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Settings size={18} /> ⚙️ 요금제 설정</button>
+              <div className="h-6 w-[1px] bg-slate-200 my-auto mx-1" />
+
+              <button onClick={() => { setTab("inquiries"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "inquiries" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><FileText size={18} /> B2B 도입 문의</button>
+              <button onClick={() => { setTab("videos"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "videos" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Video size={18} /> 유튜브 매뉴얼 편집기</button>
+              <button onClick={() => { setTab("partners"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "partners" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><UsersRound size={18} /> 🤝 협력 브랜드 관리</button>
+              <button onClick={() => { setTab("referrals"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "referrals" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><GitFork size={18} /> 🌳 추천인 포인트 트리</button>
+              <button onClick={() => { setTab("settings"); setSearch(""); }} className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-black ${tab === "settings" ? "bg-slate-800 text-white shadow" : "text-slate-500 hover:bg-slate-100"}`}><Settings size={18} /> ⚙️ 요금제 설정</button>
+            </div>
+            {profile.role === "admin" && (
+              <div className="pr-1.5 py-1">
+                <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={setBranchFilter} />
+              </div>
+            )}
           </div>
-
-          {error && <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-bold text-rose-700">{error}</div>}
 
           {/* TAB 1: PAYMENTS */}
           {tab === "payments" ? (
@@ -1665,6 +1680,12 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
 
           {/* TAB 7: REFERRAL TREE */}
           {tab === "referrals" && <ReferralTreeTab />}
+
+          {/* ERP MANAGEMENT TABS */}
+          {tab === "students" && <AdminStudentTab activeBranchId={activeBranchId} branches={branches} />}
+          {tab === "teachers" && <AdminTeacherTab activeBranchId={activeBranchId} branches={branches} />}
+          {tab === "classes" && <AdminClassTab activeBranchId={activeBranchId} branches={branches} />}
+          {tab === "billing" && <AdminBillingTab activeBranchId={activeBranchId} branches={branches} />}
 
           {/* Manual Attendance Modal */}
           {attendanceModal && (
