@@ -127,7 +127,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         *,
         parent_user:users(name, email),
         academy_student_classes(
-          id,
           class_schedule_id,
           package_option_id,
           billing_cycle,
@@ -172,6 +171,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setMemo(student.memo || '');
       setIsSmsEnabled(student.is_sms_enabled);
 
+      // Get first assigned class details if exists
       const assignments = student.academy_student_classes || [];
       setClassAssignments(assignments.length > 0
         ? assignments.map((assignment) => ({
@@ -226,15 +226,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     if (!attendanceCode.trim()) return alert('출결번호를 입력해주세요.');
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
     if (classAssignments.length === 0) return alert('수업 또는 이용권을 한 개 이상 추가해 주세요.');
-    if (classAssignments.some((assignment) => !assignment.package_option_id)) {
-      return alert('모든 수강 항목에 이용권 요금제를 지정해 주세요.');
-    }
-    const assignmentKeys = classAssignments.map((assignment) =>
-      `${assignment.class_schedule_id || 'package-only'}:${assignment.package_option_id}`
-    );
-    if (new Set(assignmentKeys).size !== assignmentKeys.length) {
-      return alert('동일한 수업반과 이용권 조합이 중복되어 있습니다.');
-    }
+    if (classAssignments.some((assignment) => !assignment.package_option_id)) return alert('모든 수강 항목에 이용권 요금제를 지정해 주세요.');
+    const assignmentKeys = classAssignments.map((assignment) => `${assignment.class_schedule_id || 'package-only'}:${assignment.package_option_id}`);
+    if (new Set(assignmentKeys).size !== assignmentKeys.length) return alert('동일한 수업반과 이용권 조합이 중복되어 있습니다.');
 
     setSaveLoading(true);
     try {
@@ -656,14 +650,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       <td className="px-6 py-4">
                         <div className="flex max-w-xs flex-wrap gap-1.5">
                           {assignments.length > 0 ? assignments.map((assignment, index) => (
-                            <span key={`${assignment.class_schedule_id || 'package'}-${assignment.package_option_id || index}`} className={`inline-flex items-center text-xs px-2.5 py-1 rounded-full font-bold ${
-                              assignment.class_schedule_id ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'
-                            }`}>
+                            <span key={`${assignment.class_schedule_id || 'package'}-${assignment.package_option_id || index}`} className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${assignment.class_schedule_id ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
                               {assignment.class_schedules?.target_class || '🎫 이용권 단독 수강'}
                             </span>
-                          )) : (
-                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">미배정</span>
-                          )}
+                          )) : <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">미배정</span>}
                         </div>
                       </td>
                       <td className="px-6 py-4 text-xs text-slate-700">
@@ -796,67 +786,21 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                   />
               </div>
 
-              {/* Multiple class and package assignments */}
               <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/40 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-xs font-black text-slate-800">수강 수업반 및 요금제</div>
-                    <div className="mt-0.5 text-[10px] font-medium text-slate-500">학생이 수강하는 수업을 여러 개 등록할 수 있습니다.</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setClassAssignments((current) => [...current, emptyAssignment()])}
-                    className="flex shrink-0 items-center gap-1 rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white hover:bg-blue-700"
-                  >
-                    <Plus size={14} /> 수업 추가
-                  </button>
+                  <div><div className="text-xs font-black text-slate-800">수강 수업반 및 요금제</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">학생이 수강하는 수업을 여러 개 등록할 수 있습니다.</div></div>
+                  <button type="button" onClick={() => setClassAssignments((current) => [...current, emptyAssignment()])} className="flex shrink-0 items-center gap-1 rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white hover:bg-blue-700"><Plus size={14} /> 수업 추가</button>
                 </div>
-
                 {classAssignments.map((assignment, index) => {
-                  const updateAssignment = (values: Partial<ClassAssignment>) => {
-                    setClassAssignments((current) => current.map((item, itemIndex) =>
-                      itemIndex === index ? { ...item, ...values } : item
-                    ));
-                  };
-
+                  const updateAssignment = (values: Partial<ClassAssignment>) => setClassAssignments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item));
                   return (
                     <div key={index} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-black text-blue-700">수강 항목 {index + 1}</span>
-                        {classAssignments.length > 1 && (
-                          <button type="button" onClick={() => setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex items-center gap-1 text-[10px] font-bold text-rose-500 hover:text-rose-700">
-                            <Trash2 size={13} /> 삭제
-                          </button>
-                        )}
-                      </div>
-
+                      <div className="flex items-center justify-between"><span className="text-[11px] font-black text-blue-700">수강 항목 {index + 1}</span>{classAssignments.length > 1 && <button type="button" onClick={() => setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex items-center gap-1 text-[10px] font-bold text-rose-500"><Trash2 size={13} /> 삭제</button>}</div>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div>
-                          <label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label>
-                          <select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="">수업반 없음 / 이용권 단독 수강</option>
-                            {classes.map((classItem) => <option key={classItem.id} value={classItem.id}>{classItem.target_class}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="mb-1.5 block text-xs font-bold text-slate-500">수강료 요금제 지정 *</label>
-                          <select value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" required>
-                            <option value="">수강 요금제 선택</option>
-                            {packageOptions.map((option) => <option key={option.id} value={option.id}>[{option.packages?.name || '패키지'}] {option.label} ({option.price.toLocaleString()}원)</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="mb-1.5 block text-xs font-bold text-slate-500">납부 주기 방식</label>
-                          <select value={assignment.billing_cycle} onChange={(e) => updateAssignment({ billing_cycle: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="월 기간제">월 기간제</option><option value="분기제">분기제</option><option value="횟수 쿠폰제">횟수 쿠폰제</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="mb-1.5 block text-xs font-bold text-slate-500">매월 수납 기준일</label>
-                          <select value={assignment.payment_day} onChange={(e) => updateAssignment({ payment_day: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500">
-                            {['매월 1일', '매월 5일', '매월 10일', '매월 15일', '매월 25일', '등록일 기준'].map((day) => <option key={day} value={day}>{day}</option>)}
-                          </select>
-                        </div>
+                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.target_class}</option>)}</select></div>
+                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강료 요금제 지정 *</label><select value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" required><option value="">수강 요금제 선택</option>{packageOptions.map((option) => <option key={option.id} value={option.id}>[{option.packages?.name || '패키지'}] {option.label} ({option.price.toLocaleString()}원)</option>)}</select></div>
+                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">납부 주기 방식</label><select value={assignment.billing_cycle} onChange={(e) => updateAssignment({ billing_cycle: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold"><option value="월 기간제">월 기간제</option><option value="분기제">분기제</option><option value="횟수 쿠폰제">횟수 쿠폰제</option></select></div>
+                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">매월 수납 기준일</label><select value={assignment.payment_day} onChange={(e) => updateAssignment({ payment_day: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold">{['매월 1일', '매월 5일', '매월 10일', '매월 15일', '매월 25일', '등록일 기준'].map((day) => <option key={day} value={day}>{day}</option>)}</select></div>
                       </div>
                     </div>
                   );
