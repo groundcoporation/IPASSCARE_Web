@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Bus, Bell, CreditCard, Play, ArrowRight, MapPin, Sparkles, ChevronDown, CheckCircle, Navigation } from 'lucide-react';
 import { PartnerMarquee } from './PartnerMarquee';
+import { AppHomeMockup } from './AppHomeMockup';
 
 interface HeroSectionProps {
   onOpenInquiry: () => void;
@@ -106,7 +107,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
           <div className="lg:col-span-5 flex justify-center relative">
             <div className="absolute w-72 h-72 bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full blur-2xl opacity-20 animate-pulse pointer-events-none" />
 
-            <div className="phone-mockup-container">
+            <AppHomeMockup />
+
+            <div className="hidden">
               <div className="phone-mockup">
                 <div className="phone-notch"></div>
                 
