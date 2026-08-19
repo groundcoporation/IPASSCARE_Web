@@ -27,6 +27,9 @@ interface Student {
     name: string;
     email: string;
   } | null;
+  child?: {
+    deleted_at: string | null;
+  } | null;
   // Joined classes
   academy_student_classes?: Array<{
     class_schedule_id: string | null;
@@ -126,6 +129,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       let studentsQuery = supabase.from('academy_students').select(`
         *,
         parent_user:users(name, email),
+        child:children(deleted_at),
         academy_student_classes(
           class_schedule_id,
           package_option_id,
@@ -138,9 +142,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         studentsQuery = studentsQuery.eq('branch_id', activeBranchId);
       }
       const { data: studentsData, error } = await studentsQuery;
-      if (!error && studentsData) {
-        setStudents(studentsData as any[]);
-      }
+      if (error) throw error;
+
+      const activeStudents = (studentsData || []).filter((student: any) => (
+        !student.child_id || student.child?.deleted_at == null
+      ));
+      setStudents(activeStudents as Student[]);
     } catch (err) {
       console.error('Error loading students page data:', err);
     } finally {
