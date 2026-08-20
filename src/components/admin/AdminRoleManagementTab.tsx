@@ -81,6 +81,44 @@ export function AdminRoleManagementTab({ profile, activeBranchId, branches }: { 
         p_role: nextRole,
       });
       if (rpcError) throw rpcError;
+
+      // Automatically sync with academy_teachers
+      try {
+        if (['teacher', 'coach', 'director'].includes(nextRole)) {
+          if (member.branch_id) {
+            let chk = supabase.from('academy_teachers').select('id').eq('branch_id', member.branch_id);
+            if (member.phone) {
+              chk = chk.eq('phone', member.phone);
+            } else if (member.name) {
+              chk = chk.eq('name', member.name);
+            }
+            const { data: exists } = await chk.maybeSingle();
+
+            if (!exists) {
+              await supabase.from('academy_teachers').insert([{
+                branch_id: member.branch_id,
+                name: member.name || '선생님',
+                phone: member.phone || null,
+                email: member.email || null
+              }]);
+            }
+          }
+        } else {
+          // If revoked to user or driver, remove from academy_teachers
+          if (member.branch_id) {
+            let del = supabase.from('academy_teachers').delete().eq('branch_id', member.branch_id);
+            if (member.phone) {
+              del = del.eq('phone', member.phone);
+            } else if (member.name) {
+              del = del.eq('name', member.name);
+            }
+            await del;
+          }
+        }
+      } catch (syncErr) {
+        console.warn('academy_teachers sync warning:', syncErr);
+      }
+
       setMembers((current) => current.map((item) => item.id === member.id ? { ...item, role: nextRole } : item));
     } catch (reason: any) {
       setError(reason?.message ?? '권한을 변경하지 못했습니다.');
