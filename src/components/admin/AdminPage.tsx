@@ -480,7 +480,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   };
 
   const logout = async () => {
-    await supabase.auth.signOut();
+    // 웹에서 로그아웃해도 앱과 다른 기기의 세션은 유지합니다.
+    await supabase.auth.signOut({ scope: "local" });
     localStorage.removeItem("auto_login_check");
     setProfile(null);
   };
