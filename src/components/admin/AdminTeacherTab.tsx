@@ -1,14 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Plus, Pencil, Trash2, UserPlus, Phone, Mail, FileText, Loader2 } from 'lucide-react';
+import { 
+  Plus, Pencil, Trash2, Phone, Mail, FileText, Loader2, 
+  ShieldCheck, GraduationCap, Bus, Crown, RefreshCw, Search, CheckCircle2, UserCheck
+} from 'lucide-react';
 
-interface Teacher {
+interface StaffMember {
   id: string;
-  branch_id: string;
+  branch_id: string | null;
   name: string;
   phone: string | null;
   email: string | null;
+  role: 'director' | 'teacher' | 'coach' | 'driver' | 'admin' | string;
   memo: string | null;
+  source: 'user' | 'custom';
   created_at: string;
 }
 
@@ -19,100 +24,186 @@ interface AdminTeacherTabProps {
 }
 
 export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId, branches, profile }) => {
-  const [teachers, setTeachers] = useState<Teacher[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [search, setSearch] = useState<string>('');
 
   const canManageStaff = profile?.role === 'admin' || profile?.role === 'director';
-  
-  // Form State
+
+  // Form State for direct registration
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
+  const [role, setRole] = useState<'teacher' | 'driver' | 'director'>('teacher');
   const [memo, setMemo] = useState('');
   const [selectedBranchId, setSelectedBranchId] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
 
-  // Load teachers for current branch
-  const loadTeachers = async () => {
+  // Load all staff from users table (with roles) + academy_teachers
+  const loadStaff = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase.from('academy_teachers').select('*');
-      
+      const mergedList: StaffMember[] = [];
+      const seenIds = new Set<string>();
+
+      // 1. Fetch staff members with role in ('director', 'teacher', 'coach', 'driver') from users
+      let usersQuery = supabase
+        .from('users')
+        .select('id, name, phone, email, role, branch_id, created_at')
+        .in('role', ['director', 'teacher', 'coach', 'driver']);
+
       if (activeBranchId) {
-        query = query.eq('branch_id', activeBranchId);
+        usersQuery = usersQuery.eq('branch_id', activeBranchId);
       }
-      
-      const { data, error } = await query.order('name', { ascending: true });
-      if (!error && data) {
-        setTeachers(data as Teacher[]);
+
+      const { data: userData, error: userError } = await usersQuery;
+      if (!userError && userData) {
+        userData.forEach((u: any) => {
+          seenIds.add(u.id);
+          mergedList.push({
+            id: u.id,
+            branch_id: u.branch_id,
+            name: u.name || '이름 없음',
+            phone: u.phone || null,
+            email: u.email || null,
+            role: u.role,
+            memo: null,
+            source: 'user',
+            created_at: u.created_at || new Date().toISOString()
+          });
+        });
       }
+
+      // 2. Fetch from academy_teachers (manual roster)
+      let teachersQuery = supabase.from('academy_teachers').select('*');
+      if (activeBranchId) {
+        teachersQuery = teachersQuery.eq('branch_id', activeBranchId);
+      }
+      const { data: teacherData } = await teachersQuery;
+      if (teacherData) {
+        teacherData.forEach((t: any) => {
+          // Avoid duplicate if matching by phone or name
+          const exists = mergedList.some(m => (t.phone && m.phone === t.phone) || (m.name === t.name && m.branch_id === t.branch_id));
+          if (!exists) {
+            mergedList.push({
+              id: t.id,
+              branch_id: t.branch_id,
+              name: t.name,
+              phone: t.phone,
+              email: t.email,
+              role: 'teacher',
+              memo: t.memo,
+              source: 'custom',
+              created_at: t.created_at || new Date().toISOString()
+            });
+          }
+        });
+      }
+
+      setStaffList(mergedList);
     } catch (err) {
-      console.error('Error loading teachers:', err);
+      console.error('Error loading staff list:', err);
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadTeachers();
   }, [activeBranchId]);
 
-  // Open modal for registration/edit
-  const openModal = (teacher?: Teacher) => {
-    if (teacher) {
-      setEditingId(teacher.id);
-      setName(teacher.name);
-      setPhone(teacher.phone || '');
-      setEmail(teacher.email || '');
-      setMemo(teacher.memo || '');
-      setSelectedBranchId(teacher.branch_id);
+  useEffect(() => {
+    loadStaff();
+  }, [loadStaff]);
+
+  // Filtered List
+  const filteredStaff = useMemo(() => {
+    return staffList.filter(staff => {
+      const q = search.trim().toLowerCase();
+      const matchesSearch = !q ||
+        staff.name.toLowerCase().includes(q) ||
+        (staff.phone && staff.phone.includes(q)) ||
+        (staff.email && staff.email.toLowerCase().includes(q));
+
+      if (!matchesSearch) return false;
+
+      if (roleFilter !== 'all') {
+        if (roleFilter === 'teacher') {
+          return staff.role === 'teacher' || staff.role === 'coach';
+        }
+        return staff.role === roleFilter;
+      }
+
+      return true;
+    });
+  }, [staffList, search, roleFilter]);
+
+  // Role Counts
+  const directorCount = staffList.filter(s => s.role === 'director').length;
+  const teacherCount = staffList.filter(s => s.role === 'teacher' || s.role === 'coach').length;
+  const driverCount = staffList.filter(s => s.role === 'driver').length;
+
+  // Open modal
+  const openModal = (staff?: StaffMember) => {
+    if (staff) {
+      setEditingId(staff.id);
+      setName(staff.name);
+      setPhone(staff.phone || '');
+      setEmail(staff.email || '');
+      setRole((['director', 'teacher', 'driver'].includes(staff.role) ? staff.role : 'teacher') as any);
+      setMemo(staff.memo || '');
+      setSelectedBranchId(staff.branch_id || activeBranchId || (branches[0]?.id || ''));
     } else {
       setEditingId(null);
       setName('');
       setPhone('');
       setEmail('');
+      setRole('teacher');
       setMemo('');
       setSelectedBranchId(activeBranchId || (branches.length > 0 ? branches[0].id : ''));
     }
     setIsModalOpen(true);
   };
 
-  // Save or Update Teacher
+  // Save Staff
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return alert('선생님 이름을 입력해주세요.');
+    if (!name.trim()) return alert('임직원 성함을 입력해주세요.');
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
 
     setSaveLoading(true);
     try {
-      const payload = {
-        branch_id: selectedBranchId,
-        name: name.trim(),
-        phone: phone.trim() || null,
-        email: email.trim() || null,
-        memo: memo.trim() || null,
-      };
-
-      let error;
+      // If editing existing user role
       if (editingId) {
-        const { error: err } = await supabase
-          .from('academy_teachers')
-          .update(payload)
-          .eq('id', editingId);
-        error = err;
+        const staff = staffList.find(s => s.id === editingId);
+        if (staff?.source === 'user') {
+          // Update role via RPC or direct update
+          await supabase.rpc('update_member_role', {
+            p_user_id: editingId,
+            p_role: role
+          });
+        } else {
+          await supabase.from('academy_teachers').update({
+            name: name.trim(),
+            phone: phone.trim() || null,
+            email: email.trim() || null,
+            memo: memo.trim() || null,
+            branch_id: selectedBranchId
+          }).eq('id', editingId);
+        }
       } else {
-        const { error: err } = await supabase
-          .from('academy_teachers')
-          .insert([payload]);
-        error = err;
+        // Insert into academy_teachers
+        await supabase.from('academy_teachers').insert([{
+          name: name.trim(),
+          phone: phone.trim() || null,
+          email: email.trim() || null,
+          memo: memo.trim() || null,
+          branch_id: selectedBranchId
+        }]);
       }
 
-      if (error) throw error;
-
       setIsModalOpen(false);
-      loadTeachers();
+      loadStaff();
+      alert('임직원 정보가 저장되었습니다.');
     } catch (err: any) {
       alert(`저장에 실패했습니다: ${err.message}`);
     } finally {
@@ -120,90 +211,207 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
     }
   };
 
-  // Delete Teacher
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`정말 ${name} 선생님 정보를 삭제하시겠습니까?\n삭제 시 해당 선생님이 매핑된 시간표 정보도 초기화될 수 있습니다.`)) return;
-    
+  // Revoke / Delete Staff
+  const handleDelete = async (staff: StaffMember) => {
+    const roleLabel = getRoleLabel(staff.role);
+    if (!confirm(`정말 ${staff.name} 님의 '${roleLabel}' 권한을 회수하시겠습니까?\n회수 시 일반 회원으로 안전하게 전환되며 관리자 접근이 차단됩니다.`)) return;
+
     try {
-      const { error } = await supabase
-        .from('academy_teachers')
-        .delete()
-        .eq('id', id);
-      
-      if (error) throw error;
-      loadTeachers();
+      if (staff.source === 'user') {
+        // Demote role to 'user'
+        const { error } = await supabase.rpc('update_member_role', {
+          p_user_id: staff.id,
+          p_role: 'user'
+        });
+        if (error) {
+          // Fallback direct update
+          await supabase.from('users').update({ role: 'user' }).eq('id', staff.id);
+        }
+      } else {
+        await supabase.from('academy_teachers').delete().eq('id', staff.id);
+      }
+
+      loadStaff();
+      alert(`${staff.name} 님의 권한이 안전하게 회수되었습니다.`);
     } catch (err: any) {
-      alert(`삭제에 실패했습니다: ${err.message}`);
+      alert(`권한 회수 실패: ${err.message}`);
+    }
+  };
+
+  const getRoleBadge = (role: string) => {
+    switch (role) {
+      case 'director':
+        return (
+          <span className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 border border-purple-200 px-2.5 py-1 rounded-xl text-xs font-black">
+            <Crown size={12} className="text-purple-600" />
+            원장
+          </span>
+        );
+      case 'teacher':
+      case 'coach':
+        return (
+          <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-xl text-xs font-black">
+            <GraduationCap size={12} className="text-blue-600" />
+            선생님/코치
+          </span>
+        );
+      case 'driver':
+        return (
+          <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-xl text-xs font-black">
+            <Bus size={12} className="text-amber-600" />
+            셔틀 기사님
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 border border-slate-200 px-2.5 py-1 rounded-xl text-xs font-black">
+            임직원
+          </span>
+        );
+    }
+  };
+
+  const getRoleLabel = (role: string) => {
+    switch (role) {
+      case 'director': return '원장';
+      case 'teacher':
+      case 'coach': return '선생님/코치';
+      case 'driver': return '셔틀 기사님';
+      default: return '임직원';
     }
   };
 
   return (
     <div className="space-y-6">
-      {/* Tab Title & Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+      
+      {/* Header Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
           <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-            👩‍🏫 강사 및 임직원 관리
+            <UserCheck className="text-blue-600" size={20} />
+            강사 및 임직원 관리
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            학원 수업 시간표에 매핑할 선생님 및 직원의 연락망 정보를 등록하고 편집합니다.
+            원장님, 선생님(코치), 셔틀 기사님의 계정 권한 및 소속 명부를 실시간으로 통합 관제합니다.
           </p>
         </div>
-        {canManageStaff ? (
-          <button 
-            onClick={() => openModal()}
-            className="flex items-center justify-center gap-1.5 self-start sm:self-center bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm"
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          {canManageStaff ? (
+            <button 
+              onClick={() => openModal()}
+              className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-black shadow-xs transition"
+            >
+              <Plus size={15} />
+              임직원 등록
+            </button>
+          ) : (
+            <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+              👁️ 조회 전용 모드
+            </span>
+          )}
+
+          <button
+            onClick={loadStaff}
+            className="p-2.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold transition shadow-2xs"
+            title="새로고침"
           >
-            <Plus size={16} />
-            임직원 등록
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
-        ) : (
-          <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
-            👁️ 조회 전용 (원장·최고관리자만 편집 가능)
-          </span>
-        )}
+        </div>
       </div>
 
-      {/* Teachers Grid */}
+      {/* Role Filter Tabs & Search Toolbar */}
+      <div className="flex flex-col sm:flex-row gap-3 bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        
+        {/* Quick Role Filters */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {[
+            { id: 'all', label: `전체 (${staffList.length})` },
+            { id: 'director', label: `👑 원장 (${directorCount})` },
+            { id: 'teacher', label: `👨‍🏫 선생님/코치 (${teacherCount})` },
+            { id: 'driver', label: `🚌 기사님 (${driverCount})` },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setRoleFilter(tab.id)}
+              className={`px-3 py-2 rounded-xl text-xs font-extrabold transition ${
+                roleFilter === tab.id
+                  ? 'bg-blue-600 text-white shadow-2xs'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Search */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <input
+            type="text"
+            placeholder="이름, 연락처, 이메일 검색..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-slate-100 rounded-xl py-2 pl-10 pr-4 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+
+      {/* Staff Grid */}
       {loading ? (
         <div className="py-24 text-center text-sm font-bold text-slate-400 flex flex-col items-center justify-center gap-3">
           <Loader2 className="animate-spin text-blue-500" size={24} />
-          <span>임직원 리스트 불러오는 중...</span>
+          <span>임직원 및 강사 명부 불러오는 중...</span>
         </div>
-      ) : teachers.length > 0 ? (
+      ) : filteredStaff.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {teachers.map((teacher) => (
-            <div key={teacher.id} className="bg-white p-5 rounded-2xl border border-slate-100 hover:border-slate-200 shadow-xs flex flex-col justify-between gap-4">
+          {filteredStaff.map((staff) => (
+            <div key={staff.id} className="bg-white p-5 rounded-3xl border border-slate-200 hover:border-blue-300 shadow-xs flex flex-col justify-between gap-4 transition">
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-600 font-extrabold flex items-center justify-center text-sm">
-                      {teacher.name[0]}
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-black text-sm ${
+                      staff.role === 'director' ? 'bg-purple-100 text-purple-700' :
+                      staff.role === 'driver' ? 'bg-amber-100 text-amber-700' :
+                      'bg-blue-100 text-blue-700'
+                    }`}>
+                      {staff.name[0]}
                     </div>
                     <div>
-                      <b className="text-slate-900 text-base font-black">{teacher.name}</b>
+                      <div className="flex items-center gap-1.5">
+                        <b className="text-slate-900 text-base font-black">{staff.name}</b>
+                        {staff.source === 'user' && (
+                          <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.2 rounded font-black">
+                            계정연동됨
+                          </span>
+                        )}
+                      </div>
                       {activeBranchId === null && (
-                        <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded ml-2 font-bold">
-                          {branches.find(b => b.id === teacher.branch_id)?.name || '알수없음'}
+                        <span className="text-[10px] text-slate-400 font-bold block mt-0.5">
+                          {branches.find(b => b.id === staff.branch_id)?.name || '본사/전체'}
                         </span>
                       )}
                     </div>
                   </div>
+
+                  {getRoleBadge(staff.role)}
                 </div>
 
-                <div className="space-y-1.5 text-xs text-slate-600">
+                <div className="space-y-2 text-xs text-slate-600 pt-1 border-t border-slate-100">
                   <div className="flex items-center gap-2">
                     <Phone size={13} className="text-slate-400 shrink-0" />
-                    <span>{teacher.phone || '-'}</span>
+                    <span className="font-mono font-bold text-slate-800">{staff.phone || '연락처 없음'}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <Mail size={13} className="text-slate-400 shrink-0" />
-                    <span className="truncate">{teacher.email || '-'}</span>
+                    <span className="truncate text-slate-500">{staff.email || '이메일 없음'}</span>
                   </div>
-                  {teacher.memo && (
-                    <div className="flex items-start gap-2 bg-slate-50 p-2 rounded-lg mt-1 border border-slate-100">
+                  {staff.memo && (
+                    <div className="flex items-start gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
                       <FileText size={13} className="text-slate-400 shrink-0 mt-0.5" />
-                      <p className="text-[11px] text-slate-500 leading-relaxed font-medium break-all">{teacher.memo}</p>
+                      <p className="text-[11px] text-slate-500 leading-relaxed font-medium">{staff.memo}</p>
                     </div>
                   )}
                 </div>
@@ -211,22 +419,20 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
 
               {/* Action Buttons (Only for Director & Super Admin) */}
               {canManageStaff && (
-                <div className="flex justify-end gap-1.5 border-t border-slate-50 pt-3">
+                <div className="flex justify-end gap-1.5 border-t border-slate-100 pt-3">
                   <button
-                    onClick={() => openModal(teacher)}
-                    className="flex items-center justify-center p-2 text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-bold"
-                    title="임직원 수정"
+                    onClick={() => openModal(staff)}
+                    className="flex items-center justify-center px-3 py-1.5 text-blue-600 hover:bg-blue-50 rounded-xl text-xs font-bold transition"
                   >
-                    <Pencil size={14} className="mr-1" />
+                    <Pencil size={13} className="mr-1" />
                     수정
                   </button>
                   <button
-                    onClick={() => handleDelete(teacher.id, teacher.name)}
-                    className="flex items-center justify-center p-2 text-rose-500 hover:bg-rose-50 rounded-lg text-xs font-bold"
-                    title="임직원 삭제 / 권한 회수"
+                    onClick={() => handleDelete(staff)}
+                    className="flex items-center justify-center px-3 py-1.5 text-rose-500 hover:bg-rose-50 rounded-xl text-xs font-bold transition"
                   >
-                    <Trash2 size={14} className="mr-1" />
-                    삭제
+                    <Trash2 size={13} className="mr-1" />
+                    권한 회수
                   </button>
                 </div>
               )}
@@ -234,102 +440,103 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
           ))}
         </div>
       ) : (
-        <div className="text-center py-20 text-slate-400 font-bold text-sm bg-white rounded-2xl border border-dashed border-slate-200">
-          소속 강사가 없습니다. 첫 선생님을 추가해보세요!
+        <div className="text-center py-20 text-slate-400 font-bold text-xs bg-white rounded-3xl border border-dashed border-slate-200 space-y-1">
+          <UserCheck size={32} className="mx-auto text-slate-300 mb-2" />
+          <p>해당 조건의 강사 및 임직원이 없습니다.</p>
+          <p className="text-[11px] text-slate-400">상단의 [회원 권한 부여] 탭에서 회원에게 권한을 지정하거나 직접 등록해보세요!</p>
         </div>
       )}
 
-      {/* Modal Dialog */}
+      {/* Write/Edit Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-[3000] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-xs sm:items-center sm:p-6" onClick={() => setIsModalOpen(false)}>
-          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full uppercase tracking-wider">
-                  {editingId ? 'TEACHER EDIT' : 'TEACHER REGISTER'}
-                </span>
-                <h3 className="mt-2 text-xl font-black text-slate-900">
-                  {editingId ? `${name} 선생님 정보 수정` : '새 선생님 등록'}
-                </h3>
-              </div>
-              <button onClick={() => setIsModalOpen(false)} className="rounded-full bg-slate-100 hover:bg-slate-200 px-3 py-1.5 text-xs font-black text-slate-600">닫기</button>
-            </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+            <h3 className="text-base font-black text-slate-900">
+              {editingId ? '임직원 정보 수정' : '신규 임직원 등록'}
+            </h3>
 
-            <form onSubmit={handleSave} className="space-y-4">
-              {/* Branch Selection (Only shown when activeBranchId is null / super admin) */}
-              {activeBranchId === null && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">지점 소속 선택 *</label>
-                  <select 
-                    value={selectedBranchId}
-                    onChange={(e) => setSelectedBranchId(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">지점을 선택해주세요</option>
-                    {branches.map(b => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
+            <form onSubmit={handleSave} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">선생님 이름 *</label>
-                <input 
-                  type="text" 
-                  placeholder="예: 김선생"
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">성함</label>
+                <input
+                  type="text"
+                  placeholder="예: 김선생 / 박기사"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-100 rounded-xl px-3.5 py-2.5 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">연락처 (선택)</label>
-                <input 
-                  type="text" 
-                  placeholder="예: 010-1234-5678"
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">직책 (권한)</label>
+                <select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as any)}
+                  className="w-full bg-slate-100 rounded-xl px-3.5 py-2.5 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="teacher">👨‍🏫 선생님 / 코치</option>
+                  <option value="driver">🚌 셔틀 기사님</option>
+                  {profile?.role === 'admin' && (
+                    <option value="director">👑 학원장 (지점 관리자)</option>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">연락처</label>
+                <input
+                  type="tel"
+                  placeholder="010-0000-0000"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-100 rounded-xl px-3.5 py-2.5 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">이메일 (선택)</label>
-                <input 
-                  type="email" 
-                  placeholder="예: teacher@school.com"
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">이메일</label>
+                <input
+                  type="email"
+                  placeholder="example@academy.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-100 rounded-xl px-3.5 py-2.5 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">메모/담당과목 (선택)</label>
-                <textarea 
-                  placeholder="담당 학급 또는 과목 등의 메모"
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">메모 (선택사항)</label>
+                <textarea
+                  rows={2}
+                  placeholder="담당 과목, 셔틀 코스, 특이사항 등..."
                   value={memo}
                   onChange={(e) => setMemo(e.target.value)}
-                  rows={3}
-                  className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  className="w-full bg-slate-100 rounded-xl p-3 text-xs font-medium border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                 />
               </div>
 
-              <button 
-                type="submit" 
-                disabled={saveLoading}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300 shadow-sm mt-6"
-              >
-                {saveLoading ? <Loader2 size={16} className="animate-spin" /> : null}
-                {editingId ? '수정 완료하기' : '선생님 등록하기'}
-              </button>
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  disabled={saveLoading}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl text-xs font-black shadow-sm disabled:opacity-50"
+                >
+                  {saveLoading ? '저장 중...' : '저장 완료'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
+
     </div>
   );
 };

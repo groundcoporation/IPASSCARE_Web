@@ -620,11 +620,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-sm text-slate-500">
             <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
-              <tr>
-                <th scope="col" className="px-6 py-4">이름 (출결번호)</th>
+              <tr className="whitespace-nowrap">
+                <th scope="col" className="px-6 py-4">학생이름</th>
                 <th scope="col" className="px-6 py-4">보호자 성함</th>
                 <th scope="col" className="px-6 py-4">수강 수업반</th>
-                <th scope="col" className="px-6 py-4">부모 연락망</th>
+                <th scope="col" className="px-6 py-4">연락처 (부모/학생)</th>
                 <th scope="col" className="px-6 py-4">학교 / 학년</th>
                 <th scope="col" className="px-6 py-4">입회일</th>
                 <th scope="col" className="px-6 py-4">어플 연동 여부</th>
@@ -650,7 +650,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       <td className="px-6 py-4">
                         <div className="flex flex-col">
                           <span className="font-extrabold text-slate-900 text-sm">{student.student_name}</span>
-                          <span className="text-[11px] text-slate-400 font-mono">코드: {student.attendance_code}</span>
+                          <span className="text-[11px] text-slate-400 font-mono">출결번호: {student.attendance_code}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4 text-xs font-extrabold text-slate-900">
@@ -666,23 +666,41 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                           )) : <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">미배정</span>}
                         </div>
                       </td>
-                      <td className="px-6 py-4 text-xs text-slate-700">
-                        <div className="flex flex-col gap-0.5">
-                          {student.mother_phone && <span>👩 <b>어머니:</b> {student.mother_phone}</span>}
-                          {student.father_phone && <span>👨 <b>아버지:</b> {student.father_phone}</span>}
-                          {student.student_phone && <span>📱 <b>학생:</b> {student.student_phone}</span>}
+                      <td className="px-6 py-4 text-xs text-slate-700 whitespace-nowrap">
+                        <div className="flex flex-col gap-1">
+                          {student.mother_phone && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">어머니</span>
+                              <span className="font-mono text-slate-800 font-bold">{student.mother_phone}</span>
+                            </div>
+                          )}
+                          {student.father_phone && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">아버지</span>
+                              <span className="font-mono text-slate-800 font-bold">{student.father_phone}</span>
+                            </div>
+                          )}
+                          {student.student_phone && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200/60">학생</span>
+                              <span className="font-mono text-slate-800 font-bold">{student.student_phone}</span>
+                            </div>
+                          )}
+                          {!student.mother_phone && !student.father_phone && !student.student_phone && (
+                            <span className="text-slate-400 font-medium text-xs">미등록</span>
+                          )}
                         </div>
                       </td>
-                      <td className="px-6 py-4 text-xs">
+                      <td className="px-6 py-4 text-xs whitespace-nowrap">
                         <div className="flex flex-col font-bold">
                           <span>{student.school_name || '-'}</span>
                           <span className="text-slate-400 mt-0.5">{student.grade_level || '-'}</span>
                         </div>
                       </td>
-                      <td className="px-6 py-4 text-xs">
-                        {student.admission_date ? new Date(student.admission_date).toLocaleDateString('ko-KR') : '-'}
+                      <td className="px-6 py-4 text-xs font-semibold text-slate-700 whitespace-nowrap">
+                        {student.admission_date ? student.admission_date.slice(0, 10).replace(/-/g, '.') : '-'}
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4 whitespace-nowrap">
                         {hasAppLinked ? (
                           <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full border border-emerald-100">
                             <Link2 size={12} />

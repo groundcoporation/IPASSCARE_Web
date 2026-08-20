@@ -85,13 +85,36 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
   const loadInitialData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Teachers
+      // 1. Fetch Teachers from users (role in teacher, coach, director) and academy_teachers
+      const teacherList: Teacher[] = [];
+      const seenIds = new Set<string>();
+
+      // Fetch from users
+      let userTeacherQuery = supabase
+        .from('users')
+        .select('id, name, branch_id')
+        .in('role', ['teacher', 'coach', 'director']);
+      if (activeBranchId && activeBranchId !== 'all') {
+        userTeacherQuery = userTeacherQuery.eq('branch_id', activeBranchId);
+      }
+      const { data: userTeachers } = await userTeacherQuery;
+      (userTeachers || []).forEach((u: any) => {
+        seenIds.add(u.id);
+        teacherList.push({ id: u.id, name: u.name || '이름 없음', branch_id: u.branch_id });
+      });
+
+      // Fetch from academy_teachers
       let teachersQuery = supabase.from('academy_teachers').select('id, name, branch_id');
       if (activeBranchId && activeBranchId !== 'all') {
         teachersQuery = teachersQuery.eq('branch_id', activeBranchId);
       }
       const { data: teachersData } = await teachersQuery;
-      setTeachers((teachersData || []) as Teacher[]);
+      (teachersData || []).forEach((t: any) => {
+        if (!seenIds.has(t.id) && !teacherList.some(m => m.name === t.name)) {
+          teacherList.push({ id: t.id, name: t.name, branch_id: t.branch_id });
+        }
+      });
+      setTeachers(teacherList);
 
       // 2. Fetch Classes
       let classesQuery = supabase.from('class_schedules').select(`
@@ -253,7 +276,7 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
                 {dayClasses.length > 0 ? (
                   <div className="divide-y divide-slate-100">
                     {dayClasses.map((cls) => {
-                      const teacherName = cls.academy_teachers?.name || '강사 미지정';
+                      const teacherName = cls.academy_teachers?.name || teachers.find(t => t.id === cls.teacher_id)?.name || '강사 미지정';
                       return (
                         <article key={cls.id} className="group p-4 transition-colors hover:bg-slate-50/80">
                           <div className="flex items-start justify-between gap-3">
