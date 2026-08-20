@@ -56,15 +56,18 @@ export function App() {
     }
   }, []);
 
+  const handleOpenAdmin = useCallback(() => {
+    setCurrentView('admin');
+    window.history.pushState({}, '', '/admin');
+  }, []);
+
   const handleLoginSuccess = useCallback((profile: any) => {
     setLoggedInProfile(profile);
   }, []);
 
   const handleBackToSite = useCallback(() => {
     setCurrentView('main');
-    if (window.location.pathname.includes('/admin') || window.location.search.includes('admin=true')) {
-      window.history.pushState({}, '', '/');
-    }
+    window.history.pushState({}, '', '/');
   }, []);
 
   // If Admin View: Render Full-Screen Dedicated Admin Portal Page (Pass initialProfile to eliminate flicker!)
@@ -83,9 +86,9 @@ export function App() {
       {/* Top Glassmorphic Navigation with Login & Admin Center Buttons */}
       <Navbar 
         onOpenInquiry={handleScrollToInquiry} 
-        onOpenLogin={() => setCurrentView('admin')}
+        onOpenLogin={handleOpenAdmin}
         userProfile={loggedInProfile}
-        onOpenAdminPortal={() => setCurrentView('admin')}
+        onOpenAdminPortal={handleOpenAdmin}
         onLogout={() => setLoggedInProfile(null)}
       />
 
