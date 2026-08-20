@@ -29,7 +29,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
   const isAdminOrCoach = userProfile && ['admin', 'coach'].includes(userProfile.role || '');
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    // 현재 브라우저의 세션만 종료합니다.
+    await supabase.auth.signOut({ scope: "local" });
     localStorage.removeItem("auto_login_check");
     if (onLogout) onLogout();
   };
