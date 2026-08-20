@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
-  GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon, Building2
+  GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon, Building2, Home
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { ReferralTreeTab } from "./ReferralTreeTab";
@@ -1597,12 +1597,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       
       {/* 1. TOP NAVIGATION HEADER (대메뉴) */}
       <header className="bg-white border-b border-slate-200 h-[76px] fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="bg-blue-600 text-white p-2.5 rounded-2xl flex items-center justify-center shadow-md">
+        <div 
+          onClick={onBackToSite}
+          className="flex items-center gap-3 cursor-pointer group"
+          title="홈페이지로 돌아가기"
+        >
+          <div className="bg-blue-600 text-white p-2.5 rounded-2xl flex items-center justify-center shadow-md group-hover:scale-105 transition-transform">
             <Bus className="w-5 h-5" />
           </div>
           <div className="flex flex-col">
-            <span className="text-base font-black text-slate-900 tracking-tight leading-none">IPASSCARE</span>
+            <span className="text-base font-black text-slate-900 tracking-tight leading-none group-hover:text-blue-600 transition-colors">IPASSCARE</span>
             <span className="text-[10px] text-slate-500 font-extrabold tracking-wider mt-1">관리자 모드</span>
           </div>
         </div>
@@ -1640,7 +1644,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         </nav>
 
         {/* Top Right Utilities */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {/* Back to Homepage Button */}
+          <button 
+            onClick={onBackToSite}
+            className="flex items-center gap-1.5 border border-slate-200 bg-white hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-700 transition shadow-xs"
+            title="홈페이지로 돌아가기"
+          >
+            <Home size={14} className="text-blue-600" />
+            <span className="hidden sm:inline">홈페이지 바로가기</span>
+          </button>
+
           {profile?.role === "admin" && (
             <div className="bg-slate-100/80 px-2 py-1.5 rounded-xl border border-slate-200/50 flex items-center">
               <span className="text-[11px] font-extrabold text-slate-400 px-2">지점</span>

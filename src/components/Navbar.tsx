@@ -26,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const isAdminOrCoach = userProfile && ['admin', 'coach'].includes(userProfile.role || '');
+  const isAdminPortalUser = userProfile && ['admin', 'director', 'teacher', 'coach'].includes(userProfile.role || '');
 
   const handleLogout = async () => {
     // 현재 브라우저의 세션만 종료합니다.
@@ -144,7 +144,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
             {userProfile ? (
               <div className="flex items-center gap-2">
                 {/* Staff / Admin get the Admin Portal button */}
-                {isAdminOrCoach ? (
+                {isAdminPortalUser ? (
                   <button 
                     onClick={onOpenAdminPortal || onOpenLogin}
                     className="bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center gap-2 border border-slate-700 transition-all hover:scale-105"
@@ -232,7 +232,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
           <div className="pt-2 border-t border-slate-200 flex flex-col gap-2">
             {userProfile ? (
               <div className="space-y-2">
-                {isAdminOrCoach && (
+                {isAdminPortalUser && (
                   <button 
                     onClick={() => {
                       setMobileMenuOpen(false);
