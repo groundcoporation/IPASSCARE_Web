@@ -26,7 +26,16 @@ interface PointLog {
   created_at: string;
 }
 
-export const ReferralTreeTab: React.FC = () => {
+interface ReferralTreeTabProps {
+  profile?: {
+    id: string;
+    name: string | null;
+    role: string;
+    branch_id: string | null;
+  } | null;
+}
+
+export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => {
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -34,6 +43,9 @@ export const ReferralTreeTab: React.FC = () => {
   const [pointLogs, setPointLogs] = useState<PointLog[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
+  const [adminViewScope, setAdminViewScope] = useState<'all' | 'my'>('all');
+
+  const isAdmin = profile?.role === 'admin';
 
   // Fetch all users to construct in-memory tree
   const loadAllUsers = async () => {
@@ -46,6 +58,10 @@ export const ReferralTreeTab: React.FC = () => {
       
       if (!error && data) {
         setUsers(data as UserRecord[]);
+        if (profile?.id) {
+          setSelectedUserId(profile.id);
+          setExpandedNodes(prev => ({ ...prev, [profile.id]: true }));
+        }
       }
     } catch (err) {
       console.error('Failed to load users for tree:', err);
@@ -56,7 +72,7 @@ export const ReferralTreeTab: React.FC = () => {
 
   useEffect(() => {
     loadAllUsers();
-  }, []);
+  }, [profile?.id]);
 
   // Fetch point logs for selected user
   useEffect(() => {
@@ -128,31 +144,86 @@ export const ReferralTreeTab: React.FC = () => {
     return map;
   }, [users, usersByUsername]);
 
-  // Find all Root Users (no parent in the system)
+  // Find My User record
+  const myUserRecord = useMemo(() => {
+    return profile?.id ? usersById.get(profile.id) || null : null;
+  }, [profile?.id, usersById]);
+
+  // Calculate my downline user IDs (BFS)
+  const myDownlineIds = useMemo(() => {
+    if (!profile?.id) return new Set<string>();
+    const set = new Set<string>();
+    set.add(profile.id);
+    const queue = [profile.id];
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const kids = childrenMap.get(curr) || [];
+      for (const kid of kids) {
+        if (!set.has(kid.id)) {
+          set.add(kid.id);
+          queue.push(kid.id);
+        }
+      }
+    }
+    return set;
+  }, [profile?.id, childrenMap]);
+
+  // Determine root users based on user role & view scope
   const rootUsers = useMemo(() => {
-    return users.filter(u => {
-      const parentId = getParentId(u);
-      return parentId === null || !usersById.has(parentId);
-    });
-  }, [users, usersById]);
+    if (isAdmin && adminViewScope === 'all') {
+      return users.filter(u => {
+        const parentId = getParentId(u);
+        return parentId === null || !usersById.has(parentId);
+      });
+    }
+
+    // For teachers / staff / my scope: only return my account as the root!
+    if (myUserRecord) {
+      return [myUserRecord];
+    }
+
+    // If teacher profile is not yet in users list, create a virtual root
+    if (profile?.id) {
+      return [{
+        id: profile.id,
+        username: profile.name || 'me',
+        name: profile.name || '내 계정',
+        email: null,
+        phone: null,
+        role: profile.role,
+        target_class: null,
+        points: 0,
+        referred_by: null,
+        referral_count: 0,
+        level: 1,
+        lineage: null,
+        created_at: new Date().toISOString()
+      }];
+    }
+
+    return [];
+  }, [isAdmin, adminViewScope, users, usersById, myUserRecord, profile]);
 
   // Get selected user record
   const selectedUser = useMemo(() => {
     return selectedUserId ? usersById.get(selectedUserId) : null;
   }, [selectedUserId, usersById]);
 
-  // Handle Search Filtering
-  // If search query is entered, we find matching users and only display trees starting from those matching users!
+  // Handle Search Filtering (scoped to accessible users)
   const searchedRoots = useMemo(() => {
     if (!searchQuery.trim()) return null;
     const query = searchQuery.toLowerCase().trim();
-    return users.filter(u => 
+    const candidateUsers = (isAdmin && adminViewScope === 'all')
+      ? users
+      : users.filter(u => myDownlineIds.has(u.id));
+
+    return candidateUsers.filter(u => 
       (u.name && u.name.toLowerCase().includes(query)) ||
       (u.email && u.email.toLowerCase().includes(query)) ||
       (u.username && u.username.toLowerCase().includes(query)) ||
       (u.phone && u.phone.includes(query))
     );
-  }, [users, searchQuery]);
+  }, [users, searchQuery, isAdmin, adminViewScope, myDownlineIds]);
 
   const toggleNode = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -268,21 +339,51 @@ export const ReferralTreeTab: React.FC = () => {
         {/* Tab Header & Search */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
           <div>
-            <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-              🌳 추천인 포인트 계보 트리
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                🌳 {isAdmin && adminViewScope === 'all' ? '전체 추천인 포인트 계보 트리' : `${profile?.name || '내'} 추천 하위 네트워크`}
+              </h2>
+              {!isAdmin && (
+                <span className="text-[11px] font-black text-blue-600 bg-blue-50 border border-blue-200/60 px-2 py-0.5 rounded-full">
+                  내 하위 계보 전용
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-500 mt-1">
-              회원들의 다세대(1대, 2대, 3대...) 추천 가입 흐름과 적립 포인트를 시각적으로 탐색합니다.
+              {isAdmin && adminViewScope === 'all'
+                ? '전체 회원들의 다세대(1대, 2대, 3대...) 추천 가입 흐름과 적립 포인트를 시각적으로 탐색합니다.'
+                : `${profile?.name || '내 계정'}으로부터 연결된 1대, 2대, 3대 직/간접 추천 회원 및 적립 포인트를 확인합니다.`}
             </p>
           </div>
-          <button 
-            onClick={loadAllUsers} 
-            disabled={loading}
-            className="flex items-center justify-center gap-1.5 self-start sm:self-center border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-          >
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-            새로고침
-          </button>
+
+          <div className="flex items-center gap-2 self-start sm:self-center">
+            {isAdmin && (
+              <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setAdminViewScope('all')}
+                  className={`px-3 py-1.5 rounded-lg transition ${adminViewScope === 'all' ? 'bg-white text-blue-600 shadow-2xs font-extrabold' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  🌐 전체 계보
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminViewScope('my')}
+                  className={`px-3 py-1.5 rounded-lg transition ${adminViewScope === 'my' ? 'bg-white text-blue-600 shadow-2xs font-extrabold' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  👤 내 하위만
+                </button>
+              </div>
+            )}
+            <button 
+              onClick={loadAllUsers} 
+              disabled={loading}
+              className="flex items-center justify-center gap-1.5 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+              새로고침
+            </button>
+          </div>
         </div>
 
         {/* Search Input */}

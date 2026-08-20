@@ -1614,6 +1614,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             { id: 'billing_mgmt', label: '💳 수납관리', subDefault: 'billing' },
             { id: 'sms_mgmt', label: '💬 문자관리', subDefault: 'sms_send' },
             ...(['admin', 'director'].includes(profile?.role ?? '') ? [{ id: 'role_mgmt', label: '🛡️ 권한 부여', subDefault: 'role_management' }] : []),
+            { id: 'referral_mgmt', label: '🌲 추천 포인트트리', subDefault: 'referrals' },
             ...(profile?.role === 'admin' ? [{ id: 'basic_settings', label: '⚙️ 기본설정', subDefault: 'settings' }] : [])
           ].map((menu) => {
             const isActive = mainTab === menu.id;
@@ -1685,6 +1686,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 {mainTab === 'billing_mgmt' && 'BILLING MGMT'}
                 {mainTab === 'sms_mgmt' && 'MESSAGING MGMT'}
                 {mainTab === 'role_mgmt' && 'ROLE MANAGEMENT'}
+                {mainTab === 'referral_mgmt' && 'REFERRAL TREE'}
                 {mainTab === 'basic_settings' && 'SYSTEM SETTINGS'}
               </span>
               <h2 className="text-sm font-black text-white mt-2 px-1 flex items-center gap-1.5">
@@ -1694,6 +1696,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 {mainTab === 'billing_mgmt' && '수납관리'}
                 {mainTab === 'sms_mgmt' && '문자관리'}
                 {mainTab === 'role_mgmt' && '권한 부여'}
+                {mainTab === 'referral_mgmt' && '추천 포인트트리'}
                 {mainTab === 'basic_settings' && '기본설정'}
               </h2>
             </div>
@@ -1799,11 +1802,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 return <button key={item.id} onClick={() => { setSubTab(item.id); setSearch(""); }} className={`w-full flex items-center gap-2.5 px-3 py-3 text-xs font-bold rounded-xl text-left transition ${isActive ? 'bg-blue-600 text-white font-extrabold shadow-sm' : 'hover:bg-slate-800 hover:text-white'}`}><item.icon size={15} />{item.label}</button>;
               })}
 
+              {/* REFERRAL MGMT SUBMENU */}
+              {mainTab === 'referral_mgmt' && [
+                { id: 'referrals', label: '추천 계보 및 포인트', icon: GitFork },
+              ].map((item) => {
+                const isActive = subTab === item.id;
+                return <button key={item.id} onClick={() => { setSubTab(item.id); setSearch(""); }} className={`w-full flex items-center gap-2.5 px-3 py-3 text-xs font-bold rounded-xl text-left transition ${isActive ? 'bg-blue-600 text-white font-extrabold shadow-sm' : 'hover:bg-slate-800 hover:text-white'}`}><item.icon size={15} />{item.label}</button>;
+              })}
+
               {/* SYSTEM SETTINGS SUBMENU */}
               {mainTab === 'basic_settings' && profile?.role === 'admin' && [
                 { id: 'settings', label: '요금제 단가설정', icon: Settings },
                 { id: 'partners', label: '협력브랜드 관리', icon: UsersRound },
-                { id: 'referrals', label: '추천 포인트트리', icon: GitFork },
                 { id: 'videos', label: '유튜브 가이드관리', icon: Video },
                 { id: 'inquiries', label: 'B2B 상담 문의', icon: FileText },
               ].map((item) => {
@@ -3267,8 +3277,8 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
               </div>
             )}
 
-            {/* TAB 7: REFERRAL TREE (100% ORIGINAL) */}
-            {subTab === "referrals" && profile?.role === "admin" && <ReferralTreeTab />}
+            {/* TAB: REFERRAL TREE */}
+            {subTab === "referrals" && <ReferralTreeTab profile={profile} />}
 
             {/* YOUTUBE MANUAL VIDEO EDITOR (100% ORIGINAL COMPLETE RICH COMPONENT) */}
             {subTab === "videos" && profile?.role === "admin" && (
