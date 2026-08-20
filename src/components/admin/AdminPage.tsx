@@ -21,13 +21,38 @@ type ClassSchedule = { id: string; branch_id: string | null; target_class: strin
 type ScheduleReservation = { id: string; schedule_id: string; class_date: string; status: string | null; attendance_status: string | null; child_id: string | null; user_id: string | null; children: { child_name: string | null } | null; users: { name: string | null; phone: string | null } | null };
 
 const won = new Intl.NumberFormat("ko-KR");
+const ADMIN_PORTAL_ROLES = new Set(["admin", "director", "teacher", "coach"]);
+const canAccessAdminPortal = (role: string | null | undefined) => Boolean(role && ADMIN_PORTAL_ROLES.has(role));
+const roleLabel = (role: string | null | undefined) => {
+  switch (role) {
+    case "admin": return "최고 관리자";
+    case "director": return "원장";
+    case "teacher":
+    case "coach": return "선생님";
+    case "driver": return "기사";
+    default: return "회원";
+  }
+};
+const scopedBranchId = (profile: Profile | null, branchFilter: string) =>
+  profile?.role === "admin" ? (branchFilter === "all" ? null : branchFilter) : profile?.branch_id ?? null;
 const firstJoined = <T,>(value: T | T[] | null): T | null => Array.isArray(value) ? value[0] ?? null : value;
 const weeklyCount = (name: string | null) => Number(name?.match(/주\s*(\d+)\s*회/)?.[1]) || null;
 const excluded = (status: string | null) => /결석|보강/.test((status ?? "").replace(/\s/g, ""));
+const isCancelledReservation = (status: string | null | undefined) => ["cancelled", "canceled", "취소", "취소요청", "cancel_requested"].includes(status ?? "");
 const rangeOf = (month: string) => ({ from: `${month}-01`, to: `${month}-${String(new Date(+month.slice(0, 4), +month.slice(5, 7), 0).getDate()).padStart(2, "0")}` });
 const moveMonth = (month: string, amount: number) => { const date = new Date(+month.slice(0, 4), +month.slice(5, 7) - 1 + amount, 1); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; };
 const mondayOf = (date: Date) => { const result = new Date(date); const day = result.getDay(); result.setHours(0, 0, 0, 0); result.setDate(result.getDate() - (day === 0 ? 6 : day - 1)); return result; };
 const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const kstDateKey = (isoDate: string | null | undefined) => {
+  if (!isoDate) return null;
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+};
+const isBeforeChildDeletion = (targetDate: string, deletedAt: string | null | undefined) => {
+  const deletedDate = kstDateKey(deletedAt);
+  return !deletedDate || targetDate < deletedDate;
+};
 const statusText = (status: string | null) => ({ paid: "결제 완료", success: "결제 완료", pending_payment: "입금 대기", failed: "결제 실패", cancelled: "취소", canceled: "취소", refunded: "환불" }[status ?? ""] ?? status ?? "미확인");
 const paymentDetail = (method: string | null, pgTid: string | null) => {
   if (method === "VBANK") { const [bank, account] = (pgTid ?? "").split(":"); return account ? `${bank || "가상계좌"} · ${account}` : "가상계좌"; }
@@ -53,7 +78,7 @@ interface AdminPageProps {
 
 export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSuccess, initialProfile }) => {
   // Authentication State
-  const [profile, setProfile] = useState<Profile | null>(initialProfile || null);
+  const [profile, setProfile] = useState<Profile | null>(() => canAccessAdminPortal(initialProfile?.role) ? initialProfile ?? null : null);
   const [authLoading, setAuthLoading] = useState(false);
   
   // Login Form & Remember Me State
@@ -82,6 +107,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   // Daily Admin Attendance (관리자 출결) State
   const [todayAttendanceStudents, setTodayAttendanceStudents] = useState<any[]>([]);
+  const [attendanceStudentsWithHistory, setAttendanceStudentsWithHistory] = useState<any[]>([]);
+  const [todayReservationChildIds, setTodayReservationChildIds] = useState<string[]>([]);
+  const [todayReservations, setTodayReservations] = useState<any[]>([]);
   const [todayAttendanceRecords, setTodayAttendanceRecords] = useState<Record<string, { ride_in?: string; check_in?: string; check_out?: string; ride_out?: string; is_absent?: boolean; no_shuttle?: boolean }>>({});
   const [selectedAttendanceDate, setSelectedAttendanceDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [attendanceViewFilter, setAttendanceViewFilter] = useState<'scheduled' | 'unprocessed' | 'completed' | 'all'>('scheduled');
@@ -90,6 +118,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [attendanceCalendarMonth, setAttendanceCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [calendarMonthLogs, setCalendarMonthLogs] = useState<any[]>([]);
+  const [calendarMonthReservations, setCalendarMonthReservations] = useState<any[]>([]);
 
   // Extra Web Management Tabs
   const [inquiries, setInquiries] = useState<any[]>([]);
@@ -152,7 +181,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   // Session Check
   useEffect(() => {
     if (initialProfile) {
-      setProfile(initialProfile);
+      if (canAccessAdminPortal(initialProfile.role)) {
+        setProfile(initialProfile);
+        setLoginError("");
+      } else {
+        setProfile(null);
+        setLoginError("관리자 페이지 접근 권한이 없습니다.");
+      }
       setAuthLoading(false);
       return;
     }
@@ -161,12 +196,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       try {
         const { data: auth } = await supabase.auth.getUser();
         if (auth?.user) {
-          const { data } = await supabase.from("users").select("id,name,role,branch_id").eq("id", auth.user.id).maybeSingle();
+          const { data } = await supabase.from("users").select("id,name,role,branch_id").eq("id", auth.user.id).neq("status", "deleted").maybeSingle();
           if (active && data) {
             const userProf = data as Profile;
-            setProfile(userProf);
-            if (onLoginSuccessRef.current) {
-              onLoginSuccessRef.current(userProf);
+            if (canAccessAdminPortal(userProf.role)) {
+              setProfile(userProf);
+              setLoginError("");
+              if (onLoginSuccessRef.current) {
+                onLoginSuccessRef.current(userProf);
+              }
+            } else {
+              setProfile(null);
+              setLoginError("관리자 페이지 접근 권한이 없습니다.");
             }
           }
         }
@@ -183,7 +224,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   useEffect(() => {
     if (!profile) return;
     let query = supabase.from("branches").select("id,name").order("display_order", { ascending: true });
-    if (profile.role === "coach" && profile.branch_id) query = query.eq("id", profile.branch_id);
+    if (profile.role !== "admin" && profile.branch_id) query = query.eq("id", profile.branch_id);
     void query.then(({ data, error: branchError }) => {
       if (branchError) setError(branchError.message);
       else setBranches((data ?? []) as Branch[]);
@@ -194,16 +235,27 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const loadAttendanceCalendarLogs = useCallback(async () => {
     try {
       const period = rangeOf(attendanceCalendarMonth);
-      let query = supabase.from("attendance_logs")
+      let logsQuery = supabase.from("attendance_logs")
         .select("id, child_id, date, status, check_in, check_out, branch_id")
         .gte("date", period.from)
         .lte("date", period.to);
+      let reservationsQuery = supabase.from("reservations")
+        .select("child_id,class_date,status,attendance_status")
+        .is("deleted_at", null)
+        .gte("class_date", period.from)
+        .lte("class_date", period.to);
 
-      const selectedBranch = profile?.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter;
-      if (selectedBranch) query = query.eq("branch_id", selectedBranch);
+      const selectedBranch = scopedBranchId(profile, branchFilter);
+      if (selectedBranch) {
+        logsQuery = logsQuery.eq("branch_id", selectedBranch);
+        reservationsQuery = reservationsQuery.eq("branch_id", selectedBranch);
+      }
 
-      const { data } = await query;
-      setCalendarMonthLogs(data || []);
+      const [logsResult, reservationsResult] = await Promise.all([logsQuery, reservationsQuery]);
+      if (logsResult.error) throw logsResult.error;
+      if (reservationsResult.error) throw reservationsResult.error;
+      setCalendarMonthLogs(logsResult.data || []);
+      setCalendarMonthReservations((reservationsResult.data || []).filter((reservation: any) => !isCancelledReservation(reservation.status)));
     } catch (err) {
       console.error("Error loading calendar attendance logs:", err);
     }
@@ -215,22 +267,31 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       let query = supabase.from("academy_students").select(`
         id,
         child_id,
+        parent_user_id,
         student_name,
         parent_name,
         attendance_code,
         mother_phone,
         father_phone,
         branch_id,
+        child:children(deleted_at),
+        parent_user:users(status),
         academy_student_classes(
           class_schedules(id, target_class, day_of_week, start_time, end_time)
         )
       `).order("student_name");
 
-      const selectedBranch = profile?.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter;
+      const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
 
       const { data: studentsData } = await query;
-      const studentsList = studentsData || [];
+      const studentsWithHistory = (studentsData || []).filter((student: any) => (
+        !student.parent_user_id || student.parent_user?.status !== 'deleted'
+      ));
+      const studentsList = studentsWithHistory.filter((student: any) => (
+        !student.child_id || isBeforeChildDeletion(selectedAttendanceDate, student.child?.deleted_at)
+      ));
+      setAttendanceStudentsWithHistory(studentsWithHistory);
       setTodayAttendanceStudents(studentsList);
 
       // Real Attendance Logs Query from Supabase for selected date (with KST Time Formatting)
@@ -243,10 +304,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
       // Query reservations for today's pickup/dropoff shuttle status
       let resQuery = supabase.from("reservations")
-        .select("child_id, pickup_shuttle_status, dropoff_shuttle_status, attendance_status")
+        .select("child_id,schedule_id,status,pickup_shuttle_status,dropoff_shuttle_status,attendance_status,class_schedules(target_class,start_time,end_time)")
+        .is("deleted_at", null)
         .eq("class_date", selectedAttendanceDate);
       if (selectedBranch) resQuery = resQuery.eq("branch_id", selectedBranch);
       const { data: resData } = await resQuery;
+      const activeReservations = (resData || []).filter((reservation: any) => !isCancelledReservation(reservation.status));
+      setTodayReservations(activeReservations);
+      setTodayReservationChildIds(Array.from(new Set(activeReservations.map((reservation: any) => reservation.child_id).filter(Boolean))));
 
       const formatKSTTime = (isoString?: string | null): string | undefined => {
         if (!isoString) return undefined;
@@ -301,7 +366,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       });
 
       // Merge reservations status
-      (resData || []).forEach((res: any) => {
+      activeReservations.forEach((res: any) => {
         const student = studentsList.find((s: any) => s.child_id === res.child_id || s.id === res.child_id);
         const key = student ? student.id : res.child_id;
         if (!key) return;
@@ -363,6 +428,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           .from("users")
           .select("email")
           .eq("username", loginEmail)
+          .neq("status", "deleted")
           .maybeSingle();
 
         if (userError || !userData?.email) {
@@ -388,11 +454,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         .from("users")
         .select("id,name,role,branch_id")
         .eq("id", authData.user.id)
+        .neq("status", "deleted")
         .maybeSingle();
 
       const authenticatedProfile: Profile = userProfileData 
         ? (userProfileData as Profile)
         : { id: authData.user.id, name: authData.user.email?.split("@")[0] || "회원", role: "parent", branch_id: null };
+
+      if (!canAccessAdminPortal(authenticatedProfile.role)) {
+        setProfile(null);
+        setLoginError("관리자 페이지는 원장 및 교직원 계정만 이용할 수 있습니다.");
+        return;
+      }
 
       setProfile(authenticatedProfile);
       if (onLoginSuccessRef.current) onLoginSuccessRef.current(authenticatedProfile);
@@ -415,7 +488,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setLoading(true); setError("");
     try {
       let query = supabase.from("payments").select("id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,users(name,email)").order("created_at", { ascending: false });
-      const selectedBranch = profile.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter;
+      const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
       const { data, error: queryError } = await query;
       if (queryError) throw queryError;
@@ -435,10 +508,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setLoading(true); setError("");
     const period = rangeOf(month);
     try {
-      let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id").order("child_name");
+      let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id,deleted_at").order("child_name");
       let packagesQuery = supabase.from("user_packages").select("id,user_id,child_id,child_name,package_name,total_count,remaining_count,status,voucher_type,branch_id").or("voucher_type.is.null,voucher_type.neq.shuttle").order("created_at", { ascending: false });
       let logsQuery = supabase.from("attendance_logs").select("child_id,date,status,check_in").gte("date", period.from).lte("date", period.to).not("check_in", "is", null);
-      const selectedBranch = profile.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter;
+      const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) {
         childrenQuery = childrenQuery.eq("branch_id", selectedBranch);
         packagesQuery = packagesQuery.eq("branch_id", selectedBranch);
@@ -453,12 +526,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const parentIds = [...new Set(children.map((child: any) => child.parent_id).filter(Boolean))];
       const packageIds = packages.map((item: any) => item.id);
       const [parentResult, usageResult] = await Promise.all([
-        parentIds.length ? supabase.from("users").select("id,name").in("id", parentIds) : Promise.resolve({ data: [], error: null }),
-        packageIds.length ? supabase.from("package_usage_logs").select("user_package_id,child_id,quantity,consumed_at,reservations(class_date,attendance_status)").in("user_package_id", packageIds).eq("status", "consumed") : Promise.resolve({ data: [], error: null }),
+        parentIds.length ? supabase.from("users").select("id,name").in("id", parentIds).neq("status", "deleted") : Promise.resolve({ data: [], error: null }),
+        packageIds.length ? supabase.from("package_usage_logs").select("user_package_id,child_id,quantity,consumed_at,reservations(class_date,attendance_status,deleted_at)").in("user_package_id", packageIds).eq("status", "consumed") : Promise.resolve({ data: [], error: null }),
       ]);
       if (parentResult.error) throw parentResult.error;
       if (usageResult.error) throw usageResult.error;
       const parents = new Map((parentResult.data ?? []).map((item: any) => [item.id, item.name]));
+      const visibleChildren = children.filter((child: any) => (
+        (!child.parent_id || parents.has(child.parent_id))
+        && isBeforeChildDeletion(period.from, child.deleted_at)
+      ));
       const packageMap = new Map<string, any[]>();
       packages.forEach((item: any) => item.child_id && packageMap.set(item.child_id, [...(packageMap.get(item.child_id) ?? []), item]));
       const legacy = new Map<string, string[]>();
@@ -466,6 +543,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const usage = new Map<string, string[]>();
       (usageResult.data ?? []).forEach((item: any) => {
         const reservation: any = firstJoined(item.reservations);
+        if (reservation?.deleted_at) return;
         if (excluded(reservation?.attendance_status ?? null)) return;
         const date = reservation?.class_date ?? item.consumed_at?.slice(0, 10);
         if (!date || date < period.from || date > period.to) return;
@@ -474,12 +552,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         usage.set(item.user_package_id, dates);
       });
       const rows: AttendanceRow[] = [];
-      children.forEach((child: any) => {
+      visibleChildren.forEach((child: any) => {
         const items = packageMap.get(child.id) ?? [];
         if (!items.length) rows.push({ id: `child-${child.id}`, childId: child.id, childName: child.child_name ?? "이름 없음", parentName: parents.get(child.parent_id) ?? "-", packageName: "이용권 없음", weekly: null, total: 0, used: 0, remaining: 0, dates: [] });
         items.forEach((item: any) => {
           let dates = [...(usage.get(item.id) ?? [])].sort();
           if (!dates.length && items.length === 1) dates = [...(legacy.get(child.id) ?? [])].sort();
+          dates = dates.filter((date) => isBeforeChildDeletion(date, child.deleted_at));
           const total = Math.min(MAX_SLOTS, item.total_count ?? 0);
           const used = Math.min(MAX_SLOTS, Math.max((item.total_count ?? 0) - (item.remaining_count ?? 0), dates.length));
           rows.push({ id: item.id, childId: child.id, childName: child.child_name ?? item.child_name ?? "이름 없음", parentName: parents.get(child.parent_id) ?? "-", packageName: item.package_name ?? "수업권", weekly: weeklyCount(item.package_name), total, used, remaining: Math.max(0, item.remaining_count ?? total - used), dates: dates.slice(0, MAX_SLOTS) });
@@ -496,9 +575,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setLoading(true); setError("");
     try {
       let query = supabase.from("class_schedules").select("id,branch_id,target_class,day_of_week,start_time,end_time,max_people,branches(name)").eq("is_active", true).order("start_time");
-      const selectedBranch = profile.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter;
+      const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
-      let reservationQuery = supabase.from("reservations").select("id,schedule_id,class_date,status,attendance_status,branch_id,child_id,user_id").gte("class_date", localDate(weekStart)).lte("class_date", localDate(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6)));
+      let reservationQuery = supabase.from("reservations").select("id,schedule_id,class_date,status,attendance_status,branch_id,child_id,user_id").is("deleted_at", null).gte("class_date", localDate(weekStart)).lte("class_date", localDate(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6)));
       if (selectedBranch) reservationQuery = reservationQuery.eq("branch_id", selectedBranch);
       const [{ data, error: queryError }, { data: reservationData, error: reservationError }] = await Promise.all([query, reservationQuery]);
       if (queryError) throw queryError;
@@ -508,14 +587,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const childIds = [...new Set(activeReservations.map((item: any) => item.child_id).filter(Boolean))];
       const userIds = [...new Set(activeReservations.map((item: any) => item.user_id).filter(Boolean))];
       const [childrenResult, usersResult] = await Promise.all([
-        childIds.length ? supabase.from("children").select("id,child_name").in("id", childIds) : Promise.resolve({ data: [], error: null }),
-        userIds.length ? supabase.from("users").select("id,name,phone").in("id", userIds) : Promise.resolve({ data: [], error: null }),
+        childIds.length ? supabase.from("children").select("id,child_name").in("id", childIds).is("deleted_at", null) : Promise.resolve({ data: [], error: null }),
+        userIds.length ? supabase.from("users").select("id,name,phone").in("id", userIds).neq("status", "deleted") : Promise.resolve({ data: [], error: null }),
       ]);
       if (childrenResult.error) throw childrenResult.error;
       if (usersResult.error) throw usersResult.error;
       const childNames = new Map((childrenResult.data ?? []).map((item: any) => [item.id, { child_name: item.child_name }]));
       const parentProfiles = new Map((usersResult.data ?? []).map((item: any) => [item.id, { name: item.name, phone: item.phone }]));
-      setScheduleReservations(activeReservations.map((item: any) => ({ ...item, children: childNames.get(item.child_id) ?? null, users: parentProfiles.get(item.user_id) ?? null })) as ScheduleReservation[]);
+      const visibleReservations = activeReservations.filter((item: any) => (
+        (!item.child_id || childNames.has(item.child_id))
+        && (!item.user_id || parentProfiles.has(item.user_id))
+      ));
+      setScheduleReservations(visibleReservations.map((item: any) => ({ ...item, children: childNames.get(item.child_id) ?? null, users: parentProfiles.get(item.user_id) ?? null })) as ScheduleReservation[]);
     } catch (reason: any) { setError(reason?.message ?? "시간표를 불러오지 못했습니다."); }
     finally { setLoading(false); }
   }, [branchFilter, profile, weekStart]);
@@ -564,7 +647,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     if (!profile) return;
     if (subTab === "payments") void loadPayments();
     else if (subTab === "attendance") void loadAttendance();
-    else if (subTab === "attendance_calendar") void loadAttendanceCalendarLogs();
+    else if (subTab === "attendance_calendar") {
+      void Promise.all([loadAttendanceCalendarLogs(), loadDailyAttendanceStudents()]);
+    }
     else if (subTab === "schedule") void loadSchedules();
     else if (subTab === "admin_attendance") void loadDailyAttendanceStudents();
     else if (subTab === "inquiries") void loadInquiries();
@@ -852,7 +937,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setActionLoading(true);
     const { childId } = attendanceModal;
     const dateStr = attendanceDate;
-    const targetBranch = (profile.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter) || profile.branch_id || "branch_1";
+    const targetBranch = scopedBranchId(profile, branchFilter) || profile.branch_id || "branch_1";
 
     try {
       const { data: existingLog } = await (supabase as any).from("attendance_logs").select("id").eq("child_id", childId).eq("date", dateStr).maybeSingle();
@@ -1002,11 +1087,19 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   // Real-time timeline attendance action helpers
   const handleTimelineAction = async (studentId: string, actionType: 'ride_in' | 'no_pickup' | 'check_in' | 'check_out' | 'ride_out' | 'no_dropoff' | 'no_shuttle' | 'is_absent' | 'reset') => {
+    const student = todayAttendanceStudents.find(s => s.id === studentId);
+    if (actionType === 'reset') {
+      const studentName = student?.student_name || '해당 원생';
+      const shouldReset = confirm(
+        `${studentName} 원생의 ${selectedAttendanceDate} 출결 처리를 취소하시겠습니까?\n승하차·등하원·미탑승 상태가 모두 초기화됩니다.`
+      );
+      if (!shouldReset) return;
+    }
+
     const nowTime = new Date().toTimeString().slice(0, 5);
     const nowIso = new Date().toISOString();
-    const student = todayAttendanceStudents.find(s => s.id === studentId);
     const targetChildId = student?.child_id || student?.id || studentId;
-    const targetBranch = (profile?.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter) || profile?.branch_id || student?.branch_id || "branch_1";
+    const targetBranch = scopedBranchId(profile, branchFilter) || profile?.branch_id || student?.branch_id || "branch_1";
 
     // 1. Optimistic UI update
     setTodayAttendanceRecords(prev => {
@@ -1044,14 +1137,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     try {
       if (actionType === 'reset') {
         await supabase.from("attendance_logs").delete().eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
-        await supabase.from("reservations").update({ pickup_shuttle_status: null, dropoff_shuttle_status: null, attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+        await supabase.from("reservations").update({ pickup_shuttle_status: null, dropoff_shuttle_status: null, attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
       } else if (actionType === 'no_pickup' || actionType === 'no_shuttle') {
-        await supabase.from("reservations").update({ pickup_shuttle_status: 'missed' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+        await supabase.from("reservations").update({ pickup_shuttle_status: 'missed' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         try {
           await supabase.from("shuttle_logs").insert([{ child_id: targetChildId, event_type: '미탑승', event_time: nowIso, branch_id: targetBranch, service_date: selectedAttendanceDate, direction: 'pickup' }]);
         } catch {}
       } else if (actionType === 'no_dropoff') {
-        await supabase.from("reservations").update({ dropoff_shuttle_status: 'missed' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+        await supabase.from("reservations").update({ dropoff_shuttle_status: 'missed' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         try {
           await supabase.from("shuttle_logs").insert([{ child_id: targetChildId, event_type: '미탑승', event_time: nowIso, branch_id: targetBranch, service_date: selectedAttendanceDate, direction: 'dropoff' }]);
         } catch {}
@@ -1072,19 +1165,19 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         if (actionType === 'ride_in') {
           payload.shuttle_ride_time = nowIso;
           payload.check_in = nowIso;
-          await supabase.from("reservations").update({ pickup_shuttle_status: 'boarded' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+          await supabase.from("reservations").update({ pickup_shuttle_status: 'boarded' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         } else if (actionType === 'check_in') {
           payload.check_in = nowIso;
-          await supabase.from("reservations").update({ attendance_status: '등원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+          await supabase.from("reservations").update({ attendance_status: '등원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         } else if (actionType === 'check_out') {
           payload.check_out = nowIso;
-          await supabase.from("reservations").update({ attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+          await supabase.from("reservations").update({ attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         } else if (actionType === 'ride_out') {
           payload.shuttle_drop_time = nowIso;
           payload.check_out = nowIso;
-          await supabase.from("reservations").update({ dropoff_shuttle_status: 'dropped_off', attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+          await supabase.from("reservations").update({ dropoff_shuttle_status: 'dropped_off', attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         } else if (actionType === 'is_absent') {
-          await supabase.from("reservations").update({ attendance_status: '결석' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate);
+          await supabase.from("reservations").update({ attendance_status: '결석' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         }
 
         const { data: existing } = await supabase.from("attendance_logs").select("id").eq("child_id", targetChildId).eq("date", selectedAttendanceDate).maybeSingle();
@@ -1100,9 +1193,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   };
 
   const handleBatchTimelineAction = async (actionType: 'ride_in' | 'check_in' | 'check_out' | 'ride_out' | 'is_absent') => {
-    const targetIds = selectedStudentIds.length > 0 
+    const requestedIds = selectedStudentIds.length > 0
       ? selectedStudentIds 
       : filteredAttendanceStudents.map(s => s.id);
+    const targetIds = requestedIds.filter((studentId) => {
+      const student = todayAttendanceStudents.find((item) => item.id === studentId);
+      return student && isStudentScheduledOnDate(student);
+    });
 
     if (!targetIds.length) {
       alert("적용할 대상 학생이 없습니다.");
@@ -1137,7 +1234,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const payloads = targetIds.map(studentId => {
         const student = todayAttendanceStudents.find(s => s.id === studentId);
         const targetChildId = student?.child_id || student?.id || studentId;
-        const targetBranch = (profile?.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter) || profile?.branch_id || student?.branch_id || "branch_1";
+        const targetBranch = scopedBranchId(profile, branchFilter) || profile?.branch_id || student?.branch_id || "branch_1";
         const row: any = {
           child_id: targetChildId,
           date: selectedAttendanceDate,
@@ -1192,19 +1289,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const currentDayShort = getShortDayOfWeek(selectedAttendanceDate || new Date().toISOString().slice(0, 10));
   const currentDayFull = getKoreanDayOfWeek(selectedAttendanceDate || new Date().toISOString().slice(0, 10));
 
-  const isStudentScheduledOnSpecificDate = useCallback((student: any, dateStr: string) => {
-    const dayShort = getShortDayOfWeek(dateStr);
-    const classes = student?.academy_student_classes || [];
-    if (!classes.length) return false;
-    return classes.some((c: any) => {
-      const dow = c?.class_schedules?.day_of_week || "";
-      return dow.includes(dayShort);
-    });
-  }, []);
-
   const isStudentScheduledOnDate = useCallback((student: any) => {
-    return isStudentScheduledOnSpecificDate(student, selectedAttendanceDate);
-  }, [isStudentScheduledOnSpecificDate, selectedAttendanceDate]);
+    const reservationKey = student?.child_id || student?.id;
+    return Boolean(reservationKey) && todayReservationChildIds.includes(reservationKey);
+  }, [todayReservationChildIds]);
 
   // Attendance filter counts
   const scheduledCount = useMemo(() => {
@@ -1227,6 +1315,31 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       return rec && (rec.check_in || rec.check_out || rec.ride_in || rec.ride_out);
     }).length;
   }, [todayAttendanceStudents, todayAttendanceRecords]);
+
+  const detailedAttendanceSummary = useMemo(() => {
+    const scheduledStudents = (todayAttendanceStudents || []).filter((student) => isStudentScheduledOnDate(student));
+    let attended = 0;
+    let absent = 0;
+
+    scheduledStudents.forEach((student) => {
+      const record = todayAttendanceRecords[student.id];
+      if (record?.is_absent) absent += 1;
+      else if (record?.check_in || record?.check_out) attended += 1;
+    });
+
+    const pending = Math.max(0, scheduledStudents.length - attended - absent);
+    return {
+      scheduled: scheduledStudents.length,
+      attended,
+      absent,
+      pending,
+      allPresent: scheduledStudents.length > 0 && attended === scheduledStudents.length && absent === 0,
+    };
+  }, [todayAttendanceStudents, todayAttendanceRecords, isStudentScheduledOnDate]);
+
+  const detailedAttendanceStudents = useMemo(() => (
+    (todayAttendanceStudents || []).filter((student) => isStudentScheduledOnDate(student))
+  ), [todayAttendanceStudents, isStudentScheduledOnDate]);
 
   const totalStudentsCount = (todayAttendanceStudents || []).length;
 
@@ -1303,21 +1416,35 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     // Days in current month
     for (let day = 1; day <= totalDaysInMonth; day++) {
       const dateStr = `${parts[0]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      const logsForDate = (calendarMonthLogs || []).filter((log: any) => log && log.date === dateStr);
+      const logsForDate = (calendarMonthLogs || []).filter((log: any) => {
+        if (!log || log.date !== dateStr) return false;
+        const student = attendanceStudentsWithHistory.find((item: any) => item.child_id === log.child_id || item.id === log.child_id);
+        return Boolean(student) && isBeforeChildDeletion(dateStr, student.child?.deleted_at);
+      });
       
-      // Calculate scheduled students on that date's day-of-week
-      const scheduledOnDay = (todayAttendanceStudents || []).filter(s => isStudentScheduledOnSpecificDate(s, dateStr));
-      const scheduledCount = scheduledOnDay.length;
+      const reservationsForDate = (calendarMonthReservations || []).filter((reservation: any) => {
+        if (!reservation || reservation.class_date !== dateStr || !reservation.child_id) return false;
+        const student = attendanceStudentsWithHistory.find((item: any) => item.child_id === reservation.child_id || item.id === reservation.child_id);
+        return Boolean(student) && isBeforeChildDeletion(dateStr, student.child?.deleted_at);
+      });
+      const scheduledCount = new Set(reservationsForDate.map((reservation: any) => reservation.child_id)).size;
 
-      // Attended: students who have check_in or check_out or status is 등원/출석/하원
+      // Only actual attendance rows count as attended.
       const attendedLogs = logsForDate.filter((log: any) => log && (log.check_in || log.check_out || log.status === '등원' || log.status === '하원' || log.status === '출석'));
-      const attendedCount = attendedLogs.length;
+      const attendedCount = new Set(attendedLogs.map((log: any) => log.child_id).filter(Boolean)).size;
 
-      // Absent / Not attended: If scheduled students exist, absent is scheduled - attended
-      const explicitAbsentCount = logsForDate.filter((log: any) => log && (log.status === '결석' || log.status === '사전결석')).length;
-      const absentCount = scheduledCount > 0 
-        ? Math.max(0, scheduledCount - attendedCount) 
-        : explicitAbsentCount;
+      // Absence is counted only when explicitly stored in logs or reservations.
+      const absentChildIds = new Set<string>();
+      logsForDate.forEach((log: any) => {
+        if (log?.child_id && (log.status === '결석' || log.status === '사전결석')) absentChildIds.add(log.child_id);
+      });
+      reservationsForDate.forEach((reservation: any) => {
+        if (reservation.child_id && (reservation.attendance_status === '결석' || reservation.attendance_status === '사전결석')) absentChildIds.add(reservation.child_id);
+      });
+      const inferredPastAbsences = dateStr < todayStr
+        ? Math.max(0, scheduledCount - attendedCount)
+        : 0;
+      const absentCount = Math.max(absentChildIds.size, inferredPastAbsences);
 
       daysArray.push({
         dayNum: day,
@@ -1331,7 +1458,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     }
 
     return daysArray;
-  }, [attendanceCalendarMonth, calendarMonthLogs, todayAttendanceStudents, selectedCalendarDate, isStudentScheduledOnSpecificDate]);
+  }, [attendanceCalendarMonth, attendanceStudentsWithHistory, calendarMonthLogs, calendarMonthReservations, selectedCalendarDate]);
 
   // Loading Screen
   if (authLoading) {
@@ -1424,7 +1551,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   }
 
   // Admin Center View variables
-  const activeBranchId = profile?.role === "coach" ? profile.branch_id : branchFilter === "all" ? null : branchFilter;
+  const activeBranchId = scopedBranchId(profile, branchFilter);
   const activeBranchName = activeBranchId ? branches.find((branch) => branch.id === activeBranchId)?.name ?? null : null;
   const categoryLabelsMap: Record<string, string> = { parent: "학부모 매뉴얼", admin: "학원장 매뉴얼", driver: "기사님 매뉴얼" };
 
@@ -1489,7 +1616,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             <User size={13} className="text-slate-400" />
             <span>{profile?.name ?? "관리자"}님</span>
             <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-black">
-              {profile?.role === "admin" ? "대표" : "코치"}
+              {roleLabel(profile?.role)}
             </span>
             <LogOut size={13} className="text-slate-400 ml-1" />
           </button>
@@ -1654,7 +1781,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
         {/* 3. RIGHT MAIN CONTENT AREA */}
         <main className="flex-1 md:pl-[240px] min-h-screen">
-          <div className="p-6 sm:p-8 max-w-[1400px] mx-auto space-y-6">
+          <div className="w-full max-w-none space-y-6 p-4 sm:p-6 xl:p-8">
             
             {/* STUDENTS LIST TAB (100% Original Complete Component) */}
             {subTab === "students" && (
@@ -1877,10 +2004,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                             const isScheduled = isStudentScheduledOnDate(s);
 
                             // Status evaluation
-                            let statusBadge = (
-                              <span className="inline-block bg-slate-100 text-slate-500 font-bold px-2 py-0.5 rounded text-[11px]">
-                                미처리 ⚠️
-                              </span>
+                            let statusBadge = isScheduled ? (
+                              <span className="inline-block bg-slate-100 text-slate-500 font-bold px-2 py-0.5 rounded text-[11px]">미처리 ⚠️</span>
+                            ) : (
+                              <span className="inline-block bg-slate-50 text-slate-400 font-bold px-2 py-0.5 rounded text-[11px]">예약 없음</span>
                             );
 
                             if (record?.is_absent) {
@@ -2250,9 +2377,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   <div className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-md text-left truncate shadow-2xs">
                                     • 결석 {item.absentCount}명
                                   </div>
-                                ) : (
+                                ) : item.scheduledCount > 0 && item.attendedCount >= item.scheduledCount ? (
                                   <div className="bg-emerald-50 text-emerald-700 text-[10px] font-extrabold px-1.5 py-0.5 rounded text-left truncate">
                                     ✓ 전원 출석
+                                  </div>
+                                ) : item.scheduledCount > 0 ? (
+                                  <div className="bg-amber-50 text-amber-700 text-[10px] font-extrabold px-1.5 py-0.5 rounded text-left truncate">
+                                    • 미처리 {Math.max(0, item.scheduledCount - item.attendedCount)}명
+                                  </div>
+                                ) : (
+                                  <div className="bg-slate-100 text-slate-600 text-[10px] font-extrabold px-1.5 py-0.5 rounded text-left truncate">
+                                    예약 외 출석
                                   </div>
                                 )}
                               </>
@@ -2288,14 +2423,24 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
                     <div className="flex flex-wrap items-center gap-2.5">
                       <span className="bg-slate-800 text-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold border border-slate-700">
-                        수업 대상: <b className="text-white">{scheduledCount}</b>명
+                        수업 대상: <b className="text-white">{detailedAttendanceSummary.scheduled}</b>명
                       </span>
                       <span className="bg-blue-600 text-white px-3 py-1.5 rounded-xl text-xs font-black shadow-2xs">
-                        출석 완료: {completedCount}명
+                        출석 완료: {detailedAttendanceSummary.attended}명
                       </span>
-                      {unprocessedCount > 0 && (
+                      {detailedAttendanceSummary.absent > 0 && (
                         <span className="bg-rose-600 text-white px-3 py-1.5 rounded-xl text-xs font-black shadow-2xs">
-                          결석/미출석: {unprocessedCount}명
+                          결석: {detailedAttendanceSummary.absent}명
+                        </span>
+                      )}
+                      {detailedAttendanceSummary.pending > 0 && (
+                        <span className="bg-amber-500 text-slate-950 px-3 py-1.5 rounded-xl text-xs font-black shadow-2xs">
+                          미처리: {detailedAttendanceSummary.pending}명
+                        </span>
+                      )}
+                      {detailedAttendanceSummary.allPresent && (
+                        <span className="bg-emerald-500 text-white px-3 py-1.5 rounded-xl text-xs font-black shadow-2xs">
+                          ✓ 전원 출석
                         </span>
                       )}
                     </div>
@@ -2334,21 +2479,26 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {filteredAttendanceStudents.length > 0 ? (
-                            filteredAttendanceStudents.map((s, idx) => {
+                          {detailedAttendanceStudents.length > 0 ? (
+                            detailedAttendanceStudents.map((s, idx) => {
                               const record = todayAttendanceRecords[s.id];
-                              const firstClass = s.academy_student_classes?.[0]?.class_schedules;
-                              const currentClassName = firstClass?.target_class || '미배정';
-                              const classTime = (firstClass?.start_time && firstClass?.end_time) 
-                                ? `${firstClass.start_time.slice(0, 5)}~${firstClass.end_time.slice(0, 5)}`
-                                : null;
+                              const reservationKey = s.child_id || s.id;
+                              const studentReservations = todayReservations.filter((reservation) => reservation.child_id === reservationKey);
+                              const reservationSchedules = studentReservations
+                                .map((reservation) => firstJoined(reservation.class_schedules))
+                                .filter(Boolean) as Array<{ target_class: string; start_time: string; end_time: string }>;
+                              const currentClassName = Array.from(new Set(reservationSchedules.map((schedule) => schedule.target_class))).join(', ') || '예약 수업';
+                              const classTime = Array.from(new Set(reservationSchedules
+                                .filter((schedule) => schedule.start_time && schedule.end_time)
+                                .map((schedule) => `${schedule.start_time.slice(0, 5)}~${schedule.end_time.slice(0, 5)}`)
+                              )).join(', ') || null;
                               const isScheduled = isStudentScheduledOnDate(s);
 
                               // Status evaluation based on check_in / check_out
-                              let statusBadge = (
-                                <span className="inline-block bg-rose-50 text-rose-600 border border-rose-100 font-bold px-2.5 py-1 rounded-full text-[11px]">
-                                  결석/미출석 ⚠️
-                                </span>
+                              let statusBadge = isScheduled ? (
+                                <span className="inline-block bg-amber-50 text-amber-700 border border-amber-100 font-bold px-2.5 py-1 rounded-full text-[11px]">미처리 ⚠️</span>
+                              ) : (
+                                <span className="inline-block bg-slate-50 text-slate-400 border border-slate-100 font-bold px-2.5 py-1 rounded-full text-[11px]">예약 없음</span>
                               );
 
                               if (record?.is_absent) {
@@ -2638,9 +2788,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 </Toolbar>
 
                 <TableShell empty={!loading && !shownPayments.length} emptyText="조건에 맞는 결제 내역이 없습니다.">
-                  <table className="min-w-[1250px] text-left text-sm">
+                  <table className="min-w-[1180px] w-full table-auto text-left text-sm">
                     <thead className="bg-slate-100 text-xs font-black text-slate-500">
-                      <tr><Th>결제일</Th><Th>회원</Th><Th>결제 상품</Th><Th>결제 금액</Th><Th>결제 수단</Th><Th>상태</Th><Th>거래번호</Th><Th>관리</Th></tr>
+                      <tr>
+                        <Th>결제일</Th><Th>회원</Th><Th>결제 상품</Th><Th>결제 금액</Th><Th>결제 수단</Th><Th>상태</Th>
+                        <th className="whitespace-nowrap px-4 py-4">거래번호</th>
+                        <th className="sticky right-0 z-20 min-w-[104px] whitespace-nowrap border-l border-slate-200 bg-slate-100 px-4 py-4 text-center shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.55)]">관리</th>
+                      </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {shownPayments.map((item) => {
@@ -2655,8 +2809,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                             <Td><b>{won.format(originalAmount)}원</b>{refunded > 0 && (<div className="mt-1 text-[11px] space-y-0.5"><p className="font-bold text-rose-600">환불 완료: {won.format(refunded)}원</p><p className="font-bold text-slate-500">남은 잔액: {won.format(remaining)}원</p></div>)}</Td>
                             <Td><b>{paymentDetail(item.payment_method, item.pg_tid)}</b>{item.payment_method === "CARD" && <p className="mt-1 text-xs text-amber-600">카드사 정보 미저장</p>}</Td>
                             <Td><Badge status={item.status} /></Td>
-                            <Td><span title={item.pg_tid ?? item.id} className="block max-w-[220px] truncate font-mono text-xs text-slate-500">{item.pg_tid ?? item.id}</span></Td>
-                            <Td>{["paid", "success"].includes(item.status ?? "") && !isRefundRow ? (remaining > 0 ? (<button onClick={() => { setCancelTarget(item); setCancelAmountStr(String(remaining)); }} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-100 transition shadow-2xs">결제 취소</button>) : (<span className="text-xs font-bold text-slate-400">취소 완료</span>)) : ["cancelled", "canceled", "refunded"].includes(item.status ?? "") || isRefundRow ? (<span className="text-xs font-bold text-slate-400">취소 완료</span>) : ("-")}</Td>
+                            <td className="whitespace-nowrap px-4 py-4 align-middle"><span title={item.pg_tid ?? item.id} className="block max-w-[220px] truncate font-mono text-xs text-slate-500">{item.pg_tid ?? item.id}</span></td>
+                            <td className="sticky right-0 z-10 min-w-[104px] whitespace-nowrap border-l border-slate-100 bg-white px-3 py-4 text-center align-middle shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.45)]">
+                              {["paid", "success"].includes(item.status ?? "") && !isRefundRow ? (remaining > 0 ? (<button onClick={() => { setCancelTarget(item); setCancelAmountStr(String(remaining)); }} className="rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 transition shadow-2xs">결제 취소</button>) : (<span className="text-xs font-bold text-slate-400">취소 완료</span>)) : ["cancelled", "canceled", "refunded"].includes(item.status ?? "") || isRefundRow ? (<span className="text-xs font-bold text-slate-400">취소 완료</span>) : ("-")}
+                            </td>
                           </tr>
                         );
                       })}

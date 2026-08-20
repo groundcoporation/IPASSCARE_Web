@@ -25,7 +25,7 @@ export function App() {
       try {
         const { data: auth } = await supabase.auth.getUser();
         if (auth?.user) {
-          const { data } = await supabase.from("users").select("id,name,role,branch_id").eq("id", auth.user.id).maybeSingle();
+          const { data } = await supabase.from("users").select("id,name,role,branch_id").eq("id", auth.user.id).neq("status", "deleted").maybeSingle();
           if (data) {
             setLoggedInProfile(data);
           }

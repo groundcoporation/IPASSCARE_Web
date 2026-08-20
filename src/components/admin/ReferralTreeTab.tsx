@@ -41,7 +41,8 @@ export const ReferralTreeTab: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('users')
-        .select('id, username, email, name, phone, role, target_class, points, referred_by, referral_count, level, lineage, created_at');
+        .select('id, username, email, name, phone, role, target_class, points, referred_by, referral_count, level, lineage, created_at')
+        .neq('status', 'deleted');
       
       if (!error && data) {
         setUsers(data as UserRecord[]);

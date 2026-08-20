@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { Plus, Pencil, Trash2, Clock, Calendar, Users, BookOpen, Loader2 } from 'lucide-react';
 
@@ -27,6 +27,22 @@ interface AdminClassTabProps {
   branches: Array<{ id: string; name: string }>;
 }
 
+const DAYS_LIST = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일'];
+const DAY_ALIASES: Record<string, string> = {
+  월: '월요일', 월요일: '월요일',
+  화: '화요일', 화요일: '화요일',
+  수: '수요일', 수요일: '수요일',
+  목: '목요일', 목요일: '목요일',
+  금: '금요일', 금요일: '금요일',
+  토: '토요일', 토요일: '토요일',
+  일: '일요일', 일요일: '일요일',
+};
+
+const normalizeDay = (day: string | null | undefined) => {
+  const trimmedDay = day?.trim() || '';
+  return DAY_ALIASES[trimmedDay] || trimmedDay || '요일 미지정';
+};
+
 export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, branches }) => {
   const [classes, setClasses] = useState<ClassSchedule[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -44,7 +60,26 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
   const [maxPeople, setMaxPeople] = useState('20');
   const [saveLoading, setSaveLoading] = useState(false);
 
-  const daysList = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일'];
+  const classesByDay = useMemo(() => {
+    const grouped = new Map<string, ClassSchedule[]>();
+    DAYS_LIST.forEach((day) => grouped.set(day, []));
+
+    classes.forEach((cls) => {
+      const day = normalizeDay(cls.day_of_week);
+      grouped.set(day, [...(grouped.get(day) || []), cls]);
+    });
+
+    grouped.forEach((dayClasses) => {
+      dayClasses.sort((a, b) => a.start_time.localeCompare(b.start_time));
+    });
+
+    return grouped;
+  }, [classes]);
+
+  const displayedDays = useMemo(() => [
+    ...DAYS_LIST,
+    ...Array.from(classesByDay.keys()).filter((day) => !DAYS_LIST.includes(day)),
+  ], [classesByDay]);
 
   // Load teachers and classes
   const loadInitialData = async () => {
@@ -88,7 +123,7 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
       setSelectedBranchId(cls.branch_id || activeBranchId || '');
       setTargetClass(cls.target_class);
       setTeacherId(cls.teacher_id || '');
-      setDayOfWeek(cls.day_of_week);
+      setDayOfWeek(normalizeDay(cls.day_of_week));
       setStartTime(cls.start_time.slice(0, 5));
       setEndTime(cls.end_time.slice(0, 5));
       setMaxPeople(cls.max_people ? String(cls.max_people) : '');
@@ -185,84 +220,99 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
         </button>
       </div>
 
-      {/* Class List Table */}
+      {/* Classes grouped by weekday */}
       {loading ? (
         <div className="py-24 text-center text-sm font-bold text-slate-400 flex flex-col items-center justify-center gap-3">
           <Loader2 className="animate-spin text-blue-500" size={24} />
           <span>수업반 정보 불러오는 중...</span>
         </div>
       ) : classes.length > 0 ? (
-        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm text-slate-500">
-              <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
-                <tr>
-                  <th scope="col" className="px-6 py-4">수업반 이름</th>
-                  <th scope="col" className="px-6 py-4">지점</th>
-                  <th scope="col" className="px-6 py-4">담당 강사</th>
-                  <th scope="col" className="px-6 py-4">수업 일시</th>
-                  <th scope="col" className="px-6 py-4">정원</th>
-                  <th scope="col" className="px-6 py-4 text-right">관리</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 border-t border-slate-100">
-                {classes.map((cls) => {
-                  const teacherName = cls.academy_teachers?.name || '강사 미지정';
-                  
-                  return (
-                    <tr key={cls.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-4 font-extrabold text-slate-900">{cls.target_class}</td>
-                      <td className="px-6 py-4 text-xs font-bold text-slate-600">
-                        {branches.find(b => b.id === cls.branch_id)?.name || cls.branch_id || '미지정'}
-                      </td>
-                      <td className="px-6 py-4 text-slate-700">
-                        <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md font-bold ${
-                          cls.teacher_id ? 'bg-slate-100 text-slate-800' : 'bg-rose-50 text-rose-600'
-                        }`}>
-                          <BookOpen size={12} />
-                          {teacherName}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col gap-0.5 text-xs">
-                          <span className="font-bold text-slate-700 flex items-center gap-1">
-                            <Calendar size={12} className="text-slate-400" />
-                            {cls.day_of_week}
-                          </span>
-                          <span className="text-slate-400 font-semibold flex items-center gap-1">
-                            <Clock size={12} className="text-slate-400" />
-                            {cls.start_time.slice(0, 5)} ~ {cls.end_time.slice(0, 5)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-700">
-                          <Users size={12} className="text-slate-400" />
-                          {cls.max_people ? `${cls.max_people}명` : '제한 없음'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex justify-end gap-1.5">
-                          <button
-                            onClick={() => openModal(cls)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-bold"
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(cls.id, cls.target_class)}
-                            className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg text-xs font-bold"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {displayedDays.map((day) => {
+            const dayClasses = classesByDay.get(day) || [];
+            const isSaturday = day === '토요일';
+            const isSunday = day === '일요일';
+            const dayColor = isSunday
+              ? 'bg-rose-50 text-rose-600 border-rose-100'
+              : isSaturday
+                ? 'bg-blue-50 text-blue-600 border-blue-100'
+                : 'bg-slate-50 text-slate-800 border-slate-200';
+
+            return (
+              <section key={day} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+                <div className={`flex items-center justify-between border-b px-4 py-3 ${dayColor}`}>
+                  <div className="flex items-center gap-2">
+                    <Calendar size={15} />
+                    <h3 className="text-sm font-black">{day}</h3>
+                  </div>
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-black">
+                    {dayClasses.length}개 수업
+                  </span>
+                </div>
+
+                {dayClasses.length > 0 ? (
+                  <div className="divide-y divide-slate-100">
+                    {dayClasses.map((cls) => {
+                      const teacherName = cls.academy_teachers?.name || '강사 미지정';
+                      return (
+                        <article key={cls.id} className="group p-4 transition-colors hover:bg-slate-50/80">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="mb-1.5 flex items-center gap-2">
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">
+                                  <Clock size={12} />
+                                  {cls.start_time.slice(0, 5)} ~ {cls.end_time.slice(0, 5)}
+                                </span>
+                              </div>
+                              <h4 className="truncate text-sm font-black text-slate-900">{cls.target_class}</h4>
+                              <p className="mt-1 truncate text-[11px] font-semibold text-slate-400">
+                                {branches.find((branch) => branch.id === cls.branch_id)?.name || cls.branch_id || '지점 미지정'}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openModal(cls)}
+                                aria-label={`${cls.target_class} 수정`}
+                                className="rounded-lg p-1.5 text-blue-600 hover:bg-blue-100"
+                              >
+                                <Pencil size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(cls.id, cls.target_class)}
+                                aria-label={`${cls.target_class} 삭제`}
+                                className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-100"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold ${
+                              cls.teacher_id ? 'bg-slate-100 text-slate-700' : 'bg-rose-50 text-rose-600'
+                            }`}>
+                              <BookOpen size={11} />
+                              {teacherName}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600">
+                              <Users size={11} />
+                              {cls.max_people ? `정원 ${cls.max_people}명` : '정원 제한 없음'}
+                            </span>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex min-h-24 items-center justify-center px-4 py-6 text-xs font-bold text-slate-300">
+                    등록된 수업 없음
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       ) : (
         <div className="text-center py-20 text-slate-400 font-bold text-sm bg-white rounded-2xl border border-dashed border-slate-200">
@@ -339,7 +389,7 @@ export const AdminClassTab: React.FC<AdminClassTabProps> = ({ activeBranchId, br
                     onChange={(e) => setDayOfWeek(e.target.value)}
                     className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    {daysList.map(d => (
+                    {DAYS_LIST.map(d => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                   </select>

@@ -22,6 +22,9 @@ interface Bill {
     child?: {
       deleted_at: string | null;
     } | null;
+    parent?: {
+      status: string;
+    } | null;
   } | null;
   class_schedules: {
     target_class: string;
@@ -52,6 +55,9 @@ interface StudentClassRow {
     child_id: string | null;
     child?: {
       deleted_at: string | null;
+    } | null;
+    parent?: {
+      status: string;
     } | null;
   } | null;
   class_schedules: {
@@ -146,7 +152,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             branch_id,
             is_sms_enabled,
             child_id,
-            child:children(deleted_at)
+            child:children(deleted_at),
+            parent:users(status)
           ),
           class_schedules(target_class),
           package_options(
@@ -162,6 +169,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         const filtered = (data as any[]).filter(row => {
           const student = row.academy_students;
           if (!student || (student.child_id && student.child?.deleted_at != null)) return false;
+          if (student.parent_user_id && student.parent?.status === 'deleted') return false;
           if (!activeBranchId || activeBranchId === 'all') return true;
           return student.branch_id === activeBranchId;
         });
@@ -189,7 +197,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             student_name,
             parent_user_id,
             child_id,
-            child:children(deleted_at)
+            child:children(deleted_at),
+            parent:users(status)
           ),
           class_schedules(target_class),
           package_options:package_option_id(
@@ -208,7 +217,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       if (!error && data) {
         const activeStudentBills = (data as any[]).filter((bill) => {
           const student = bill.academy_students;
-          return student && (!student.child_id || student.child?.deleted_at == null);
+          return student
+            && (!student.child_id || student.child?.deleted_at == null)
+            && (!student.parent_user_id || student.parent?.status !== 'deleted');
         });
         setBills(activeStudentBills as Bill[]);
       } else {
@@ -258,7 +269,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             parent_user_id,
             branch_id,
             child_id,
-            child:children(deleted_at)
+            child:children(deleted_at),
+            parent:users(status)
           ),
           class_schedules(target_class),
           package_options(
@@ -275,6 +287,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const branchMappings = (mappings as any[] || []).filter(
         m => m.academy_students?.branch_id === currentBranch
           && (!m.academy_students.child_id || m.academy_students.child?.deleted_at == null)
+          && (!m.academy_students.parent_user_id || m.academy_students.parent?.status !== 'deleted')
       );
 
       if (branchMappings.length === 0) {

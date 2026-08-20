@@ -26,6 +26,7 @@ interface Student {
   parent_user?: {
     name: string;
     email: string;
+    status: string;
   } | null;
   child?: {
     deleted_at: string | null;
@@ -128,7 +129,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       // 3. Load students
       let studentsQuery = supabase.from('academy_students').select(`
         *,
-        parent_user:users(name, email),
+        parent_user:users(name, email, status),
         child:children(deleted_at),
         academy_student_classes(
           class_schedule_id,
@@ -145,7 +146,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       if (error) throw error;
 
       const activeStudents = (studentsData || []).filter((student: any) => (
-        !student.child_id || student.child?.deleted_at == null
+        (!student.child_id || student.child?.deleted_at == null)
+        && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
       ));
       setStudents(activeStudents as Student[]);
     } catch (err) {
@@ -221,6 +223,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       .from('users')
       .select('id, phone')
       .in('phone', phones)
+      .neq('status', 'deleted')
       .limit(1);
 
     return data && data.length > 0 ? data[0].id : null;
