@@ -15,12 +15,15 @@ interface Teacher {
 interface AdminTeacherTabProps {
   activeBranchId: string | null;
   branches: Array<{ id: string; name: string }>;
+  profile?: any;
 }
 
-export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId, branches }) => {
+export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId, branches, profile }) => {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const canManageStaff = profile?.role === 'admin' || profile?.role === 'director';
   
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -146,20 +149,26 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
             학원 수업 시간표에 매핑할 선생님 및 직원의 연락망 정보를 등록하고 편집합니다.
           </p>
         </div>
-        <button 
-          onClick={() => openModal()}
-          className="flex items-center justify-center gap-1.5 self-start sm:self-center bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm"
-        >
-          <Plus size={16} />
-          선생님 등록
-        </button>
+        {canManageStaff ? (
+          <button 
+            onClick={() => openModal()}
+            className="flex items-center justify-center gap-1.5 self-start sm:self-center bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm"
+          >
+            <Plus size={16} />
+            임직원 등록
+          </button>
+        ) : (
+          <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+            👁️ 조회 전용 (원장·최고관리자만 편집 가능)
+          </span>
+        )}
       </div>
 
       {/* Teachers Grid */}
       {loading ? (
         <div className="py-24 text-center text-sm font-bold text-slate-400 flex flex-col items-center justify-center gap-3">
           <Loader2 className="animate-spin text-blue-500" size={24} />
-          <span>선생님 리스트 불러오는 중...</span>
+          <span>임직원 리스트 불러오는 중...</span>
         </div>
       ) : teachers.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -200,25 +209,27 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex justify-end gap-1.5 border-t border-slate-50 pt-3">
-                <button
-                  onClick={() => openModal(teacher)}
-                  className="flex items-center justify-center p-2 text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-bold"
-                  title="선생님 수정"
-                >
-                  <Pencil size={14} className="mr-1" />
-                  수정
-                </button>
-                <button
-                  onClick={() => handleDelete(teacher.id, teacher.name)}
-                  className="flex items-center justify-center p-2 text-rose-500 hover:bg-rose-50 rounded-lg text-xs font-bold"
-                  title="선생님 삭제"
-                >
-                  <Trash2 size={14} className="mr-1" />
-                  삭제
-                </button>
-              </div>
+              {/* Action Buttons (Only for Director & Super Admin) */}
+              {canManageStaff && (
+                <div className="flex justify-end gap-1.5 border-t border-slate-50 pt-3">
+                  <button
+                    onClick={() => openModal(teacher)}
+                    className="flex items-center justify-center p-2 text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-bold"
+                    title="임직원 수정"
+                  >
+                    <Pencil size={14} className="mr-1" />
+                    수정
+                  </button>
+                  <button
+                    onClick={() => handleDelete(teacher.id, teacher.name)}
+                    className="flex items-center justify-center p-2 text-rose-500 hover:bg-rose-50 rounded-lg text-xs font-bold"
+                    title="임직원 삭제 / 권한 회수"
+                  >
+                    <Trash2 size={14} className="mr-1" />
+                    삭제
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -10,6 +10,8 @@ import { AdminStudentTab } from "./AdminStudentTab";
 import { AdminTeacherTab } from "./AdminTeacherTab";
 import { AdminClassTab } from "./AdminClassTab";
 import { AdminBillingTab } from "./AdminBillingTab";
+import { AdminCounselTab } from "./AdminCounselTab";
+import { AdminStudyTab } from "./AdminStudyTab";
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
@@ -1653,24 +1655,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             <nav className="space-y-1">
               {/* STUDENT MGMT SUBMENU */}
               {mainTab === 'student_mgmt' && [
-                { id: 'teachers', label: '선생님 관리', icon: GraduationCap },
+                { id: 'teachers', label: '강사 및 임직원 관리', icon: GraduationCap },
                 { id: 'classes', label: '클래스 관리', icon: BookOpen },
                 { id: 'students', label: '학생 목록', icon: Users },
-                { id: 'counsel_log', label: '상담일지 (준비중)', icon: FileText, disabled: true },
-                { id: 'study_log', label: '학습일지 (준비중)', icon: FileText, disabled: true },
+                { id: 'counsel_log', label: '상담일지', icon: MessageSquare },
+                { id: 'study_log', label: '학습일지', icon: FileText },
               ].map((item) => {
                 const isActive = subTab === item.id;
                 return (
                   <button
                     key={item.id}
-                    disabled={item.disabled}
                     onClick={() => { setSubTab(item.id); setSearch(""); }}
                     className={`w-full flex items-center gap-2.5 px-3 py-3 text-xs font-bold rounded-xl text-left transition ${
-                      item.disabled 
-                        ? 'opacity-40 cursor-not-allowed'
-                        : isActive 
-                          ? 'bg-blue-600 text-white font-extrabold shadow-sm' 
-                          : 'hover:bg-slate-800 hover:text-white'
+                      isActive 
+                        ? 'bg-blue-600 text-white font-extrabold shadow-sm' 
+                        : 'hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <item.icon size={15} />
@@ -1790,12 +1789,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
             {/* TEACHERS TAB (100% Original) */}
             {subTab === "teachers" && (
-              <AdminTeacherTab activeBranchId={activeBranchId} branches={branches} />
+              <AdminTeacherTab activeBranchId={activeBranchId} branches={branches} profile={profile} />
             )}
 
             {/* CLASSES TAB (100% Original) */}
             {subTab === "classes" && (
               <AdminClassTab activeBranchId={activeBranchId} branches={branches} />
+            )}
+
+            {/* COUNSEL LOG TAB (1:1 Student/Parent Consultation) */}
+            {subTab === "counsel_log" && (
+              <AdminCounselTab activeBranchId={activeBranchId} branches={branches} profile={profile} />
+            )}
+
+            {/* STUDY LOG TAB (Class Lessons and Journals) */}
+            {subTab === "study_log" && (
+              <AdminStudyTab activeBranchId={activeBranchId} branches={branches} profile={profile} />
             )}
 
             {/* BILLING TAB (100% Original) */}
