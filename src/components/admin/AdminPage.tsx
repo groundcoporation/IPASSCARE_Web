@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
-  GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon
+  GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon, Building2
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { ReferralTreeTab } from "./ReferralTreeTab";
@@ -10,8 +10,12 @@ import { AdminStudentTab } from "./AdminStudentTab";
 import { AdminTeacherTab } from "./AdminTeacherTab";
 import { AdminClassTab } from "./AdminClassTab";
 import { AdminBillingTab } from "./AdminBillingTab";
+<<<<<<< HEAD
 import { AdminCounselTab } from "./AdminCounselTab";
 import { AdminStudyTab } from "./AdminStudyTab";
+=======
+import { AdminRoleManagementTab } from "./AdminRoleManagementTab";
+>>>>>>> 99ec3d94d81d522cd78a5db95b889a6a6b0cb6ea
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
@@ -92,7 +96,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [loginError, setLoginError] = useState("");
 
   // Re-designed 2-Tier Layout Navigation States
-  const [mainTab, setMainTab] = useState<'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'basic_settings'>('student_mgmt');
+  const [mainTab, setMainTab] = useState<'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'basic_settings'>('student_mgmt');
   const [subTab, setSubTab] = useState<string>('students');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -647,6 +651,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   // Load Sub-Tab Data based on current subTab state
   const loadSubTabData = useCallback(async () => {
     if (!profile) return;
+    if (["settings", "partners", "referrals", "videos", "inquiries"].includes(subTab) && profile.role !== "admin") return;
     if (subTab === "payments") void loadPayments();
     else if (subTab === "attendance") void loadAttendance();
     else if (subTab === "attendance_calendar") {
@@ -1579,7 +1584,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             { id: 'attendance_mgmt', label: '⏰ 출결관리', subDefault: 'admin_attendance' },
             { id: 'billing_mgmt', label: '💳 수납관리', subDefault: 'billing' },
             { id: 'sms_mgmt', label: '💬 문자관리', subDefault: 'sms_send' },
-            { id: 'basic_settings', label: '⚙️ 기본설정', subDefault: 'settings' }
+            ...(['admin', 'director'].includes(profile?.role ?? '') ? [{ id: 'role_mgmt', label: '🛡️ 권한 부여', subDefault: 'role_management' }] : []),
+            ...(profile?.role === 'admin' ? [{ id: 'basic_settings', label: '⚙️ 기본설정', subDefault: 'settings' }] : [])
           ].map((menu) => {
             const isActive = mainTab === menu.id;
             return (
@@ -1610,7 +1616,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={setBranchFilter} />
             </div>
           )}
-          
+
+          {profile?.role !== "admin" && (
+            <div className={`hidden sm:flex items-center gap-2 rounded-xl border px-3 py-2 ${activeBranchName ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+              <Building2 size={14} />
+              <div className="leading-tight">
+                <p className="text-[9px] font-black uppercase tracking-wider opacity-60">소속 지점</p>
+                <p className="max-w-[180px] truncate text-[11px] font-black">{activeBranchName ?? '지점 미지정'}</p>
+              </div>
+            </div>
+          )}
+
           <button 
             onClick={logout} 
             className="flex items-center gap-2 border border-slate-200 bg-white hover:bg-slate-50 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-700 transition shadow-xs"
@@ -1639,6 +1655,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 {mainTab === 'attendance_mgmt' && 'ATTENDANCE MGMT'}
                 {mainTab === 'billing_mgmt' && 'BILLING MGMT'}
                 {mainTab === 'sms_mgmt' && 'MESSAGING MGMT'}
+                {mainTab === 'role_mgmt' && 'ROLE MANAGEMENT'}
                 {mainTab === 'basic_settings' && 'SYSTEM SETTINGS'}
               </span>
               <h2 className="text-sm font-black text-white mt-2 px-1 flex items-center gap-1.5">
@@ -1647,6 +1664,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 {mainTab === 'attendance_mgmt' && '출결관리'}
                 {mainTab === 'billing_mgmt' && '수납관리'}
                 {mainTab === 'sms_mgmt' && '문자관리'}
+                {mainTab === 'role_mgmt' && '권한 부여'}
                 {mainTab === 'basic_settings' && '기본설정'}
               </h2>
             </div>
@@ -1745,8 +1763,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 );
               })}
 
+              {mainTab === 'role_mgmt' && [
+                { id: 'role_management', label: '회원 권한 관리', icon: ShieldAlert },
+              ].map((item) => {
+                const isActive = subTab === item.id;
+                return <button key={item.id} onClick={() => { setSubTab(item.id); setSearch(""); }} className={`w-full flex items-center gap-2.5 px-3 py-3 text-xs font-bold rounded-xl text-left transition ${isActive ? 'bg-blue-600 text-white font-extrabold shadow-sm' : 'hover:bg-slate-800 hover:text-white'}`}><item.icon size={15} />{item.label}</button>;
+              })}
+
               {/* SYSTEM SETTINGS SUBMENU */}
-              {mainTab === 'basic_settings' && [
+              {mainTab === 'basic_settings' && profile?.role === 'admin' && [
                 { id: 'settings', label: '요금제 단가설정', icon: Settings },
                 { id: 'partners', label: '협력브랜드 관리', icon: UsersRound },
                 { id: 'referrals', label: '추천 포인트트리', icon: GitFork },
@@ -1810,6 +1835,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             {/* BILLING TAB (100% Original) */}
             {subTab === "billing" && (
               <AdminBillingTab activeBranchId={activeBranchId} branches={branches} />
+            )}
+
+            {subTab === "role_management" && profile && ['admin', 'director'].includes(profile.role) && (
+              <AdminRoleManagementTab profile={profile} activeBranchId={activeBranchId} branches={branches} />
             )}
 
             {/* ATTENDANCE 1: 관리자 출결 (실시간 승·하차 및 등·하원 체크) */}
@@ -2898,7 +2927,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             )}
 
             {/* ROI SYSTEM SETTINGS (100% ORIGINAL FORM) */}
-            {subTab === "settings" && (
+            {subTab === "settings" && profile?.role === "admin" && (
               <div className="bg-white p-8 rounded-3xl ring-1 ring-slate-200 space-y-4 max-w-2xl">
                 <h2 className="font-black text-lg text-slate-900">⚙️ 요금제 단가 & 기대효과 설정</h2>
                 <p className="text-xs text-slate-500">
@@ -2921,7 +2950,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             )}
 
             {/* PARTNER BRAND LOGOS (100% ORIGINAL RICH MANAGER) */}
-            {subTab === "partners" && (
+            {subTab === "partners" && profile?.role === "admin" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                 
                 {/* Partner Logo Registration / Edit Form */}
@@ -3144,10 +3173,10 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
             )}
 
             {/* TAB 7: REFERRAL TREE (100% ORIGINAL) */}
-            {subTab === "referrals" && <ReferralTreeTab />}
+            {subTab === "referrals" && profile?.role === "admin" && <ReferralTreeTab />}
 
             {/* YOUTUBE MANUAL VIDEO EDITOR (100% ORIGINAL COMPLETE RICH COMPONENT) */}
-            {subTab === "videos" && (
+            {subTab === "videos" && profile?.role === "admin" && (
               <div className="space-y-8">
                 
                 {/* Form & Live Website Card Preview Split Grid */}
@@ -3483,7 +3512,7 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
             )}
 
             {/* B2B INQUIRIES LIST TAB (100% ORIGINAL) */}
-            {subTab === "inquiries" && (
+            {subTab === "inquiries" && profile?.role === "admin" && (
               <div className="space-y-4">
                 <h2 className="text-lg font-black text-slate-900">📋 B2B 무료 도입 문의 접수 리스트</h2>
                 <div className="grid grid-cols-1 gap-3">
