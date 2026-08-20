@@ -18,7 +18,7 @@ const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
 type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
-type Payment = { id: string; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[] };
+type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[] };
 type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[] };
 type ClassSchedule = { id: string; branch_id: string | null; target_class: string; day_of_week: string; start_time: string; end_time: string; max_people: number | null; branches: { name: string } | null };
 type ScheduleReservation = { id: string; schedule_id: string; class_date: string; status: string | null; attendance_status: string | null; child_id: string | null; user_id: string | null; children: { child_name: string | null } | null; users: { name: string | null; phone: string | null } | null };
@@ -485,22 +485,54 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setProfile(null);
   };
 
-  // Load Payments
+  // Load Payments with Child Names
   const loadPayments = useCallback(async () => {
     if (!profile) return;
     setLoading(true); setError("");
     try {
-      let query = supabase.from("payments").select("id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,users(name,email)").order("created_at", { ascending: false });
+      let query = supabase.from("payments").select("id,user_id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,users(id,name,email)").order("created_at", { ascending: false });
       const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
       const { data, error: queryError } = await query;
       if (queryError) throw queryError;
       const paymentIds = (data ?? []).map((row: any) => row.id);
-      const productResult = paymentIds.length ? await supabase.from("user_packages").select("payment_id,package_name,price,total_count").in("payment_id", paymentIds) : { data: [], error: null };
+      const userIds = [...new Set((data ?? []).map((row: any) => row.user_id).filter(Boolean))];
+
+      // Fetch products and children in parallel
+      const [productResult, childResult, studentResult] = await Promise.all([
+        paymentIds.length ? supabase.from("user_packages").select("payment_id,package_name,price,total_count").in("payment_id", paymentIds) : Promise.resolve({ data: [], error: null }),
+        userIds.length ? supabase.from("children").select("parent_id,child_name").in("parent_id", userIds).is("deleted_at", null) : Promise.resolve({ data: [], error: null }),
+        userIds.length ? supabase.from("academy_students").select("parent_user_id,student_name").in("parent_user_id", userIds) : Promise.resolve({ data: [], error: null })
+      ]);
+
       if (productResult.error) throw productResult.error;
+
       const productsByPayment = new Map<string, PaymentProduct[]>();
       (productResult.data ?? []).forEach((product: any) => productsByPayment.set(product.payment_id, [...(productsByPayment.get(product.payment_id) ?? []), product]));
-      setPayments((data ?? []).map((row: any) => ({ ...row, users: firstJoined(row.users), products: productsByPayment.get(row.id) ?? [] })) as Payment[]);
+
+      // Map children names by parent user id
+      const childrenByParent = new Map<string, string[]>();
+      (childResult.data ?? []).forEach((c: any) => {
+        if (c.parent_id && c.child_name) {
+          const list = childrenByParent.get(c.parent_id) || [];
+          if (!list.includes(c.child_name)) list.push(c.child_name);
+          childrenByParent.set(c.parent_id, list);
+        }
+      });
+      (studentResult.data ?? []).forEach((s: any) => {
+        if (s.parent_user_id && s.student_name) {
+          const list = childrenByParent.get(s.parent_user_id) || [];
+          if (!list.includes(s.student_name)) list.push(s.student_name);
+          childrenByParent.set(s.parent_user_id, list);
+        }
+      });
+
+      setPayments((data ?? []).map((row: any) => ({
+        ...row,
+        users: firstJoined(row.users),
+        products: productsByPayment.get(row.id) ?? [],
+        childrenNames: childrenByParent.get(row.user_id) ?? []
+      })) as Payment[]);
     } catch (reason: any) { setError(reason?.message ?? "결제 내역을 불러오지 못했습니다."); }
     finally { setLoading(false); }
   }, [branchFilter, profile]);
@@ -2823,12 +2855,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 </Toolbar>
 
                 <TableShell empty={!loading && !shownPayments.length} emptyText="조건에 맞는 결제 내역이 없습니다.">
-                  <table className="min-w-[1180px] w-full table-auto text-left text-sm">
-                    <thead className="bg-slate-100 text-xs font-black text-slate-500">
+                  <table className="w-full table-auto text-left text-xs">
+                    <thead className="bg-slate-100 text-[11px] font-black text-slate-600 border-b border-slate-200">
                       <tr>
-                        <Th>결제일</Th><Th>회원</Th><Th>결제 상품</Th><Th>결제 금액</Th><Th>결제 수단</Th><Th>상태</Th>
-                        <th className="whitespace-nowrap px-4 py-4">거래번호</th>
-                        <th className="sticky right-0 z-20 min-w-[104px] whitespace-nowrap border-l border-slate-200 bg-slate-100 px-4 py-4 text-center shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.55)]">관리</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[130px]">결제일</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[140px]">회원 / 자녀</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[180px]">결제 상품</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[90px] text-right">결제 금액</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[95px] text-center">결제 수단</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[75px] text-center">상태</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[110px]">거래번호</th>
+                        <th className="sticky right-0 z-20 min-w-[90px] whitespace-nowrap border-l border-slate-200 bg-slate-100 px-3 py-3 text-center shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.55)]">관리</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2836,17 +2873,78 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                         const { refunded, remaining } = getRefundInfo(item);
                         const originalAmount = item.final_amount ?? item.total_amount ?? 0;
                         const isRefundRow = originalAmount < 0 || (item.pg_tid && item.pg_tid.endsWith("_REFUND"));
+                        const d = new Date(item.created_at);
+                        const dateStr = `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}. ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
                         return (
-                          <tr key={item.id} className="hover:bg-blue-50/40">
-                            <Td>{new Date(item.created_at).toLocaleString("ko-KR")}</Td>
-                            <Td><b>{item.users?.name ?? "회원 정보 없음"}</b><p className="mt-1 text-xs text-slate-400">{item.users?.email ?? "-"}</p></Td>
-                            <Td><div className="max-w-[300px] space-y-1">{item.products.length ? item.products.map((product, index) => <div key={`${product.package_name}-${index}`} className="rounded-lg bg-slate-100 px-2.5 py-1.5"><b className="block truncate">{product.package_name ?? "상품명 없음"}</b><span className="text-xs text-slate-500">{product.total_count ? `${product.total_count}회` : "횟수 미지정"}{product.price != null ? ` · ${won.format(product.price)}원` : ""}</span></div>) : <span className="text-slate-400">연결 상품 없음</span>}</div></Td>
-                            <Td><b>{won.format(originalAmount)}원</b>{refunded > 0 && (<div className="mt-1 text-[11px] space-y-0.5"><p className="font-bold text-rose-600">환불 완료: {won.format(refunded)}원</p><p className="font-bold text-slate-500">남은 잔액: {won.format(remaining)}원</p></div>)}</Td>
-                            <Td><b>{paymentDetail(item.payment_method, item.pg_tid)}</b>{item.payment_method === "CARD" && <p className="mt-1 text-xs text-amber-600">카드사 정보 미저장</p>}</Td>
-                            <Td><Badge status={item.status} /></Td>
-                            <td className="whitespace-nowrap px-4 py-4 align-middle"><span title={item.pg_tid ?? item.id} className="block max-w-[220px] truncate font-mono text-xs text-slate-500">{item.pg_tid ?? item.id}</span></td>
-                            <td className="sticky right-0 z-10 min-w-[104px] whitespace-nowrap border-l border-slate-100 bg-white px-3 py-4 text-center align-middle shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.45)]">
-                              {["paid", "success"].includes(item.status ?? "") && !isRefundRow ? (remaining > 0 ? (<button onClick={() => { setCancelTarget(item); setCancelAmountStr(String(remaining)); }} className="rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 transition shadow-2xs">결제 취소</button>) : (<span className="text-xs font-bold text-slate-400">취소 완료</span>)) : ["cancelled", "canceled", "refunded"].includes(item.status ?? "") || isRefundRow ? (<span className="text-xs font-bold text-slate-400">취소 완료</span>) : ("-")}
+                          <tr key={item.id} className="hover:bg-blue-50/40 transition">
+                            <td className="whitespace-nowrap px-3 py-3 align-middle text-slate-600 font-semibold">
+                              {dateStr}
+                            </td>
+                            <td className="px-3 py-3 align-middle">
+                              <div className="max-w-[160px]">
+                                <b className="text-slate-900 font-black text-xs block">{item.users?.name ?? "회원 정보 없음"}</b>
+                                {item.childrenNames && item.childrenNames.length > 0 && (
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {item.childrenNames.map((cName, cIdx) => (
+                                      <span 
+                                        key={`${cName}-${cIdx}`} 
+                                        className="inline-flex items-center text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded shadow-2xs"
+                                      >
+                                        👦 {cName}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                                <p className="mt-1 text-[11px] text-slate-400 font-medium truncate">{item.users?.email ?? "-"}</p>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 align-middle">
+                              <div className="max-w-[220px] space-y-1">
+                                {item.products.length ? item.products.map((product, index) => (
+                                  <div key={`${product.package_name}-${index}`} className="rounded-lg bg-slate-100 px-2 py-1">
+                                    <b className="block truncate text-slate-800 text-[11px]">{product.package_name ?? "상품명 없음"}</b>
+                                    <span className="text-[10px] text-slate-500 font-semibold">
+                                      {product.total_count ? `${product.total_count}회` : "횟수 미지정"}
+                                      {product.price != null ? ` · ${won.format(product.price)}원` : ""}
+                                    </span>
+                                  </div>
+                                )) : <span className="text-slate-400 text-xs">연결 상품 없음</span>}
+                              </div>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3 align-middle text-right">
+                              <b className="text-slate-900 font-black text-xs">{won.format(originalAmount)}원</b>
+                              {refunded > 0 && (
+                                <div className="mt-0.5 text-[10px] space-y-0.5">
+                                  <p className="font-bold text-rose-600">환불: {won.format(refunded)}원</p>
+                                  <p className="font-bold text-slate-500">잔액: {won.format(remaining)}원</p>
+                                </div>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3 align-middle text-center">
+                              <b className="text-slate-700 font-bold text-xs">{paymentDetail(item.payment_method, item.pg_tid)}</b>
+                              {item.payment_method === "CARD" && <p className="mt-0.5 text-[10px] text-amber-600 font-medium">카드사 미저장</p>}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3 align-middle text-center">
+                              <Badge status={item.status} />
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3 align-middle">
+                              <span title={item.pg_tid ?? item.id} className="block max-w-[130px] truncate font-mono text-[11px] text-slate-500 font-semibold">
+                                {item.pg_tid ?? item.id}
+                              </span>
+                            </td>
+                            <td className="sticky right-0 z-10 min-w-[90px] whitespace-nowrap border-l border-slate-100 bg-white px-3 py-3 text-center align-middle shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.45)]">
+                              {["paid", "success"].includes(item.status ?? "") && !isRefundRow ? (
+                                remaining > 0 ? (
+                                  <button onClick={() => { setCancelTarget(item); setCancelAmountStr(String(remaining)); }} className="rounded-lg bg-rose-50 px-2.5 py-1 text-[11px] font-black text-rose-600 hover:bg-rose-100 transition shadow-2xs border border-rose-200">
+                                    결제 취소
+                                  </button>
+                                ) : (
+                                  <span className="text-[11px] font-bold text-slate-400">취소 완료</span>
+                                )
+                              ) : ["cancelled", "canceled", "refunded"].includes(item.status ?? "") || isRefundRow ? (
+                                <span className="text-[11px] font-bold text-slate-400">취소 완료</span>
+                              ) : ("-")}
                             </td>
                           </tr>
                         );

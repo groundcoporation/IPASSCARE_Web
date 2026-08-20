@@ -185,10 +185,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     }
   };
 
-  // Load Bills
+  // Load Bills with Real-Time Payment Matching
   const loadBills = async () => {
     setLoading(true);
     try {
+      // 1. Fetch bills for the selected month
       let query = supabase
         .from('academy_bills')
         .select(`
@@ -200,12 +201,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             child:children(deleted_at),
             parent:users(status)
           ),
-          class_schedules(target_class),
-          package_options:package_option_id(
-            label,
-            price,
-            packages(name)
-          )
+          class_schedules(target_class)
         `)
         .eq('bill_month', selectedMonth);
       
@@ -213,9 +209,49 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         query = query.eq('branch_id', activeBranchId);
       }
 
-      const { data, error } = await query;
+      const { data, error } = await query.order('created_at', { ascending: false });
+
+      // 2. Fetch app payments for the selected month to automatically match
+      let payQuery = supabase
+        .from('payments')
+        .select('id, user_id, final_amount, total_amount, payment_method, created_at, status')
+        .eq('status', 'success')
+        .gte('created_at', `${selectedMonth}-01T00:00:00`)
+        .lte('created_at', `${selectedMonth}-31T23:59:59`);
+
+      if (activeBranchId && activeBranchId !== 'all') {
+        payQuery = payQuery.eq('branch_id', activeBranchId);
+      }
+
+      const { data: monthPayments } = await payQuery;
+      const userPaymentMap = new Map<string, any>();
+      (monthPayments || []).forEach((p: any) => {
+        if (p.user_id) userPaymentMap.set(p.user_id, p);
+      });
+
       if (!error && data) {
-        const activeStudentBills = (data as any[]).filter((bill) => {
+        const activeStudentBills = (data as any[]).map(b => {
+          const parentUserId = b.academy_students?.parent_user_id;
+          const appPayment = parentUserId ? userPaymentMap.get(parentUserId) : null;
+          const isPaid = b.status === 'paid' || Boolean(appPayment);
+          const paidAmount = b.status === 'paid' 
+            ? (b.amount_paid || b.amount_due) 
+            : (appPayment ? (appPayment.final_amount || appPayment.total_amount || b.amount_due) : 0);
+          const paymentMethod = b.status === 'paid' 
+            ? (b.payment_method || 'app_card') 
+            : (appPayment ? (appPayment.payment_method?.toLowerCase() || 'app_card') : null);
+          const paymentDate = b.status === 'paid' 
+            ? b.payment_date 
+            : (appPayment ? appPayment.created_at : null);
+
+          return {
+            ...b,
+            status: isPaid ? 'paid' : 'unpaid',
+            amount_paid: paidAmount,
+            payment_method: paymentMethod,
+            payment_date: paymentDate
+          };
+        }).filter((bill) => {
           const student = bill.academy_students;
           return student
             && (!student.child_id || student.child?.deleted_at == null)
@@ -223,6 +259,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         });
         setBills(activeStudentBills as Bill[]);
       } else {
+        console.error('Error loading bills query:', error);
         setBills([]);
       }
     } catch (err) {
@@ -244,19 +281,24 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Generate Invoices for all active students in the selected month
   const handleGenerateBills = async () => {
-    const currentBranch = activeBranchId || (branches.length > 0 ? branches[0].id : '');
-    if (!currentBranch || currentBranch === 'all') {
-      alert('지점을 먼저 선택해주세요. (상단 지점 필터에서 특정 지점을 선택해야 청구서 일괄 발행이 가능합니다.)');
-      return;
-    }
+    const branchName = activeBranchId && activeBranchId !== 'all' 
+      ? branches.find(b => b.id === activeBranchId)?.name || '해당'
+      : '전체';
 
-    if (!confirm(`${branches.find(b => b.id === currentBranch)?.name} 지점의 모든 수강 학생을 대상으로 [${selectedMonth}월분] 청구 고지서를 일괄 발행하시겠습니까?\n이미 발행된 청구서가 있을 경우 중복 발행되지 않고 건너뜁니다.`)) {
+    if (!confirm(`${branchName} 지점의 모든 수강 학생을 대상으로 [${selectedMonth}월분] 청구 고지서를 일괄 발행하시겠습니까?\n이미 발행된 청구서가 있을 경우 중복 발행되지 않고 건너뜁니다.`)) {
       return;
     }
 
     setActionLoading(true);
     try {
-      // Load current branch mapping
+      // 1. Fetch all package options independently
+      const { data: allPkgOptions } = await supabase
+        .from('package_options')
+        .select('id, label, price, packages(name)');
+      const pkgOptionMap = new Map<string, any>();
+      (allPkgOptions || []).forEach((p: any) => pkgOptionMap.set(p.id, p));
+
+      // 2. Load active mappings
       const { data: mappings, error: mErr } = await supabase
         .from('academy_student_classes')
         .select(`
@@ -272,32 +314,28 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             child:children(deleted_at),
             parent:users(status)
           ),
-          class_schedules(target_class),
-          package_options(
-            id,
-            label,
-            price,
-            packages(name)
-          )
+          class_schedules(target_class)
         `)
         .eq('status', 'active');
 
       if (mErr) throw mErr;
 
       const branchMappings = (mappings as any[] || []).filter(
-        m => m.academy_students?.branch_id === currentBranch
-          && (!m.academy_students.child_id || m.academy_students.child?.deleted_at == null)
-          && (!m.academy_students.parent_user_id || m.academy_students.parent?.status !== 'deleted')
+        m => (!activeBranchId || activeBranchId === 'all' || m.academy_students?.branch_id === activeBranchId)
+          && (!m.academy_students?.child_id || m.academy_students?.child?.deleted_at == null)
+          && (!m.academy_students?.parent_user_id || m.academy_students?.parent?.status !== 'deleted')
       );
 
       if (branchMappings.length === 0) {
-        alert('이 지점에 현재 수강중(active) 상태인 학생 배정 내역이 없습니다. 학생 관리 탭에서 학생을 등록하고 요금제를 먼저 배정해 주세요.');
+        alert('현재 수강중(active) 상태인 학생 배정 내역이 없습니다. [학생 관리] 탭에서 학생을 등록하고 요금제를 먼저 배정해 주세요.');
         setActionLoading(false);
         return;
       }
 
       let createdCount = 0;
-      let skippedCount = 0;
+      let alreadyCount = 0;
+      let failCount = 0;
+      let lastErrMsg = '';
 
       const packageGroups = new Map<string, any[]>();
       for (const mapping of branchMappings) {
@@ -309,55 +347,60 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
       for (const maps of packageGroups.values()) {
         const map = maps[0];
-        // Skip if no package option is linked to this student class mapping
-        if (!map.package_option_id || !map.package_options) {
-          skippedCount++;
-          continue;
-        }
-
-        const price = map.package_options.price;
-        const packageName = map.package_options.packages?.name || '수강료';
+        const pkgOpt = map.package_option_id ? pkgOptionMap.get(map.package_option_id) : null;
+        const price = pkgOpt?.price || 0;
+        const packageName = pkgOpt?.packages?.name || '수강료';
+        const packageLabel = pkgOpt?.label || '기본 요금';
         const classNames: string[] = Array.from(new Set<string>(
           maps.map((item: any) => item.class_schedules?.target_class || '이용권 단독')
         ));
+        const targetBranchId = map.academy_students?.branch_id || (branches.length > 0 ? branches[0].id : '');
 
-        // One monthly invoice per student/package option, regardless of how
-        // many class schedules are attached to that tuition package.
+        // Check if bill already exists for this student in this month
         const { data: existing } = await supabase
           .from('academy_bills')
           .select('id')
           .eq('student_id', map.student_id)
           .eq('bill_month', selectedMonth)
-          .eq('package_option_id', map.package_option_id)
           .limit(1);
 
         if (existing && existing.length > 0) {
-          skippedCount++;
-          continue; // Skip
+          alreadyCount++;
+          continue; // Already exists
         }
 
         // Create bill
+        const billPayload: any = {
+          branch_id: targetBranchId,
+          student_id: map.student_id,
+          class_schedule_id: maps.length === 1 ? (map.class_schedule_id || null) : null,
+          bill_month: selectedMonth,
+          amount_due: price,
+          amount_paid: 0,
+          billing_date: new Date().toISOString().slice(0, 10),
+          status: 'unpaid',
+          memo: `${packageName} (${packageLabel}) | 연결 수업: ${classNames.join(', ')}`
+        };
+
         const { error: insErr } = await supabase
           .from('academy_bills')
-          .insert([{
-            branch_id: currentBranch,
-            student_id: map.student_id,
-            class_schedule_id: maps.length === 1 ? (map.class_schedule_id || null) : null,
-            package_option_id: map.package_option_id,
-            bill_month: selectedMonth,
-            amount_due: price,
-            amount_paid: 0,
-            billing_date: new Date().toISOString().slice(0, 10),
-            status: 'unpaid',
-            memo: `${packageName} (${map.package_options.label}) | 연결 수업: ${classNames.join(', ')}`
-          }]);
+          .insert([billPayload]);
 
-        if (!insErr) {
+        if (insErr) {
+          console.error('Invoice insert error:', insErr);
+          failCount++;
+          lastErrMsg = insErr.message;
+        } else {
           createdCount++;
         }
       }
 
-      alert(`청구서 생성 완료!\n- 새 청구서 발행: ${createdCount}건\n- 기존 발행 또는 요금제 미지정 건너뜀: ${skippedCount}건`);
+      if (failCount > 0 && createdCount === 0) {
+        alert(`청구서 DB 저장 중 오류가 발생했습니다:\n${lastErrMsg}`);
+      } else {
+        alert(`청구서 처리 완료!\n- 새로 발행된 청구서: ${createdCount}건\n- 이미 발행되어 건너뜀: ${alreadyCount}건\n\n[청구내역 조회] 탭으로 자동 이동합니다.`);
+      }
+
       setSubTab('invoices');
       loadBills();
     } catch (err: any) {
@@ -583,6 +626,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           const packageName = row.package_options?.packages?.name || '수강료';
                           const packageLabel = row.package_options?.label || '요금제 미지정';
                           const price = row.package_options ? `${row.package_options.price.toLocaleString()}원` : '단가 미지정';
+                          const dayNum = (row.payment_day || '1일').replace(/[^0-9]/g, '') || '01';
+                          const formattedDay = dayNum.padStart(2, '0');
                           return (
                             <tr key={row.package_option_id || row.id} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
                               <td className="px-4 py-3"><div className="flex max-w-xs flex-wrap gap-1">{classNames.map((className) => <span key={className} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600 font-bold">{className}</span>)}</div></td>
@@ -591,7 +636,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{row.payment_day || '매월 1일'}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-400 text-center">없음</td>
                               <td className="px-4 py-3 font-black text-blue-600 text-right">₩ {price}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-500 text-center"><span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded">{selectedMonth}-01 청구예정 <ArrowRight size={10} className="text-slate-400" /></span></td>
+                              <td className="px-4 py-3 text-xs font-medium text-slate-700 text-center"><span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded font-bold">{selectedMonth}-{formattedDay} 청구예정 <ArrowRight size={10} className="text-slate-400" /></span></td>
                               <td className="px-4 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${student.isSmsEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400'}`}>{student.isSmsEnabled ? '발송' : '미발송'}</span></td>
                               <td className="px-4 py-3 text-center"><span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700 font-black">{classNames.length}개 수업</span></td>
                             </tr>
