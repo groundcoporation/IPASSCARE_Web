@@ -10,12 +10,9 @@ import { AdminStudentTab } from "./AdminStudentTab";
 import { AdminTeacherTab } from "./AdminTeacherTab";
 import { AdminClassTab } from "./AdminClassTab";
 import { AdminBillingTab } from "./AdminBillingTab";
-<<<<<<< HEAD
 import { AdminCounselTab } from "./AdminCounselTab";
 import { AdminStudyTab } from "./AdminStudyTab";
-=======
 import { AdminRoleManagementTab } from "./AdminRoleManagementTab";
->>>>>>> 99ec3d94d81d522cd78a5db95b889a6a6b0cb6ea
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
