@@ -60,7 +60,7 @@ const isBeforeChildDeletion = (targetDate: string, deletedAt: string | null | un
   const deletedDate = kstDateKey(deletedAt);
   return !deletedDate || targetDate < deletedDate;
 };
-const statusText = (status: string | null) => ({ paid: "결제 완료", success: "결제 완료", pending_payment: "입금 대기", failed: "결제 실패", cancelled: "취소", canceled: "취소", refunded: "환불" }[status ?? ""] ?? status ?? "미확인");
+const statusText = (status: string | null) => ({ paid: "결제 완료", success: "결제 완료", scheduled: "현장결제 대기", pending_payment: "입금 대기", failed: "결제 실패", cancelled: "취소", canceled: "취소", refunded: "환불" }[status ?? ""] ?? status ?? "미확인");
 const paymentDetail = (method: string | null, pgTid: string | null) => {
   if (method === "CASH") return "현장 결제 : 현금";
   if (method === "OFFLINE_CARD") return "현장 결제 : 카드";
@@ -70,6 +70,13 @@ const paymentDetail = (method: string | null, pgTid: string | null) => {
   if (method === "POINT") return "포인트 결제";
   if (method === "CARD") return "신용·체크카드";
   return method ?? "결제수단 미확인";
+};
+const paymentReference = (payment: Pick<Payment, "id" | "pg_tid" | "status" | "payment_method">) => {
+  if (payment.pg_tid) return payment.pg_tid;
+  if (payment.status === "scheduled" && ["CASH", "OFFLINE_CARD", "OFFLINE_TRANSFER"].includes(payment.payment_method ?? "")) {
+    return `현장접수-${payment.id.slice(0, 8).toUpperCase()}`;
+  }
+  return payment.id;
 };
 
 // Helper: Extract YouTube Video ID from any URL format
@@ -1105,7 +1112,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         { header: "결제 금액", key: "amount", width: 15 },
         { header: "결제 수단", key: "method", width: 24 },
         { header: "상태", key: "status", width: 14 },
-        { header: "거래번호", key: "transaction", width: 34 },
+        { header: "거래번호 / 접수번호", key: "transaction", width: 34 },
       ];
       shownPayments.forEach((item) => sheet.addRow({
         createdAt: new Date(item.created_at),
@@ -1115,7 +1122,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         amount: item.final_amount ?? item.total_amount ?? 0,
         method: paymentDetail(item.payment_method, item.pg_tid),
         status: statusText(item.status),
-        transaction: item.pg_tid ?? item.id,
+        transaction: paymentReference(item),
       }));
     } else {
       sheet.columns = [
@@ -1375,7 +1382,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     return {
       revenue: paid.reduce((sum, item) => sum + (item.final_amount ?? item.total_amount ?? 0), 0),
       paid: paid.length,
-      pending: payments.filter((item) => item.status === "pending_payment").length,
+      pending: payments.filter((item) => ["pending_payment", "scheduled"].includes(item.status ?? "")).length,
       failed: payments.filter((item) => ["failed", "cancelled", "canceled"].includes(item.status ?? "")).length
     };
   }, [payments]);
@@ -2925,7 +2932,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <Stat label="결제 매출" value={`${won.format(stats.revenue)}원`} icon={<CreditCard />} color="blue" />
                   <Stat label="결제 완료" value={`${stats.paid}건`} icon={<Check />} color="green" />
-                  <Stat label="입금 대기" value={`${stats.pending}건`} icon={<CreditCard />} color="amber" />
+                  <Stat label="결제 대기" value={`${stats.pending}건`} icon={<CreditCard />} color="amber" />
                   <Stat label="실패·취소" value={`${stats.failed}건`} icon={<ShieldAlert />} color="rose" />
                 </section>
 
@@ -2935,6 +2942,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                     <option value="all">전체 상태</option>
                     <option value="paid">결제 완료</option>
                     <option value="pending_payment">입금 대기</option>
+                    <option value="scheduled">현장결제 대기</option>
                     <option value="failed">결제 실패</option>
                     <option value="refunded">환불</option>
                   </select>
@@ -2951,7 +2959,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                         <th className="whitespace-nowrap px-3 py-3 min-w-[90px] text-right">결제 금액</th>
                         <th className="whitespace-nowrap px-3 py-3 min-w-[95px] text-center">결제 수단</th>
                         <th className="whitespace-nowrap px-3 py-3 min-w-[75px] text-center">상태</th>
-                        <th className="whitespace-nowrap px-3 py-3 min-w-[110px]">거래번호</th>
+                        <th className="whitespace-nowrap px-3 py-3 min-w-[130px]">거래번호 / 접수번호</th>
                         <th className="sticky right-0 z-20 min-w-[90px] whitespace-nowrap border-l border-slate-200 bg-slate-100 px-3 py-3 text-center shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.55)]">관리</th>
                       </tr>
                     </thead>
@@ -3025,8 +3033,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                               <Badge status={item.status} />
                             </td>
                             <td className="whitespace-nowrap px-3 py-3 align-middle">
-                              <span title={item.pg_tid ?? item.id} className="block max-w-[130px] truncate font-mono text-[11px] text-slate-500 font-semibold">
-                                {item.pg_tid ?? item.id}
+                              <span title={paymentReference(item)} className="block max-w-[150px] truncate font-mono text-[11px] text-slate-500 font-semibold">
+                                {paymentReference(item)}
                               </span>
                             </td>
                             <td className="sticky right-0 z-10 min-w-[90px] whitespace-nowrap border-l border-slate-100 bg-white px-3 py-3 text-center align-middle shadow-[-10px_0_18px_-16px_rgba(15,23,42,0.45)]">
@@ -3756,7 +3764,7 @@ function Stat({ label, value, icon, color }: { label: string; value: string; ico
 
 function Badge({ status }: { status: string | null }) {
   const ok = ["paid", "success"].includes(status ?? "");
-  const pending = status === "pending_payment";
+  const pending = ["pending_payment", "scheduled"].includes(status ?? "");
   return <span className={`rounded-full px-2.5 py-1 text-xs font-black ${ok ? "bg-emerald-50 text-emerald-700" : pending ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"}`}>{statusText(status)}</span>;
 }
 

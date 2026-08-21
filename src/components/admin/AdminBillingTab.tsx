@@ -96,7 +96,7 @@ interface OwnedPackageTarget {
   studentId: string;
   studentName: string;
   branchId: string;
-  childId: string;
+  childId: string | null;
   isSmsEnabled: boolean;
   optionId: string | null;
   packageName: string;
@@ -112,6 +112,26 @@ interface AdminBillingTabProps {
   branches: Array<{ id: string; name: string }>;
 }
 
+interface TargetBillStatus {
+  status: string;
+  paymentRequestId: string | null;
+}
+
+const billingMonthByOffset = (offset: number) => {
+  const date = new Date();
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth() + offset, 1))
+    .toISOString()
+    .slice(0, 7);
+};
+
+const billingMonthPeriod = (billMonth: string) => {
+  const start = `${billMonth}-01`;
+  const end = new Date(
+    Date.UTC(Number(billMonth.slice(0, 4)), Number(billMonth.slice(5, 7)), 0),
+  ).toISOString().slice(0, 10);
+  return { start, end };
+};
+
 export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId, branches }) => {
   const [subTab, setSubTab] = useState<'targets' | 'invoices'>('targets'); // Sub-menu toggle
   const [loading, setLoading] = useState(true);
@@ -119,6 +139,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   
   // Tab 1: Billing Targets data
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
+  const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
   const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
 
   // Tab 2: Invoices data
@@ -162,8 +183,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     return Array.from(students.values());
   }, [billingTargets]);
 
+  const billStatusKey = (target: OwnedPackageTarget, month = selectedMonth) =>
+    `${target.studentId}:${target.optionId || 'none'}:${month}`;
+
+  const isStudentAlreadyBilled = (student: (typeof billingTargetStudents)[number]) =>
+    student.packages.length > 0
+    && student.packages.every((target) => Boolean(targetBillStatuses[billStatusKey(target)]));
+
+  const selectableBillingStudents = billingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
+
   useEffect(() => {
-    const availableIds = new Set(billingTargetStudents.map((student) => student.studentId));
+    const availableIds = new Set(selectableBillingStudents.map((student) => student.studentId));
     setSelectedBillingStudentIds((previous) => {
       const next = new Set(Array.from(previous).filter((id) => availableIds.has(id)));
       if (next.size === previous.size && Array.from(next).every((id) => previous.has(id))) {
@@ -171,12 +201,14 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       }
       return next;
     });
-  }, [billingTargetStudents]);
+  }, [billingTargetStudents, targetBillStatuses, selectedMonth]);
 
-  const allBillingStudentsSelected = billingTargetStudents.length > 0
-    && billingTargetStudents.every((student) => selectedBillingStudentIds.has(student.studentId));
+  const allBillingStudentsSelected = selectableBillingStudents.length > 0
+    && selectableBillingStudents.every((student) => selectedBillingStudentIds.has(student.studentId));
 
   const toggleBillingStudent = (studentId: string) => {
+    const student = billingTargetStudents.find((item) => item.studentId === studentId);
+    if (!student || isStudentAlreadyBilled(student)) return;
     setSelectedBillingStudentIds((previous) => {
       const next = new Set(previous);
       if (next.has(studentId)) next.delete(studentId);
@@ -189,7 +221,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     setSelectedBillingStudentIds(
       allBillingStudentsSelected
         ? new Set()
-        : new Set(billingTargetStudents.map((student) => student.studentId)),
+        : new Set(selectableBillingStudents.map((student) => student.studentId)),
     );
   };
 
@@ -209,27 +241,67 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           child:children(deleted_at),
           parent:users(status),
           academy_student_classes(
+            id,
+            class_schedule_id,
+            package_option_id,
             billing_cycle,
             payment_day,
             status,
-            class_schedules(target_class)
+            class_schedules(target_class),
+            package_options(
+              id,
+              label,
+              price,
+              packages(name)
+            )
           )
         `);
       if (studentError) throw studentError;
 
       const activeStudents = (students as any[] || []).filter((student) =>
-        student.child_id
-        && student.child?.deleted_at == null
+        (!student.child_id || student.child?.deleted_at == null)
         && (!student.parent_user_id || student.parent?.status !== 'deleted')
         && (!activeBranchId || activeBranchId === 'all' || student.branch_id === activeBranchId)
       );
-      const studentByChildId = new Map(activeStudents.map((student) => [student.child_id, student]));
+      const appStudents = activeStudents.filter((student) => Boolean(student.child_id));
+      const webOnlyStudents = activeStudents.filter((student) => !student.child_id);
+      const studentByChildId = new Map(appStudents.map((student) => [student.child_id, student]));
 
+      // App-linked children use the app's active schedule assignments as the
+      // single source of truth. academy_student_classes remains the source for
+      // students registered only on the web.
+      const childIds = appStudents.map((student) => student.child_id).filter(Boolean);
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: appAssignments, error: assignmentError } = childIds.length > 0
+        ? await supabase
+            .from('student_schedule_assignments')
+            .select('child_id, schedule_id, starts_on, ends_on, is_active, class_schedules:schedule_id(target_class)')
+            .eq('is_active', true)
+            .lte('starts_on', today)
+            .in('child_id', childIds)
+        : { data: [], error: null };
+      if (assignmentError) throw assignmentError;
+
+      const appClassNamesByChildId = new Map<string, string[]>();
+      (appAssignments as any[] || [])
+        .filter((assignment) => !assignment.ends_on || assignment.ends_on >= today)
+        .forEach((assignment) => {
+          const className = assignment.class_schedules?.target_class;
+          if (!assignment.child_id || !className) return;
+          const names = appClassNamesByChildId.get(assignment.child_id) || [];
+          if (!names.includes(className)) names.push(className);
+          appClassNamesByChildId.set(assignment.child_id, names);
+        });
+
+      const selectedPeriod = billingMonthPeriod(selectedMonth);
       const { data: ownedPackages, error: packageError } = await supabase
         .from('user_packages')
-        .select('id, child_id, option_id, package_name, price, voucher_type, status')
-        .eq('status', 'active')
-        .not('child_id', 'is', null);
+        .select('id, child_id, option_id, package_name, price, voucher_type, status, valid_from, valid_until, expiry_date')
+        .in('status', ['active', 'expired', 'exhausted'])
+        .not('child_id', 'is', null)
+        .or(`valid_from.is.null,valid_from.lte.${selectedPeriod.end}`)
+        .or(`valid_until.is.null,valid_until.gte.${selectedPeriod.start}`)
+        .or(`expiry_date.is.null,expiry_date.gte.${selectedPeriod.start}`);
       if (packageError) throw packageError;
 
       const optionIds = Array.from(new Set((ownedPackages as any[] || [])
@@ -244,7 +316,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       if (optionError) throw optionError;
       const optionById = new Map((options as any[] || []).map((option) => [option.id, option]));
 
-      const targets: OwnedPackageTarget[] = (ownedPackages as any[] || [])
+      const appTargets: OwnedPackageTarget[] = (ownedPackages as any[] || [])
         .filter((owned) => !owned.voucher_type || owned.voucher_type === 'lesson')
         .map((owned) => {
           const student: any = studentByChildId.get(owned.child_id);
@@ -265,17 +337,58 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             price: Number(owned.price ?? option?.price ?? 0),
             billingCycle: activeClasses[0]?.billing_cycle || '월 기간제',
             paymentDay: activeClasses[0]?.payment_day || '매월 1일',
-            classNames: Array.from(new Set(activeClasses
-              .map((mapping: any) => mapping.class_schedules?.target_class)
-              .filter(Boolean))) as string[],
+            classNames: appClassNamesByChildId.get(student.child_id) || [],
           } satisfies OwnedPackageTarget;
         })
         .filter((target): target is OwnedPackageTarget => target !== null);
 
+      const webTargets: OwnedPackageTarget[] = webOnlyStudents.flatMap((student) =>
+        (student.academy_student_classes || [])
+          .filter((mapping: any) => mapping.status === 'active' && mapping.package_option_id)
+          .map((mapping: any) => ({
+            userPackageId: `web:${mapping.id}`,
+            studentId: student.id,
+            studentName: student.student_name || '원생',
+            branchId: student.branch_id,
+            childId: null,
+            isSmsEnabled: student.is_sms_enabled !== false,
+            optionId: mapping.package_option_id,
+            packageName: mapping.package_options?.packages?.name || '수강료',
+            optionLabel: mapping.package_options?.label || '요금제 정보 없음',
+            price: Number(mapping.package_options?.price || 0),
+            billingCycle: mapping.billing_cycle || '월 기간제',
+            paymentDay: mapping.payment_day || '매월 1일',
+            classNames: mapping.class_schedules?.target_class
+              ? [mapping.class_schedules.target_class]
+              : [],
+          } satisfies OwnedPackageTarget)),
+      );
+
+      const targets = [...appTargets, ...webTargets];
       setBillingTargets(targets);
+
+      const targetStudentIds = Array.from(new Set(targets.map((target) => target.studentId)));
+      const { data: issuedBills, error: issuedBillError } = targetStudentIds.length > 0
+        ? await supabase
+            .from('academy_bills')
+            .select('student_id, package_option_id, bill_month, status, payment_request_id')
+            .in('student_id', targetStudentIds)
+            .eq('bill_month', selectedMonth)
+        : { data: [], error: null };
+      if (issuedBillError) throw issuedBillError;
+
+      const nextBillStatuses: Record<string, TargetBillStatus> = {};
+      (issuedBills as any[] || []).forEach((bill) => {
+        nextBillStatuses[`${bill.student_id}:${bill.package_option_id || 'none'}:${bill.bill_month}`] = {
+          status: bill.status,
+          paymentRequestId: bill.payment_request_id || null,
+        };
+      });
+      setTargetBillStatuses(nextBillStatuses);
     } catch (err) {
       console.error('Error loading billing targets:', err);
       setBillingTargets([]);
+      setTargetBillStatuses({});
     } finally {
       setLoading(false);
     }
@@ -342,7 +455,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   }, [activeBranchId, subTab, selectedMonth]);
 
   // Generate Invoices for all active students in the selected month
-  const handleGenerateBills = async () => {
+  const handleGenerateBills = async (targetMonth: string) => {
     const selectedTargets = billingTargets.filter((target) =>
       selectedBillingStudentIds.has(target.studentId),
     );
@@ -356,7 +469,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       ? branches.find(b => b.id === activeBranchId)?.name || '해당'
       : '전체';
 
-    if (!confirm(`${branchName} 지점에서 선택한 원생 ${selectedBillingStudentIds.size}명에게 [${selectedMonth}월분] 청구 고지서를 발행하시겠습니까?\n선택한 원생이 보유한 이용권별로 생성되며, 이미 발행된 고지서는 건너뜁니다.`)) {
+    const validityStart = `${targetMonth}-01`;
+    const validityEnd = new Date(
+      Date.UTC(Number(targetMonth.slice(0, 4)), Number(targetMonth.slice(5, 7)), 0),
+    ).toISOString().slice(0, 10);
+    if (!confirm(`${branchName} 지점에서 선택한 원생 ${selectedBillingStudentIds.size}명에게 [${targetMonth}월분] 청구 고지서를 발행하시겠습니까?\n이용권 사용기간: ${validityStart} ~ ${validityEnd}\n선택한 원생이 보유한 이용권별로 생성되며, 이미 발행된 고지서는 건너뜁니다.`)) {
       return;
     }
 
@@ -378,7 +495,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           .from('academy_bills')
           .select('id')
           .eq('student_id', target.studentId)
-          .eq('bill_month', selectedMonth);
+          .eq('bill_month', targetMonth);
 
         if (target.optionId) {
           existingQuery = existingQuery.eq('package_option_id', target.optionId);
@@ -400,7 +517,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           student_id: target.studentId,
           class_schedule_id: null,
           package_option_id: target.optionId,
-          bill_month: selectedMonth,
+          bill_month: targetMonth,
           amount_due: target.price,
           amount_paid: 0,
           billing_date: new Date().toISOString().slice(0, 10),
@@ -427,6 +544,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         alert(`청구서 처리 완료!\n- 새로 발행된 청구서: ${createdCount}건\n- 이미 발행되어 건너뜀: ${alreadyCount}건\n\n[청구내역 조회] 탭으로 자동 이동합니다.`);
       }
 
+      setSelectedMonth(targetMonth);
       setSubTab('invoices');
       loadBills();
     } catch (err: any) {
@@ -668,22 +786,38 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           <div className="flex justify-between items-center bg-blue-50 border border-blue-100/60 p-4 rounded-2xl">
             <div className="text-xs text-blue-800 font-medium">
               💡 <b>청구대상 관리:</b> 학원에 재학 중인 원생들의 수업반 요금 배정 장부입니다. <br />
-              원생을 한 명 또는 여러 명 선택해 이번 달 고지서를 발행할 수 있습니다. (수업반이 지정되지 않은 회원은 이용권 단독으로 청구됩니다.)
+              원생을 한 명 또는 여러 명 선택해 이번 달 또는 다음 달 고지서를 발행할 수 있습니다. 결제 완료 시 이용권은 청구 대상 월의 1일부터 말일까지 사용할 수 있습니다.
             </div>
-            <div className="flex items-center gap-2">
-              <input 
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedMonth(billingMonthByOffset(0))}
+                className={`rounded-xl px-3 py-2 text-xs font-black transition ${selectedMonth === billingMonthByOffset(0) ? 'bg-blue-100 text-blue-700' : 'border border-slate-200 bg-white text-slate-600'}`}
+              >
+                이번 달
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedMonth(billingMonthByOffset(1))}
+                className={`rounded-xl px-3 py-2 text-xs font-black transition ${selectedMonth === billingMonthByOffset(1) ? 'bg-indigo-100 text-indigo-700' : 'border border-slate-200 bg-white text-slate-600'}`}
+              >
+                다음 달
+              </button>
+              <input
                 type="month"
                 value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 bg-white"
+                onChange={(event) => setSelectedMonth(event.target.value)}
+                aria-label="청구 대상 기준 월"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700"
               />
-              <button 
-                onClick={handleGenerateBills}
+              <button
+                type="button"
+                onClick={() => handleGenerateBills(selectedMonth)}
                 disabled={actionLoading || selectedBillingStudentIds.size === 0}
-                className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2 text-xs font-black shadow-sm shrink-0"
+                className="flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2 text-xs font-black shadow-sm shrink-0"
               >
                 {actionLoading ? <Loader2 size={12} className="animate-spin" /> : null}
-                선택 {selectedBillingStudentIds.size}명 발행
+                {selectedMonth.slice(5)}월 학원비 청구
               </button>
             </div>
           </div>
@@ -699,12 +833,14 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                         type="checkbox"
                         checked={allBillingStudentsSelected}
                         onChange={toggleAllBillingStudents}
+                        disabled={selectableBillingStudents.length === 0}
                         aria-label="청구 대상 전체 선택"
                         className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600"
                       />
                     </th>
                     <th scope="col" className="px-4 py-3.5 min-w-[140px]">연결 수업</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[150px]">이용권 요금제</th>
+                    <th scope="col" className="px-4 py-3.5 min-w-[150px] text-center">선택 월 청구 상태</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[100px] text-center">기간 방식</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[100px] text-center">수납 일자</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[90px] text-center">사전 발송</th>
@@ -717,13 +853,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 <tbody className="divide-y divide-slate-100 border-t border-slate-100">
                   {loading ? (
                     <tr>
-                      <td colSpan={10} className="text-center py-16">
+                      <td colSpan={11} className="text-center py-16">
                         <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
                         <span className="text-xs font-bold text-slate-400 block mt-2">청구 대상 목록 조회 중...</span>
                       </td>
                     </tr>
                   ) : billingTargetStudents.length > 0 ? (
-                    billingTargetStudents.map((student) => (
+                    billingTargetStudents.map((student) => {
+                      const alreadyBilled = isStudentAlreadyBilled(student);
+                      return (
                       <React.Fragment key={student.studentId}>
                         <tr className="border-t border-slate-200 bg-blue-50/60">
                           <td className="px-4 py-2.5 text-center">
@@ -731,11 +869,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               type="checkbox"
                               checked={selectedBillingStudentIds.has(student.studentId)}
                               onChange={() => toggleBillingStudent(student.studentId)}
+                              disabled={alreadyBilled}
                               aria-label={`${student.studentName} 청구 대상 선택`}
-                              className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600"
+                              className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
                             />
                           </td>
-                          <td colSpan={9} className="px-4 py-2.5">
+                          <td colSpan={10} className="px-4 py-2.5">
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
@@ -755,11 +894,34 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           const price = ownedPackage.price > 0 ? `${ownedPackage.price.toLocaleString()}원` : '단가 미지정';
                           const dayNum = (ownedPackage.paymentDay || '1일').replace(/[^0-9]/g, '') || '01';
                           const formattedDay = dayNum.padStart(2, '0');
+                          const statusForMonth = (month: string) => targetBillStatuses[
+                            `${ownedPackage.studentId}:${ownedPackage.optionId || 'none'}:${month}`
+                          ];
+                          const renderBillStatus = (monthLabel: string, month: string) => {
+                            const billStatus = statusForMonth(month);
+                            if (!billStatus) {
+                              return <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-400">{monthLabel} 미청구</span>;
+                            }
+                            const paid = billStatus.status === 'paid';
+                            const partial = billStatus.status === 'partial';
+                            const cancelled = billStatus.status === 'cancelled' || billStatus.status === 'canceled';
+                            const label = paid
+                              ? `${monthLabel} 완납`
+                              : partial
+                                ? `${monthLabel} 일부수납`
+                                : cancelled
+                                  ? `${monthLabel} 취소`
+                                  : `${monthLabel} 청구됨${billStatus.paymentRequestId ? ' · 앱발송' : ''}`;
+                            return <span className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${paid ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : partial ? 'border-amber-200 bg-amber-50 text-amber-700' : cancelled ? 'border-rose-200 bg-rose-50 text-rose-600' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>{label}</span>;
+                          };
                           return (
                             <tr key={ownedPackage.userPackageId} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
                               <td className="px-4 py-3" aria-hidden="true" />
                               <td className="px-4 py-3"><div className="flex max-w-xs flex-wrap gap-1">{ownedPackage.classNames.length > 0 ? ownedPackage.classNames.map((className) => <span key={className} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600 font-bold">{className}</span>) : <span className="text-[10px] text-slate-400">연결 수업 없음</span>}</div></td>
                               <td className="px-4 py-3"><div className="text-xs font-black text-slate-900">{packageName}</div><div className="text-[10px] text-slate-400 font-medium">{packageLabel}</div></td>
+                              <td className="px-4 py-3 text-center">
+                                {renderBillStatus(`${Number(selectedMonth.slice(5))}월`, selectedMonth)}
+                              </td>
                               <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{ownedPackage.billingCycle}</td>
                               <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{ownedPackage.paymentDay}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-400 text-center">없음</td>
@@ -771,10 +933,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           );
                         })}
                       </React.Fragment>
-                    ))
+                      );
+                    })
                   ) : (
                     <tr>
-                      <td colSpan={10} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
+                      <td colSpan={11} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
                         배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!
                       </td>
                     </tr>
@@ -807,7 +970,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             </div>
           </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* Filter Toolbar */}
             <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl w-64">
               <button 
@@ -836,7 +999,28 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               </button>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedMonth(billingMonthByOffset(0))}
+                className={`rounded-xl px-3 py-2 text-xs font-black transition ${selectedMonth === billingMonthByOffset(0) ? 'bg-blue-600 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+              >
+                이번 달 조회
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedMonth(billingMonthByOffset(1))}
+                className={`rounded-xl px-3 py-2 text-xs font-black transition ${selectedMonth === billingMonthByOffset(1) ? 'bg-indigo-600 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+              >
+                다음 달 조회
+              </button>
+              <input
+                type="month"
+                value={selectedMonth}
+                onChange={(event) => setSelectedMonth(event.target.value)}
+                aria-label="청구 내역 기준 월"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700"
+              />
               <span className="text-xs text-slate-400 font-bold">
                 기준 월: {selectedMonth.slice(0, 4)}년 {selectedMonth.slice(5)}월
               </span>
@@ -868,6 +1052,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       />
                     </th>
                     <th scope="col" className="px-4 py-3.5 min-w-[220px]">연결 수업 / 보유 이용권</th>
+                    <th scope="col" className="px-4 py-3.5 min-w-[180px] text-center">청구월 / 이용기간</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-right">청구액</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-right">실 수납액</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">수납 수단</th>
@@ -879,7 +1064,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 <tbody className="divide-y divide-slate-100 border-t border-slate-100">
                   {loading ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-16">
+                      <td colSpan={9} className="text-center py-16">
                         <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
                         <span className="text-xs font-bold text-slate-400 block mt-2">고지 정보 및 수납 목록 조회 중...</span>
                       </td>
@@ -888,7 +1073,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     filteredBillStudents.map((student) => (
                       <React.Fragment key={student.studentId}>
                         <tr className="border-t border-slate-200 bg-blue-50/60">
-                          <td colSpan={8} className="px-4 py-2.5">
+                          <td colSpan={9} className="px-4 py-2.5">
                             <div className="flex items-center justify-between">
                               <div>
                                 <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
@@ -903,6 +1088,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           </td>
                         </tr>
                         {student.bills.map((bill) => {
+                          const validity = billingMonthPeriod(bill.bill_month);
                           const connectedClassText = bill.memo?.match(/연결 수업:\s*(.+)$/)?.[1]?.trim();
                           const className = bill.class_schedules?.target_class
                             || (connectedClassText && connectedClassText !== '없음' ? connectedClassText : '수업 미지정');
@@ -928,6 +1114,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                   <span className="text-[10px] font-medium text-slate-500">보유 이용권: {packageLabel}</span>
                                 </div>
                               </td>
+                              <td className="px-4 py-3 text-center">
+                                <div className="text-xs font-black text-slate-800">{bill.bill_month}월분</div>
+                                <div className="mt-0.5 text-[10px] font-medium text-slate-400">{validity.start} ~ {validity.end}</div>
+                              </td>
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{bill.amount_due.toLocaleString()}원</td>
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{isPaid ? `${bill.amount_paid.toLocaleString()}원` : '-'}</td>
                               <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
@@ -947,8 +1137,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={8} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
-                        이번 달 생성된 수납 고지서가 없습니다. 좌측 [청구대상 관리] 서브탭에서 이번 달 고지서를 일괄 발행해 주세요!
+                      <td colSpan={9} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
+                        {selectedMonth}월분으로 생성된 수납 고지서가 없습니다. [청구대상 관리]에서 해당 월 학원비를 청구해 주세요.
                       </td>
                     </tr>
                   )}
