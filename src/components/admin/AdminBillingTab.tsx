@@ -36,6 +36,22 @@ interface Bill {
       name: string;
     } | null;
   } | null;
+  onsite_payments?: OfflinePayment[];
+}
+
+interface OfflinePayment {
+  id: string;
+  academy_bill_id: string;
+  final_amount: number;
+  payment_method: string;
+  status: 'scheduled' | 'paid' | 'cancelled';
+  scheduled_at: string | null;
+  paid_at: string | null;
+  memo: string | null;
+  user_id?: string | null;
+  total_amount?: number;
+  user_name?: string;
+  username?: string;
 }
 
 interface StudentClassRow {
@@ -87,6 +103,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Tab 2: Invoices data
   const [bills, setBills] = useState<Bill[]>([]);
+  const [directOnsitePayments, setDirectOnsitePayments] = useState<OfflinePayment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
 
@@ -96,6 +113,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [paymentMethod, setPaymentMethod] = useState('cash'); // cash, offline_card, bank_transfer
   const [paidAmount, setPaidAmount] = useState('');
   const [paymentMemo, setPaymentMemo] = useState('');
+  const [paymentTiming, setPaymentTiming] = useState<'now' | 'scheduled'>('now');
+  const [scheduledAt, setScheduledAt] = useState(new Date().toISOString().slice(0, 10));
 
   // Billing is package-based. Multiple class schedules linked to the same
   // student/package are presented and billed as one tuition item.
@@ -211,47 +230,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
       const { data, error } = await query.order('created_at', { ascending: false });
 
-      // 2. Fetch app payments for the selected month to automatically match
-      let payQuery = supabase
-        .from('payments')
-        .select('id, user_id, final_amount, total_amount, payment_method, created_at, status')
-        .eq('status', 'success')
-        .gte('created_at', `${selectedMonth}-01T00:00:00`)
-        .lte('created_at', `${selectedMonth}-31T23:59:59`);
-
-      if (activeBranchId && activeBranchId !== 'all') {
-        payQuery = payQuery.eq('branch_id', activeBranchId);
-      }
-
-      const { data: monthPayments } = await payQuery;
-      const userPaymentMap = new Map<string, any>();
-      (monthPayments || []).forEach((p: any) => {
-        if (p.user_id) userPaymentMap.set(p.user_id, p);
-      });
-
       if (!error && data) {
-        const activeStudentBills = (data as any[]).map(b => {
-          const parentUserId = b.academy_students?.parent_user_id;
-          const appPayment = parentUserId ? userPaymentMap.get(parentUserId) : null;
-          const isPaid = b.status === 'paid' || Boolean(appPayment);
-          const paidAmount = b.status === 'paid' 
-            ? (b.amount_paid || b.amount_due) 
-            : (appPayment ? (appPayment.final_amount || appPayment.total_amount || b.amount_due) : 0);
-          const paymentMethod = b.status === 'paid' 
-            ? (b.payment_method || 'app_card') 
-            : (appPayment ? (appPayment.payment_method?.toLowerCase() || 'app_card') : null);
-          const paymentDate = b.status === 'paid' 
-            ? b.payment_date 
-            : (appPayment ? appPayment.created_at : null);
-
-          return {
-            ...b,
-            status: isPaid ? 'paid' : 'unpaid',
-            amount_paid: paidAmount,
-            payment_method: paymentMethod,
-            payment_date: paymentDate
-          };
-        }).filter((bill) => {
+        const activeStudentBills = (data as any[]).filter((bill) => {
           const student = bill.academy_students;
           return student
             && (!student.child_id || student.child?.deleted_at == null)
@@ -416,6 +396,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     setPaymentMethod('cash');
     setPaidAmount(String(bill.amount_due));
     setPaymentMemo('');
+    setPaymentTiming('now');
+    setScheduledAt(new Date().toISOString().slice(0, 10));
     setIsPayModalOpen(true);
   };
 
@@ -428,62 +410,72 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
     setActionLoading(true);
     try {
-      const nowStr = new Date().toISOString();
-      const currentBranch = activeBranchId || selectedBill.branch_id;
+      const methodMap: Record<string, string> = {
+        cash: 'CASH',
+        offline_card: 'OFFLINE_CARD',
+        bank_transfer: 'OFFLINE_TRANSFER',
+      };
+      const { data: scheduledResult, error: scheduleError } = await supabase.rpc('schedule_offline_payment', {
+        p_bill_id: selectedBill.id,
+        p_amount: amount,
+        p_payment_method: methodMap[paymentMethod],
+        p_scheduled_at: new Date(`${scheduledAt}T12:00:00+09:00`).toISOString(),
+        p_memo: paymentMemo.trim() || null,
+      });
+      if (scheduleError) throw scheduleError;
 
-      // 1. Update bill status
-      const { error: billErr } = await supabase
-        .from('academy_bills')
-        .update({
-          status: 'paid',
-          amount_paid: amount,
-          payment_method: paymentMethod,
-          payment_date: nowStr,
-          memo: paymentMemo.trim() || selectedBill.memo
-        })
-        .eq('id', selectedBill.id);
-
-      if (billErr) throw billErr;
-
-      // 2. Insert into `payments` table to sync with ledger statistics
-      const paymentId = crypto.randomUUID();
-      const { error: payErr } = await supabase
-        .from('payments')
-        .insert([{
-          id: paymentId,
-          created_at: nowStr,
-          total_amount: amount,
-          final_amount: amount,
-          payment_method: paymentMethod.toUpperCase(),
-          status: 'success',
-          pg_tid: `OFFLINE_${paymentMethod.toUpperCase()}_${Date.now().toString().slice(-6)}`,
-          branch_id: currentBranch,
-          user_id: selectedBill.academy_students?.parent_user_id || null
-        }]);
-
-      if (!payErr) {
-        // 3. Insert into `user_packages` to link purchase details
-        const packageName = selectedBill.package_options?.packages?.name || '수강료 고지서';
-        const label = selectedBill.package_options?.label || '수강반';
-
-        await supabase
-          .from('user_packages')
-          .insert([{
-            payment_id: paymentId,
-            user_id: selectedBill.academy_students?.parent_user_id || null,
-            package_name: `${packageName} (${label})`,
-            price: amount,
-            status: 'active',
-            branch_id: currentBranch,
-            total_count: 9999,
-            remaining_count: 9999
-          }]);
+      if (paymentTiming === 'now') {
+        const paymentId = scheduledResult?.payment_id;
+        const { data: confirmedResult, error: confirmError } = await supabase.rpc('confirm_offline_payment', {
+          p_payment_id: paymentId,
+          p_memo: paymentMemo.trim() || null,
+        });
+        if (confirmError) throw confirmError;
+        if (confirmedResult?.bill_status === 'paid' && !confirmedResult?.package_issued) {
+          alert('수납은 완료됐지만 연결된 이용권 옵션을 찾지 못했습니다. 학생의 요금제 배정을 확인해 주세요.');
+        }
       }
 
       setIsPayModalOpen(false);
-      loadBills();
+      await loadBills();
     } catch (err: any) {
       alert(`수기 수납 처리에 실패했습니다: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const confirmScheduledPayment = async (payment: OfflinePayment) => {
+    if (!confirm('현장에서 실제 수납한 것을 확인했나요? 완료 후 결제 포인트와 이용권이 처리됩니다.')) return;
+    setActionLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('confirm_offline_payment', {
+        p_payment_id: payment.id,
+        p_memo: payment.memo,
+      });
+      if (error) throw error;
+      if (data?.bill_status === 'paid' && !data?.package_issued) {
+        alert('수납은 완료됐지만 연결된 이용권 옵션을 찾지 못했습니다. 학생의 요금제 배정을 확인해 주세요.');
+      }
+      await loadBills();
+    } catch (err: any) {
+      alert(`수납 완료 처리에 실패했습니다: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const cancelScheduledPayment = async (payment: OfflinePayment) => {
+    if (!confirm('이 현장결제 예정 건을 취소할까요? 실제 결제 및 포인트에는 영향이 없습니다.')) return;
+    setActionLoading(true);
+    try {
+      const { error } = await supabase.rpc('cancel_scheduled_offline_payment', {
+        p_payment_id: payment.id,
+      });
+      if (error) throw error;
+      await loadBills();
+    } catch (err: any) {
+      alert(`결제 예정 취소에 실패했습니다: ${err.message}`);
     } finally {
       setActionLoading(false);
     }
@@ -548,7 +540,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               subTab === 'invoices' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            📋 청구내역 조회 & 수납
+            📋 청구내역 조회
           </button>
         </div>
       </div>
@@ -726,13 +718,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">수납 수단</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">최종 처리일</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[90px] text-center">상태</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[120px] text-right">수납 처리</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 border-t border-slate-100">
                   {loading ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-16">
+                      <td colSpan={7} className="text-center py-16">
                         <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
                         <span className="text-xs font-bold text-slate-400 block mt-2">고지 정보 및 수납 목록 조회 중...</span>
                       </td>
@@ -741,7 +732,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     filteredBillStudents.map((student) => (
                       <React.Fragment key={student.studentId}>
                         <tr className="border-t border-slate-200 bg-blue-50/60">
-                          <td colSpan={8} className="px-4 py-2.5">
+                          <td colSpan={7} className="px-4 py-2.5">
                             <div className="flex items-center justify-between">
                               <div>
                                 <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
@@ -759,7 +750,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           const className = bill.class_schedules?.target_class || '복수 수업 연결';
                           const packageLabel = bill.package_options ? `[${bill.package_options.packages?.name || ''}] ${bill.package_options.label}` : bill.memo || '수강 정보 연동 안 됨';
                           const isPaid = bill.status === 'paid';
-                          const methodText: Record<string, string> = { app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체' };
+                          const methodText: Record<string, string> = { app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
                           return (
                             <tr key={bill.id} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
                               <td className="px-4 py-3 text-xs text-slate-300 text-center font-bold">└</td>
@@ -769,7 +760,6 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-500 text-center">{bill.payment_date ? new Date(bill.payment_date).toLocaleDateString('ko-KR') : '-'}</td>
                               <td className="px-4 py-3 text-center">{isPaid ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-black text-emerald-700"><CheckCircle2 size={11} /> 완납</span> : <span className="inline-flex items-center gap-1 rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700"><AlertCircle size={11} /> 미납</span>}</td>
-                              <td className="px-4 py-3 text-right">{!isPaid && <button onClick={() => openPayModal(bill)} className="rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-black text-white shadow-xs hover:bg-slate-900 transition">수기 수납 완료</button>}</td>
                             </tr>
                           );
                         })}
@@ -777,7 +767,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={8} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
+                      <td colSpan={7} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
                         이번 달 생성된 수납 고지서가 없습니다. 좌측 [청구대상 관리] 서브탭에서 이번 달 고지서를 일괄 발행해 주세요!
                       </td>
                     </tr>
@@ -809,6 +799,19 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             </div>
 
             <form onSubmit={handleProcessPayment} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5">처리 방식 *</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setPaymentTiming('now')} className={`rounded-xl border py-3 text-xs font-black transition ${paymentTiming === 'now' ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500'}`}>지금 수납 완료</button>
+                  <button type="button" onClick={() => setPaymentTiming('scheduled')} className={`rounded-xl border py-3 text-xs font-black transition ${paymentTiming === 'scheduled' ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-slate-200 text-slate-500'}`}>현장결제 예정</button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5">{paymentTiming === 'now' ? '수납일' : '결제 예정일'} *</label>
+                <input type="date" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500" required />
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-500 mb-1.5">청구액</label>
                 <input 
@@ -871,7 +874,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 py-3.5 text-sm font-black text-white hover:bg-slate-900 disabled:bg-slate-400 shadow-sm mt-6"
               >
                 {actionLoading ? <Loader2 size={16} className="animate-spin" /> : null}
-                수기 수납 완료 승인하기
+                {paymentTiming === 'now' ? '현장 수납 완료 처리' : '현장결제 예정 등록'}
               </button>
             </form>
           </div>

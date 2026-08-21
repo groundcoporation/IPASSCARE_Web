@@ -10,6 +10,7 @@ import { AdminStudentTab } from "./AdminStudentTab";
 import { AdminTeacherTab } from "./AdminTeacherTab";
 import { AdminClassTab } from "./AdminClassTab";
 import { AdminBillingTab } from "./AdminBillingTab";
+import { AdminOfflinePaymentTab } from "./AdminOfflinePaymentTab";
 import { AdminCounselTab } from "./AdminCounselTab";
 import { AdminStudyTab } from "./AdminStudyTab";
 import { AdminRoleManagementTab } from "./AdminRoleManagementTab";
@@ -491,7 +492,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     if (!profile) return;
     setLoading(true); setError("");
     try {
-      let query = supabase.from("payments").select("id,user_id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,users(id,name,email)").order("created_at", { ascending: false });
+      // payments has multiple user relations (payer, creator, confirmer).
+      // Explicitly join the payer relation so PostgREST does not return PGRST201.
+      let query = supabase.from("payments").select("id,user_id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,users:users!payments_user_id_fkey(id,name,email)").order("created_at", { ascending: false });
       const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
       const { data, error: queryError } = await query;
@@ -1771,6 +1774,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               {mainTab === 'billing_mgmt' && [
                 { id: 'billing', label: '수납/청구대장', icon: DollarSign },
                 { id: 'payments', label: '어플 결제내역', icon: CreditCard },
+                { id: 'offline_payments', label: '현장결제', icon: CheckCircle2 },
               ].map((item) => {
                 const isActive = subTab === item.id;
                 return (
@@ -2978,6 +2982,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                   </table>
                 </TableShell>
               </>
+            )}
+
+            {subTab === "offline_payments" && (
+              <AdminOfflinePaymentTab activeBranchId={activeBranchId} />
             )}
 
             {/* ALERTS / SMS MANAGER TAB */}
