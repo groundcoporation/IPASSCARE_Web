@@ -7,6 +7,7 @@ interface Bill {
   branch_id: string;
   student_id: string;
   class_schedule_id: string | null;
+  package_option_id: string | null;
   bill_month: string;
   amount_due: number;
   amount_paid: number;
@@ -220,7 +221,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             child:children(deleted_at),
             parent:users(status)
           ),
-          class_schedules(target_class)
+          class_schedules(target_class),
+          package_options(
+            label,
+            price,
+            packages(name)
+          )
         `)
         .eq('bill_month', selectedMonth);
       
@@ -336,13 +342,25 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         ));
         const targetBranchId = map.academy_students?.branch_id || (branches.length > 0 ? branches[0].id : '');
 
-        // Check if bill already exists for this student in this month
-        const { data: existing } = await supabase
+        // A child may have multiple passes in the same month. De-duplicate by
+        // the exact pass option instead of suppressing every later bill for
+        // the same child.
+        let existingQuery = supabase
           .from('academy_bills')
           .select('id')
           .eq('student_id', map.student_id)
-          .eq('bill_month', selectedMonth)
-          .limit(1);
+          .eq('bill_month', selectedMonth);
+
+        if (map.package_option_id) {
+          existingQuery = existingQuery.eq('package_option_id', map.package_option_id);
+        } else if (map.class_schedule_id) {
+          existingQuery = existingQuery.is('package_option_id', null).eq('class_schedule_id', map.class_schedule_id);
+        } else {
+          existingQuery = existingQuery.is('package_option_id', null).is('class_schedule_id', null);
+        }
+
+        const { data: existing, error: existingError } = await existingQuery.limit(1);
+        if (existingError) throw existingError;
 
         if (existing && existing.length > 0) {
           alreadyCount++;
@@ -354,6 +372,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           branch_id: targetBranchId,
           student_id: map.student_id,
           class_schedule_id: maps.length === 1 ? (map.class_schedule_id || null) : null,
+          package_option_id: map.package_option_id || null,
           bill_month: selectedMonth,
           amount_due: price,
           amount_paid: 0,
