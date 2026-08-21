@@ -96,10 +96,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [loginError, setLoginError] = useState("");
 
   // Re-designed 2-Tier Layout Navigation States
-  const [mainTab, setMainTab] = useState<'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'basic_settings'>('student_mgmt');
+  const [mainTab, setMainTab] = useState<'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'referral_mgmt' | 'basic_settings'>('student_mgmt');
   const [subTab, setSubTab] = useState<string>('students');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [, setError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
@@ -116,7 +116,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [attendanceStudentsWithHistory, setAttendanceStudentsWithHistory] = useState<any[]>([]);
   const [todayReservationChildIds, setTodayReservationChildIds] = useState<string[]>([]);
   const [todayReservations, setTodayReservations] = useState<any[]>([]);
-  const [todayAttendanceRecords, setTodayAttendanceRecords] = useState<Record<string, { ride_in?: string; check_in?: string; check_out?: string; ride_out?: string; is_absent?: boolean; no_shuttle?: boolean }>>({});
+  const [todayAttendanceRecords, setTodayAttendanceRecords] = useState<Record<string, {
+    ride_in?: string;
+    check_in?: string;
+    check_out?: string;
+    ride_out?: string;
+    is_absent?: boolean;
+    no_shuttle?: boolean;
+    no_pickup?: boolean;
+    no_dropoff?: boolean;
+  }>>({});
   const [selectedAttendanceDate, setSelectedAttendanceDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [attendanceViewFilter, setAttendanceViewFilter] = useState<'scheduled' | 'unprocessed' | 'completed' | 'all'>('scheduled');
   const [selectedAttendanceClassFilter, setSelectedAttendanceClassFilter] = useState("all");

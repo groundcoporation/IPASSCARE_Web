@@ -21,7 +21,7 @@ type OfflinePayment = {
 };
 
 interface Props {
-  activeBranchId: string;
+  activeBranchId: string | null;
 }
 
 const tabs: Array<{ id: OfflineStatus; label: string }> = [
