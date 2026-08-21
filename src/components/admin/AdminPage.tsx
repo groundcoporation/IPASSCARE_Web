@@ -1001,13 +1001,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         }).eq("id", cancelTarget.id);
         if (payErr) throw payErr;
 
-        try {
-          await supabase.from("user_packages").delete().eq("payment_id", cancelTarget.id);
-        } catch {
-          try {
-            await supabase.from("user_packages").update({ status: "cancelled" }).eq("payment_id", cancelTarget.id);
-          } catch {}
-        }
+        // Keep the package row as a financial/audit link so cancelled card
+        // payments still show which product was purchased.
+        const { error: packageError } = await supabase
+          .from("user_packages")
+          .update({ status: "cancelled", remaining_count: 0 })
+          .eq("payment_id", cancelTarget.id);
+        if (packageError) throw packageError;
       }
 
       // 4. Optimistic UI update
