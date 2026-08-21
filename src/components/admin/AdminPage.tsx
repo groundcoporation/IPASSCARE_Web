@@ -508,14 +508,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const paymentIds = (data ?? []).map((row: any) => row.id);
       const userIds = [...new Set((data ?? []).map((row: any) => row.user_id).filter(Boolean))];
 
-      // Fetch products and children in parallel
-      const [productResult, childResult, studentResult] = await Promise.all([
+      // Fetch products, children, and SMS charge logs in parallel
+      const [productResult, childResult, studentResult, smsChargeResult] = await Promise.all([
         paymentIds.length ? supabase.from("user_packages").select("payment_id,package_name,price,total_count").in("payment_id", paymentIds) : Promise.resolve({ data: [], error: null }),
         userIds.length ? supabase.from("children").select("parent_id,child_name").in("parent_id", userIds).is("deleted_at", null) : Promise.resolve({ data: [], error: null }),
-        userIds.length ? supabase.from("academy_students").select("parent_user_id,student_name").in("parent_user_id", userIds) : Promise.resolve({ data: [], error: null })
+        userIds.length ? supabase.from("academy_students").select("parent_user_id,student_name").in("parent_user_id", userIds) : Promise.resolve({ data: [], error: null }),
+        supabase.from("academy_sms_charge_logs").select("pg_tid")
       ]);
 
       if (productResult.error) throw productResult.error;
+
+      const smsTids = new Set((smsChargeResult.data ?? []).map((l: any) => l.pg_tid).filter(Boolean));
 
       const productsByPayment = new Map<string, PaymentProduct[]>();
       (productResult.data ?? []).forEach((product: any) => productsByPayment.set(product.payment_id, [...(productsByPayment.get(product.payment_id) ?? []), product]));
@@ -541,7 +544,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         ...row,
         users: firstJoined(row.users),
         products: productsByPayment.get(row.id) ?? [],
-        childrenNames: childrenByParent.get(row.user_id) ?? []
+        childrenNames: childrenByParent.get(row.user_id) ?? [],
+        isIpointCharge: Boolean(
+          row.memo?.includes('i-Point') || 
+          row.source === 'web_ipoint' || 
+          (row.pg_tid && smsTids.has(row.pg_tid))
+        )
       })) as Payment[]);
     } catch (reason: any) { setError(reason?.message ?? "결제 내역을 불러오지 못했습니다."); }
     finally { setLoading(false); }
@@ -2947,7 +2955,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                       {product.price != null ? ` · ${won.format(product.price)}원` : ""}
                                     </span>
                                   </div>
-                                )) : <span className="text-slate-400 text-xs">연결 상품 없음</span>}
+                                )) : item.isIpointCharge ? (
+                                  <div className="rounded-lg bg-amber-50/80 border border-amber-200 px-2 py-1">
+                                    <b className="block truncate text-amber-900 text-[11px] font-black">💎 i-Point 문자 충전</b>
+                                    <span className="text-[10px] text-amber-700 font-bold">
+                                      학원 문자 발송 포인트 · {won.format(originalAmount)}원
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-400 text-xs font-semibold">연결 상품 없음</span>
+                                )}
                               </div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-3 align-middle text-right">

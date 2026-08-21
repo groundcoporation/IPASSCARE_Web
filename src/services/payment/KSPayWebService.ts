@@ -119,6 +119,21 @@ export class KSPayWebService {
         updated_at: new Date().toISOString()
       }]);
 
+    // 4. Update payments table with explicit memo and source
+    if (tid) {
+      try {
+        await supabase
+          .from('payments')
+          .update({
+            memo: `i-Point ${req.amount.toLocaleString()}P 충전`,
+            source: 'web_ipoint'
+          })
+          .eq('pg_tid', tid);
+      } catch (memoErr) {
+        console.warn('Payment memo update notice:', memoErr);
+      }
+    }
+
     return {
       success: true,
       orderNumber,
