@@ -22,7 +22,7 @@ type Profile = { id: string; name: string | null; role: string; branch_id: strin
 type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
 type PaymentOrderItem = { package_id?: string | null; option_id?: string | null; quantity?: number | null };
-type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; order_items?: PaymentOrderItem[] | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[] };
+type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; order_items?: PaymentOrderItem[] | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[]; isIpointCharge?: boolean };
 type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[] };
 type ClassSchedule = { id: string; branch_id: string | null; target_class: string; day_of_week: string; start_time: string; end_time: string; max_people: number | null; branches: { name: string } | null };
 type ScheduleReservation = { id: string; schedule_id: string; class_date: string; status: string | null; attendance_status: string | null; child_id: string | null; user_id: string | null; children: { child_name: string | null } | null; users: { name: string | null; phone: string | null } | null };
@@ -515,18 +515,23 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const orderedPackageIds = [...new Set(orderItems.map((item: any) => item.package_id).filter(Boolean))];
       const orderedOptionIds = [...new Set(orderItems.map((item: any) => item.option_id).filter(Boolean))];
 
-      // Fetch products and children in parallel
-      const [productResult, childResult, studentResult, packageCatalogResult, optionCatalogResult] = await Promise.all([
+      // Fetch linked products, child names, immutable product catalogs, and
+      // SMS point charge logs together. Both cancellation recovery and point
+      // charge classification depend on these results.
+      const [productResult, childResult, studentResult, packageCatalogResult, optionCatalogResult, smsChargeResult] = await Promise.all([
         paymentIds.length ? supabase.from("user_packages").select("payment_id,package_name,price,total_count").in("payment_id", paymentIds) : Promise.resolve({ data: [], error: null }),
         userIds.length ? supabase.from("children").select("parent_id,child_name").in("parent_id", userIds).is("deleted_at", null) : Promise.resolve({ data: [], error: null }),
         userIds.length ? supabase.from("academy_students").select("parent_user_id,student_name").in("parent_user_id", userIds) : Promise.resolve({ data: [], error: null }),
         orderedPackageIds.length ? supabase.from("packages").select("id,name").in("id", orderedPackageIds) : Promise.resolve({ data: [], error: null }),
         orderedOptionIds.length ? supabase.from("package_options").select("id,label,price,total_count").in("id", orderedOptionIds) : Promise.resolve({ data: [], error: null }),
+        supabase.from("academy_sms_charge_logs").select("pg_tid")
       ]);
 
       if (productResult.error) throw productResult.error;
       if (packageCatalogResult.error) throw packageCatalogResult.error;
       if (optionCatalogResult.error) throw optionCatalogResult.error;
+
+      const smsTids = new Set((smsChargeResult.data ?? []).map((l: any) => l.pg_tid).filter(Boolean));
 
       const productsByPayment = new Map<string, PaymentProduct[]>();
       (productResult.data ?? []).forEach((product: any) => productsByPayment.set(product.payment_id, [...(productsByPayment.get(product.payment_id) ?? []), product]));
@@ -571,7 +576,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         ...row,
         users: firstJoined(row.users),
         products: productsByPayment.get(row.id) ?? [],
-        childrenNames: childrenByParent.get(row.user_id) ?? []
+        childrenNames: childrenByParent.get(row.user_id) ?? [],
+        isIpointCharge: Boolean(
+          row.memo?.includes('i-Point') || 
+          row.source === 'web_ipoint' || 
+          (row.pg_tid && smsTids.has(row.pg_tid))
+        )
       })) as Payment[]);
     } catch (reason: any) { setError(reason?.message ?? "결제 내역을 불러오지 못했습니다."); }
     finally { setLoading(false); }
@@ -2986,7 +2996,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                       {product.price != null ? ` · ${won.format(product.price)}원` : ""}
                                     </span>
                                   </div>
-                                )) : <span className="text-slate-400 text-xs">연결 상품 없음</span>}
+                                )) : item.isIpointCharge ? (
+                                  <div className="rounded-lg bg-amber-50/80 border border-amber-200 px-2 py-1">
+                                    <b className="block truncate text-amber-900 text-[11px] font-black">💎 i-Point 문자 충전</b>
+                                    <span className="text-[10px] text-amber-700 font-bold">
+                                      학원 문자 발송 포인트 · {won.format(originalAmount)}원
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-400 text-xs font-semibold">연결 상품 없음</span>
+                                )}
                               </div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-3 align-middle text-right">

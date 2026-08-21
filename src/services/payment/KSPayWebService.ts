@@ -23,9 +23,6 @@ export interface KSPayPaymentResult {
   message?: string;
 }
 
-// KSNET Domain & Endpoints
-const KSNET_DOMAIN = 'kspay.ksnet.to';
-const KSPAY_WEB_URL = `https://${KSNET_DOMAIN}/store/KSPayMobileV1.4/KSPayPWeb.jsp`;
 const DEFAULT_TEST_MID = '2999199999'; // KSNET 공식 테스트 상점 ID
 
 export class KSPayWebService {
@@ -119,6 +116,21 @@ export class KSPayWebService {
         updated_at: new Date().toISOString()
       }]);
 
+    // 4. Update payments table with explicit memo and source
+    if (tid) {
+      try {
+        await supabase
+          .from('payments')
+          .update({
+            memo: `i-Point ${req.amount.toLocaleString()}P 충전`,
+            source: 'web_ipoint'
+          })
+          .eq('pg_tid', tid);
+      } catch (memoErr) {
+        console.warn('Payment memo update notice:', memoErr);
+      }
+    }
+
     return {
       success: true,
       orderNumber,
@@ -150,7 +162,7 @@ export class KSPayWebService {
         console.log('[KSPay PC] jQuery 로드 완료');
         resolve();
       };
-      script.onerror = (e) => reject(new Error('jQuery 라이브러리 로드 실패'));
+      script.onerror = () => reject(new Error('jQuery 라이브러리 로드 실패'));
       document.head.appendChild(script);
     });
   }
