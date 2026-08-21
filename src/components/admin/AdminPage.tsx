@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
-  GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon, Building2, Home
+  GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon, Building2, Home,
+  History, Clock, Coins
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { ReferralTreeTab } from "./ReferralTreeTab";
@@ -13,6 +14,7 @@ import { AdminBillingTab } from "./AdminBillingTab";
 import { AdminCounselTab } from "./AdminCounselTab";
 import { AdminStudyTab } from "./AdminStudyTab";
 import { AdminRoleManagementTab } from "./AdminRoleManagementTab";
+import { AdminSmsTab } from "./AdminSmsTab";
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
@@ -1791,7 +1793,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
               {/* SMS SUBMENU */}
               {mainTab === 'sms_mgmt' && [
-                { id: 'sms_send', label: '등하원 문자/알림톡', icon: MessageSquare },
+                { id: 'sms_send', label: 'SMS / 알림톡 보내기', icon: MessageSquare },
+                { id: 'sms_history', label: '메시지 발송내역', icon: History },
+                { id: 'sms_reserved', label: '메시지 예약내역', icon: Clock },
+                { id: 'sms_points', label: '포인트 사용내역', icon: Coins },
               ].map((item) => {
                 const isActive = subTab === item.id;
                 return (
@@ -2980,70 +2985,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               </>
             )}
 
-            {/* ALERTS / SMS MANAGER TAB */}
-            {subTab === "sms_send" && (
-              <div className="space-y-6 max-w-2xl">
-                <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-xs space-y-6">
-                  <div>
-                    <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-                      <MessageSquare className="text-blue-600" size={20} />
-                      알림톡 및 안내 문자 센터
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-1">
-                      학부모 어플 알림 푸시 또는 SMS 카카오 알림톡을 대량/개별적으로 조합하여 발송합니다.
-                    </p>
-                  </div>
-
-                  <form onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!smsMessageText.trim()) return;
-                    setSmsLoading(true);
-                    setTimeout(() => {
-                      alert(`알림톡 발송 완료!\n- 발송 대상: ${smsTargetGroup === 'all_students' ? '전체 수강생 학부모' : '미납 수강생 학부모'}\n- 메시지 내용: ${smsMessageText}`);
-                      setSmsLoading(false);
-                    }, 800);
-                  }} className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">발송 대상 그룹 선택</label>
-                      <select 
-                        value={smsTargetGroup}
-                        onChange={(e) => setSmsTargetGroup(e.target.value)}
-                        className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="all_students">전체 수강생 학부모</option>
-                        <option value="unpaid_students">미납 고지 보유 학부모</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">알림 문자 메시지 본문</label>
-                      <textarea
-                        value={smsMessageText}
-                        onChange={(e) => setSmsMessageText(e.target.value)}
-                        rows={4}
-                        placeholder="전송할 알림톡 안내 문구를 작성해 주세요."
-                        className="w-full rounded-xl bg-slate-100 p-4 text-xs font-semibold border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none leading-relaxed"
-                        required
-                      />
-                    </div>
-
-                    <div className="bg-slate-50 p-4 rounded-xl text-[11px] text-slate-500 space-y-1 leading-normal font-bold">
-                      <p>📢 발송 대행 크레딧 정보</p>
-                      <p>• 보유 알림톡 캐시: <span className="text-blue-600 font-extrabold">90,422원</span></p>
-                      <p>• 차감액 기준: 알림톡 1건당 15원 차감, 일반 LMS 1건당 35원 차감</p>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={smsLoading}
-                      className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3.5 text-xs font-black shadow-sm transition"
-                    >
-                      {smsLoading ? <Loader2 size={14} className="animate-spin" /> : null}
-                      문자 및 알림톡 즉시 발송하기
-                    </button>
-                  </form>
-                </div>
-              </div>
+            {/* SMS / ALERTS / MESSAGING TAB */}
+            {['sms_send', 'sms_history', 'sms_reserved', 'sms_points'].includes(subTab) && (
+              <AdminSmsTab
+                activeBranchId={activeBranchId}
+                branches={branches}
+                profile={profile}
+                subTab={subTab}
+                setSubTab={setSubTab}
+              />
             )}
 
             {/* ROI SYSTEM SETTINGS (100% ORIGINAL FORM) */}

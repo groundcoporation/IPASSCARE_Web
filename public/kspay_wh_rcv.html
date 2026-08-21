@@ -1,0 +1,57 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>결제 승인 처리</title>
+</head>
+<body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f8fafc;">
+  <div style="text-align:center;background:white;padding:32px 40px;border-radius:24px;box-shadow:0 10px 30px rgba(0,0,0,0.08);border:1px solid #e2e8f0;">
+    <div style="font-size:36px;margin-bottom:12px;">🎉</div>
+    <h3 style="color:#0f172a;font-size:16px;font-weight:800;margin:0 0 8px 0;">카드 인증 완료</h3>
+    <p style="color:#64748b;font-size:13px;margin:0;">카드사 최종 승인 및 포인트 충전 중입니다...</p>
+  </div>
+  <script>
+    (function() {
+      var urlParams = new URLSearchParams(window.location.search);
+      var payKey = urlParams.get('reCommConId') || urlParams.get('reBillingToken') || '';
+      
+      try {
+        var forms = document.forms;
+        for (var i = 0; i < forms.length; i++) {
+          var el = forms[i].elements['reCommConId'] || forms[i].elements['reBillingToken'];
+          if (el && el.value) {
+            payKey = el.value;
+            break;
+          }
+        }
+      } catch(e) {}
+
+      // 1. Broadcast via localStorage
+      try {
+        localStorage.setItem('kspay_payment_success', JSON.stringify({
+          time: Date.now(),
+          payKey: payKey,
+          status: 'SUCCESS'
+        }));
+      } catch(e) {}
+
+      // 2. Broadcast via window.opener
+      try {
+        if (window.opener) {
+          if (typeof window.opener.eparamSet === 'function') {
+            window.opener.eparamSet(payKey, '', '');
+          }
+          if (typeof window.opener.goResult === 'function') {
+            window.opener.goResult(payKey);
+          }
+          window.opener.postMessage({ type: 'KSPAY_PAYMENT_SUCCESS', payKey: payKey }, '*');
+        }
+      } catch(e) {}
+
+      setTimeout(function() {
+        window.close();
+      }, 1000);
+    })();
+  </script>
+</body>
+</html>
