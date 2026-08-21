@@ -21,7 +21,8 @@ const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
 type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
-type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[] };
+type PaymentOrderItem = { package_id?: string | null; option_id?: string | null; quantity?: number | null };
+type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; order_items?: PaymentOrderItem[] | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[] };
 type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[] };
 type ClassSchedule = { id: string; branch_id: string | null; target_class: string; day_of_week: string; start_time: string; end_time: string; max_people: number | null; branches: { name: string } | null };
 type ScheduleReservation = { id: string; schedule_id: string; class_date: string; status: string | null; attendance_status: string | null; child_id: string | null; user_id: string | null; children: { child_name: string | null } | null; users: { name: string | null; phone: string | null } | null };
@@ -61,6 +62,9 @@ const isBeforeChildDeletion = (targetDate: string, deletedAt: string | null | un
 };
 const statusText = (status: string | null) => ({ paid: "결제 완료", success: "결제 완료", pending_payment: "입금 대기", failed: "결제 실패", cancelled: "취소", canceled: "취소", refunded: "환불" }[status ?? ""] ?? status ?? "미확인");
 const paymentDetail = (method: string | null, pgTid: string | null) => {
+  if (method === "CASH") return "현장 결제 : 현금";
+  if (method === "OFFLINE_CARD") return "현장 결제 : 카드";
+  if (method === "OFFLINE_TRANSFER") return "현장 결제 : 계좌이체";
   if (method === "VBANK") { const [bank, account] = (pgTid ?? "").split(":"); return account ? `${bank || "가상계좌"} · ${account}` : "가상계좌"; }
   if (method === "BANK") return "계좌이체";
   if (method === "POINT") return "포인트 결제";
@@ -500,25 +504,51 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     try {
       // payments has multiple user relations (payer, creator, confirmer).
       // Explicitly join the payer relation so PostgREST does not return PGRST201.
-      let query = supabase.from("payments").select("id,user_id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,users:users!payments_user_id_fkey(id,name,email)").order("created_at", { ascending: false });
+      let query = supabase.from("payments").select("id,user_id,created_at,total_amount,final_amount,payment_method,status,pg_tid,branch_id,order_items,users:users!payments_user_id_fkey(id,name,email)").order("created_at", { ascending: false });
       const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
       const { data, error: queryError } = await query;
       if (queryError) throw queryError;
       const paymentIds = (data ?? []).map((row: any) => row.id);
       const userIds = [...new Set((data ?? []).map((row: any) => row.user_id).filter(Boolean))];
+      const orderItems = (data ?? []).flatMap((row: any) => Array.isArray(row.order_items) ? row.order_items : []);
+      const orderedPackageIds = [...new Set(orderItems.map((item: any) => item.package_id).filter(Boolean))];
+      const orderedOptionIds = [...new Set(orderItems.map((item: any) => item.option_id).filter(Boolean))];
 
       // Fetch products and children in parallel
-      const [productResult, childResult, studentResult] = await Promise.all([
+      const [productResult, childResult, studentResult, packageCatalogResult, optionCatalogResult] = await Promise.all([
         paymentIds.length ? supabase.from("user_packages").select("payment_id,package_name,price,total_count").in("payment_id", paymentIds) : Promise.resolve({ data: [], error: null }),
         userIds.length ? supabase.from("children").select("parent_id,child_name").in("parent_id", userIds).is("deleted_at", null) : Promise.resolve({ data: [], error: null }),
-        userIds.length ? supabase.from("academy_students").select("parent_user_id,student_name").in("parent_user_id", userIds) : Promise.resolve({ data: [], error: null })
+        userIds.length ? supabase.from("academy_students").select("parent_user_id,student_name").in("parent_user_id", userIds) : Promise.resolve({ data: [], error: null }),
+        orderedPackageIds.length ? supabase.from("packages").select("id,name").in("id", orderedPackageIds) : Promise.resolve({ data: [], error: null }),
+        orderedOptionIds.length ? supabase.from("package_options").select("id,label,price,total_count").in("id", orderedOptionIds) : Promise.resolve({ data: [], error: null }),
       ]);
 
       if (productResult.error) throw productResult.error;
+      if (packageCatalogResult.error) throw packageCatalogResult.error;
+      if (optionCatalogResult.error) throw optionCatalogResult.error;
 
       const productsByPayment = new Map<string, PaymentProduct[]>();
       (productResult.data ?? []).forEach((product: any) => productsByPayment.set(product.payment_id, [...(productsByPayment.get(product.payment_id) ?? []), product]));
+      const packageCatalog = new Map((packageCatalogResult.data ?? []).map((item: any) => [item.id, item]));
+      const optionCatalog = new Map((optionCatalogResult.data ?? []).map((item: any) => [item.id, item]));
+
+      // Older cancellation code deleted user_packages. Recover the product
+      // label from the immutable onsite order snapshot in payments.order_items.
+      (data ?? []).forEach((row: any) => {
+        if ((productsByPayment.get(row.id) ?? []).length > 0 || !Array.isArray(row.order_items)) return;
+        const recovered = row.order_items.map((item: PaymentOrderItem) => {
+          const packageRow: any = item.package_id ? packageCatalog.get(item.package_id) : null;
+          const optionRow: any = item.option_id ? optionCatalog.get(item.option_id) : null;
+          if (!packageRow && !optionRow) return null;
+          return {
+            package_name: [packageRow?.name, optionRow?.label].filter(Boolean).join(" - ") || "상품명 없음",
+            price: optionRow?.price ?? null,
+            total_count: optionRow?.total_count ?? null,
+          } as PaymentProduct;
+        }).filter(Boolean) as PaymentProduct[];
+        if (recovered.length > 0) productsByPayment.set(row.id, recovered);
+      });
 
       // Map children names by parent user id
       const childrenByParent = new Map<string, string[]>();
@@ -921,9 +951,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setCancelLoading(true);
     try {
       let isEdgeSuccess = false;
+      const isOfflinePayment = Boolean(cancelTarget.pg_tid?.startsWith("OFFLINE_"));
+
+      if (isOfflinePayment) {
+        const { data: cancelData, error: cancelError } = await supabase.rpc("cancel_offline_payment", {
+          p_payment_id: cancelTarget.id,
+          p_reason: cancelReason.trim() || "관리자 웹 현장결제 취소",
+        });
+        if (cancelError) throw cancelError;
+        if (!cancelData?.success) throw new Error("현장결제 취소 결과를 확인할 수 없습니다.");
+        isEdgeSuccess = true;
+      }
 
       // 1. If online card payment (with pg_tid), invoke real PG kspay-cancel edge function
-      if (cancelTarget.pg_tid && !cancelTarget.pg_tid.startsWith("OFFLINE_")) {
+      if (!isOfflinePayment && cancelTarget.pg_tid) {
         try {
           const { data: edgeData, error: edgeError } = await supabase.functions.invoke("kspay-cancel", {
             body: {
@@ -943,29 +984,27 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         }
       }
 
-      // 2. Direct Supabase DB Status Update (Full Safety Sync)
-      const { error: payErr } = await supabase.from("payments").update({ 
-        status: "cancelled"
-      }).eq("id", cancelTarget.id);
-      
-      if (payErr) {
-        console.warn("Direct payment update notice:", payErr);
-      }
+      if (!isOfflinePayment) {
+        // Online cancellations are synchronized after the PG cancellation.
+        const { error: payErr } = await supabase.from("payments").update({
+          status: "cancelled"
+        }).eq("id", cancelTarget.id);
+        if (payErr) throw payErr;
 
-      // 3. Delete or invalidate connected user_packages
-      try {
-        await supabase.from("user_packages").delete().eq("payment_id", cancelTarget.id);
-      } catch {
         try {
-          await supabase.from("user_packages").update({ status: "cancelled" }).eq("payment_id", cancelTarget.id);
-        } catch {}
+          await supabase.from("user_packages").delete().eq("payment_id", cancelTarget.id);
+        } catch {
+          try {
+            await supabase.from("user_packages").update({ status: "cancelled" }).eq("payment_id", cancelTarget.id);
+          } catch {}
+        }
       }
 
       // 4. Optimistic UI update
       setPayments(prev => prev.map(p => p.id === cancelTarget.id ? { ...p, status: "cancelled" } : p));
 
       alert(isEdgeSuccess
-        ? "카드사 승인 취소 및 어플 이용권 회수가 정상 완료되었습니다."
+        ? (isOfflinePayment ? "현장결제 취소 및 이용권·포인트 회수가 정상 완료되었습니다." : "카드사 승인 취소 및 어플 이용권 회수가 정상 완료되었습니다.")
         : "결제 취소 처리가 완료되었습니다.\n(어플 내 수강권 및 결제 상태가 취소로 안전하게 동기화되었습니다.)"
       );
       setCancelTarget(null);

@@ -31,9 +31,9 @@ const tabs: Array<{ id: OfflineStatus; label: string }> = [
 ];
 
 const methodLabel = (method: string) => ({
-  CASH: '현금',
-  OFFLINE_CARD: '현장 카드',
-  OFFLINE_TRANSFER: '계좌이체',
+  CASH: '현장 결제 : 현금',
+  OFFLINE_CARD: '현장 결제 : 카드',
+  OFFLINE_TRANSFER: '현장 결제 : 계좌이체',
 }[method] || method || '미지정');
 
 export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
@@ -116,13 +116,19 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
   };
 
   const cancelPayment = async (payment: OfflinePayment) => {
-    if (!confirm(`${payment.user_name}님의 현장결제 요청을 취소할까요?`)) return;
+    const isPaid = payment.status === 'paid';
+    if (!confirm(isPaid
+      ? `${payment.user_name}님의 수납 완료 현장결제를 취소할까요?\n미사용 이용권과 적립 포인트가 함께 회수됩니다.`
+      : `${payment.user_name}님의 현장결제 요청을 취소할까요?`)) return;
     setProcessingId(payment.id);
     try {
-      const { error } = await supabase.rpc('cancel_scheduled_offline_payment', {
+      const { data, error } = await supabase.rpc('cancel_offline_payment', {
         p_payment_id: payment.id,
+        p_reason: isPaid ? '관리자 웹 현장결제 취소' : '관리자 웹 현장결제 요청 취소',
       });
       if (error) throw error;
+      if (!data?.success) throw new Error('현장결제 취소 결과를 확인할 수 없습니다.');
+      alert(isPaid ? '현장결제 취소와 이용권·포인트 회수가 완료되었습니다.' : '현장결제 요청이 취소되었습니다.');
       await loadPayments();
     } catch (error: any) {
       alert(error?.message || '현장결제 요청 취소에 실패했습니다.');
@@ -200,10 +206,10 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
                     <div className="text-xl font-black text-slate-950">{Number(payment.final_amount || payment.total_amount || 0).toLocaleString()}원</div>
                     <div className="mt-1 text-[11px] font-black text-slate-400">{status === 'scheduled' ? '결제 예정' : status === 'paid' ? '수납 완료' : '취소'}</div>
                   </div>
-                  {payment.status === 'scheduled' && (
+                  {(payment.status === 'scheduled' || payment.status === 'paid') && (
                     <div className="flex gap-2 lg:ml-3">
-                      <button disabled={processing} onClick={() => void cancelPayment(payment)} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-black text-slate-500 disabled:opacity-50"><XCircle size={15} /> 취소</button>
-                      <button disabled={processing} onClick={() => void confirmPayment(payment)} className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white disabled:opacity-50"><CheckCircle2 size={15} /> 수납 완료</button>
+                      <button disabled={processing} onClick={() => void cancelPayment(payment)} className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 px-3 py-2.5 text-xs font-black text-rose-600 disabled:opacity-50"><XCircle size={15} /> {payment.status === 'paid' ? '결제 취소' : '요청 취소'}</button>
+                      {payment.status === 'scheduled' && <button disabled={processing} onClick={() => void confirmPayment(payment)} className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white disabled:opacity-50"><CheckCircle2 size={15} /> 수납 완료</button>}
                     </div>
                   )}
                 </article>
