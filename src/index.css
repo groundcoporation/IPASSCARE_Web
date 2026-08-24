@@ -44,6 +44,16 @@ body {
   color: #0f172a;
 }
 
+body, p, h1, h2, h3, h4, h5, h6, span, div, a, button, label, li {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  letter-spacing: -0.02em;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.03em;
+}
+
 /* Glassmorphism */
 .glass-header {
   background: rgba(255, 255, 255, 0.88);

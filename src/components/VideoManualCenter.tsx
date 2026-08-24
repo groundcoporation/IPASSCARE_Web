@@ -199,7 +199,7 @@ export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfil
             <span className="gradient-text">아이패스케어 매뉴얼 센터</span>
           </h2>
           <p className="text-slate-600 mt-3 text-base sm:text-lg">
-            학부모, 학원장, 기사님별 필수 사용법을 1~2분 분량의 짧고 명확한 영상으로 확인하세요.
+            학부모, 학원장, 기사님별 필수 사용법을<br className="hidden sm:inline" /> 1~2분 분량의 짧고 명확한 영상으로 확인하세요.
           </p>
         </div>
 

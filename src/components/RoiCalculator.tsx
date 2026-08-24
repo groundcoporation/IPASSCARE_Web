@@ -76,7 +76,7 @@ export const RoiCalculator: React.FC<RoiCalculatorProps> = ({ onOpenInquiry }) =
             <span className="gradient-text">기대 절감 효과 시뮬레이션</span>
           </h2>
           <p className="text-slate-600 mt-3 text-base sm:text-lg">
-            Lite (월 99,000원) / Pro (월 118,000원) 요금제와 학원 규모를 선택하시면, 절감되는 행정 시간과 수납 회수액을 실시간 계산해 드립니다.
+            Lite (월 99,000원) / Pro (월 118,000원) 요금제와 학원 규모를 선택하시면,<br className="hidden sm:inline" /> 절감되는 행정 시간과 수납 회수액을 실시간 계산해 드립니다.
           </p>
         </div>
 
