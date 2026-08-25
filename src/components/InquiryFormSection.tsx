@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Send, CheckCircle2, Phone, Building, User, Users, MapPin, MessageSquare, Sparkles } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
 
 export const InquiryFormSection: React.FC = () => {
   const [formData, setFormData] = useState({
@@ -14,13 +15,22 @@ export const InquiryFormSection: React.FC = () => {
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
+    try {
+      await supabase.from('web_inquiries').insert([{
+        academy_name: formData.academyName.trim(),
+        director_name: formData.contactName.trim(),
+        phone: formData.phone.trim(),
+        message: `[규모: ${formData.studentCount} / 지역: ${formData.region || '미입력'}] ${formData.message}`.trim()
+      }]);
+    } catch (err) {
+      console.warn('Inquiry submit note:', err);
+    } finally {
       setLoading(false);
       setSubmitted(true);
-    }, 800);
+    }
   };
 
   return (

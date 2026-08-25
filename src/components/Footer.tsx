@@ -19,8 +19,10 @@ export const Footer: React.FC = () => {
               </div>
             </div>
 
-            <p className="text-xs text-slate-400 leading-relaxed max-w-sm">
-              아이패스케어(IPASSCARE)는 실시간 셔틀 GPS 관제, 안심 출결, 모바일 원비 수납, VOG SPORTS 마일리지 포인트 전환까지 포함된 통합 학원 케어 플랫폼입니다.
+            <p className="text-xs text-slate-400 leading-relaxed max-w-md">
+              아이패스케어(IPASSCARE)는 실시간 셔틀 GPS 관제, 안심 출결,<br className="hidden sm:inline" />
+              모바일 원비 수납, VOG SPORTS 마일리지 포인트 전환까지<br className="hidden sm:inline" />
+              모두 포함된 통합 안심 케어 플랫폼입니다.
             </p>
 
             <div className="pt-2 text-xs text-slate-300 space-y-1.5 font-medium">

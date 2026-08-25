@@ -21,11 +21,11 @@ export const GroundCorpSection: React.FC = () => {
             </h2>
 
             <p className="text-slate-600 text-base leading-relaxed">
-              아이패스케어(IPASSCARE)는 교육, 시설, 브랜드를 잇는 대표 비즈니스 그룹 <strong>(주)그라운드코퍼레이션(Ground Corporation)</strong>의 학원 및 안심 케어 모바일 IT 플랫폼입니다.
+              아이패스케어(IPASSCARE)는 교육, 시설, 브랜드를 잇는 대표 비즈니스 그룹<br className="hidden sm:inline" /> <strong>(주)그라운드코퍼레이션(Ground Corporation)</strong>의 학원 안심 케어 올인원 플랫폼입니다.
             </p>
 
             <p className="text-slate-600 text-sm leading-relaxed">
-              단순 학원 관리를 넘어, 제휴 스포츠 용품 쇼핑몰(VOG SPORTS) 마일리지 적립 혜택과 아카데미 네트워크를 결합하여 학원과 학부모 모두에게 실질적인 리워드 가치를 제공합니다.
+              단순 학원 관리를 넘어, 제휴 스포츠 용품 쇼핑몰(VOG SPORTS) 마일리지 적립 혜택과<br className="hidden sm:inline" /> 아카데미 네트워크를 결합하여 학원과 학부모 모두에게 실질적인 리워드 가치를 제공합니다.
             </p>
 
             {/* Core Values Bullets */}

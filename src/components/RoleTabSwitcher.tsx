@@ -22,7 +22,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
             <span className="gradient-text">3대 맞춤형 가이드</span>
           </h2>
           <p className="text-slate-600 mt-3 text-base sm:text-lg">
-            학부모, 학원장, 기사님까지 모두를 위한 최고 수준의 편의 기능과 직관적인 인터페이스를 제공합니다.
+            학부모, 학원장, 기사님까지 모두를 위한<br className="hidden sm:inline" /> 최고 수준의 편의 기능과 직관적인 인터페이스를 제공합니다.
           </p>
         </div>
 
@@ -79,7 +79,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
                   "아이 등하원 걱정 끝, 셔틀 위치 확인부터 원비 결제까지 한 손에"
                 </h3>
                 <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                  바쁜 일상 속에서도 자녀의 학원 출발, 셔틀 탑승, 등원 완료 소식을 카카오 알림톡과 실시간 지도로 빠르게 확인할 수 있습니다.
+                  바쁜 일상 속에서도 자녀의 학원 출발, 셔틀 탑승, 등원 완료 소식을<br className="hidden sm:inline" /> 카카오 알림톡과 실시간 지도로 빠르게 확인할 수 있습니다.
                 </p>
 
                 <div className="space-y-4 pt-2">
@@ -171,7 +171,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
                   "학원 행정 업무 시간 단축, 미납 원비 자동 회수로 수납율 급증"
                 </h3>
                 <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                  원생 출결 관리, 미납 청구서 일괄 발행, 셔틀 노선 지정 및 정산까지 학원 운영에 필요한 모든 기능을 하나의 통합 관리자 대시보드에서 처리하세요.
+                  원생 출결 관리, 미납 청구서 일괄 발행, 셔틀 노선 지정 및 정산까지<br className="hidden sm:inline" /> 학원 운영에 필요한 모든 기능을 하나의 통합 관리자 대시보드에서 처리하세요.
                 </p>
 
                 <div className="space-y-4 pt-2">
@@ -252,7 +252,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
                   "버튼 한 번으로 운행 시작, 탑승 체크부터 복잡한 동선 관리까지 쉽게"
                 </h3>
                 <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                  운행 중 복잡한 휴대전화 조작 없이, 정류장별 탑승 예정 학생을 확인하고 안전하게 승하차를 처리할 수 있습니다.
+                  운행 중 복잡한 휴대전화 조작 없이,<br className="hidden sm:inline" /> 정류장별 탑승 예정 학생을 확인하고 안전하게 승하차를 처리할 수 있습니다.
                 </p>
 
                 <div className="space-y-4 pt-2">

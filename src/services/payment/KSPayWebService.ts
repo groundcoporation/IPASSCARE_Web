@@ -78,7 +78,7 @@ export class KSPayWebService {
   ): Promise<KSPayPaymentResult> {
     const totalBonus = req.bonusAmount !== undefined 
       ? req.bonusAmount 
-      : (req.amount >= 200000 ? 20000 : 0);
+      : (req.amount === 300000 ? 20000 : req.amount === 200000 ? 10000 : 0);
     const totalCredit = req.amount + totalBonus;
 
     // 1. Fetch current balance

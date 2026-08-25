@@ -56,7 +56,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
             </h1>
 
             <p className="text-base sm:text-lg text-slate-600 max-w-2xl font-medium leading-relaxed">
-              실시간 GPS 셔틀 관제, 원터치 출결 알림, 모바일 원비 결제, 그리고 어플 수강료 차감·자사몰·VOG SPORTS 쇼핑몰 전용 포인트 전환까지! 아이패스케어(IPASSCARE) 모바일 앱으로 구현한 올인원 솔루션을 경험해 보세요.
+              실시간 GPS 셔틀 관제, 원터치 출결 알림, 모바일 원비 결제,<br className="hidden sm:inline" />
+              그리고 어플 수강료 차감·자사몰·VOG SPORTS 쇼핑몰 전용 포인트 전환까지!<br className="hidden sm:inline" />
+              아이패스케어(IPASSCARE) 모바일 앱으로 구현한 올인원 솔루션을 경험해 보세요.
             </p>
 
             {/* CTA & Video Buttons */}

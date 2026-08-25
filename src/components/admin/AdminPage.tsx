@@ -2200,6 +2200,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   🟣 하차 완료 (귀가)
                                 </span>
                               );
+                            } else if (record?.no_dropoff) {
+                              statusBadge = (
+                                <span className="inline-block bg-indigo-50 text-indigo-700 border border-indigo-200 font-black px-2.5 py-1 rounded-full text-[11px]">
+                                  🏠 자가귀가 (하차 미탑승)
+                                </span>
+                              );
                             } else if (record?.check_out) {
                               statusBadge = (
                                 <span className="inline-block bg-amber-100 text-amber-800 font-black px-2.5 py-1 rounded-full text-[11px]">
@@ -2218,10 +2224,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   🚌 셔틀 이동 중
                                 </span>
                               );
-                            } else if (record?.no_shuttle) {
+                            } else if (record?.no_shuttle || record?.no_pickup) {
                               statusBadge = (
-                                <span className="inline-block bg-amber-50 text-amber-700 font-black px-2.5 py-1 rounded-full text-[11px]">
-                                  🟡 셔틀 미탑승
+                                <span className="inline-block bg-amber-50 text-amber-700 border border-amber-200 font-black px-2.5 py-1 rounded-full text-[11px]">
+                                  🟡 자가등원 (승차 미탑승)
                                 </span>
                               );
                             }
@@ -2691,6 +2697,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                     🟣 하차 완료 (귀가)
                                   </span>
                                 );
+                              } else if (record?.no_dropoff) {
+                                statusBadge = (
+                                  <span className="inline-block bg-indigo-50 text-indigo-700 border border-indigo-200 font-black px-2.5 py-1 rounded-full text-[11px]">
+                                    🏠 자가귀가 (하차 미탑승)
+                                  </span>
+                                );
                               } else if (record?.check_out) {
                                 statusBadge = (
                                   <span className="inline-block bg-amber-100 text-amber-800 font-black px-2.5 py-1 rounded-full text-[11px]">
@@ -2707,6 +2719,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 statusBadge = (
                                   <span className="inline-block bg-blue-100 text-blue-800 font-black px-2.5 py-1 rounded-full text-[11px]">
                                     🚌 셔틀 이동 중
+                                  </span>
+                                );
+                              } else if (record?.no_shuttle || record?.no_pickup) {
+                                statusBadge = (
+                                  <span className="inline-block bg-amber-50 text-amber-700 border border-amber-200 font-black px-2.5 py-1 rounded-full text-[11px]">
+                                    🟡 자가등원 (승차 미탑승)
                                   </span>
                                 );
                               }
