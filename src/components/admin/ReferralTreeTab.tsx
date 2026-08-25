@@ -233,19 +233,7 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
     }));
   };
 
-  // Generation level badge styling
-  const getGenerationBadge = (depth: number) => {
-    const styles = [
-      'bg-blue-100 text-blue-800 border-blue-200',      // 1대
-      'bg-emerald-100 text-emerald-800 border-emerald-200', // 2대
-      'bg-amber-100 text-amber-800 border-amber-200',   // 3대
-      'bg-purple-100 text-purple-800 border-purple-200', // 4대+
-    ];
-    const index = Math.min(depth, styles.length - 1);
-    return `${styles[index]} border text-[10px] px-1.5 py-0.5 rounded font-black shrink-0`;
-  };
-
-  // Recursive Tree Node Renderer
+  // Recursive Tree Node Renderer (Folder-style Tree)
   const renderTreeNode = (u: UserRecord, depth: number = 0) => {
     const children = childrenMap.get(u.id) || [];
     const hasChildren = children.length > 0;
@@ -257,12 +245,12 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
         {/* Node Item */}
         <div 
           onClick={() => setSelectedUserId(u.id)}
-          className={`group flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all select-none border ${
+          className={`group flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-2xl cursor-pointer transition-all select-none border ${
             isSelected 
               ? 'bg-blue-600 border-blue-700 text-white shadow-md' 
-              : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200 text-slate-800'
+              : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200 text-slate-800 shadow-2xs'
           }`}
-          style={{ marginLeft: `${depth * 28}px` }}
+          style={{ marginLeft: `${depth * 24}px` }}
         >
           <div className="flex items-center gap-2.5 min-w-0">
             {/* Toggle Expand Icon */}
@@ -282,7 +270,7 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
             </div>
 
             {/* Avatar / Role Icon */}
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 font-bold ${
+            <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 font-bold ${
               isSelected 
                 ? 'bg-white/20 text-white' 
                 : u.role === 'admin' ? 'bg-rose-100 text-rose-700' : u.role === 'coach' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'
@@ -293,26 +281,19 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
             {/* User Name & Details */}
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="font-extrabold text-sm truncate">{u.name || '이름 없음'}</span>
+                <span className="font-black text-sm truncate">{u.name || '이름 없음'}</span>
                 {u.username && (
-                  <span className={`text-[10px] truncate ${isSelected ? 'text-white/60' : 'text-slate-400 font-mono'}`}>
+                  <span className={`text-[10px] truncate ${isSelected ? 'text-white/70' : 'text-slate-400 font-mono'}`}>
                     @{u.username}
                   </span>
                 )}
               </div>
-              <p className={`text-[10px] mt-0.5 ${isSelected ? 'text-white/70' : 'text-slate-400'}`}>
+              <p className={`text-[10.5px] mt-0.5 ${isSelected ? 'text-white/80' : 'text-slate-400 font-medium'}`}>
                 보유: <b className={isSelected ? 'text-white' : 'text-slate-800'}>{(u.points ?? 0).toLocaleString()} P</b>
-                {u.referral_count ? ` · 추천: ${u.referral_count}명` : ''}
+                {children.length > 0 ? ` · 추천 회원: ${children.length}명` : u.referral_count ? ` · 추천 회원: ${u.referral_count}명` : ''}
               </p>
             </div>
           </div>
-
-          {/* Right Generation / Level Badge */}
-          {depth > 0 && (
-            <span className={getGenerationBadge(depth - 1)}>
-              {depth}대
-            </span>
-          )}
         </div>
 
         {/* Render Children Recursively */}
@@ -321,7 +302,7 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
             {/* Guide line for nested indentation */}
             <div 
               className="absolute left-0 top-0 bottom-3 w-[1px] bg-slate-200"
-              style={{ marginLeft: `${(depth * 28) + 9}px` }}
+              style={{ marginLeft: `${(depth * 24) + 9}px` }}
             />
             {children.map(child => renderTreeNode(child, depth + 1))}
           </div>
@@ -341,18 +322,18 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-                🌳 {isAdmin && adminViewScope === 'all' ? '전체 추천인 포인트 계보 트리' : `${profile?.name || '내'} 추천 하위 네트워크`}
+                🌳 {isAdmin && adminViewScope === 'all' ? '전체 추천인 네트워크 트리' : `${profile?.name || '내'} 추천 회원 현황`}
               </h2>
               {!isAdmin && (
                 <span className="text-[11px] font-black text-blue-600 bg-blue-50 border border-blue-200/60 px-2 py-0.5 rounded-full">
-                  내 하위 계보 전용
+                  내 추천 회원 전용
                 </span>
               )}
             </div>
             <p className="text-xs text-slate-500 mt-1">
               {isAdmin && adminViewScope === 'all'
-                ? '전체 회원들의 다세대(1대, 2대, 3대...) 추천 가입 흐름과 적립 포인트를 시각적으로 탐색합니다.'
-                : `${profile?.name || '내 계정'}으로부터 연결된 1대, 2대, 3대 직/간접 추천 회원 및 적립 포인트를 확인합니다.`}
+                ? '회원별 추천 초대 연결 구조와 적립된 리워드 포인트를 트리 형태로 탐색합니다.'
+                : `${profile?.name || '내 계정'}으로부터 연결된 추천 회원 및 적립 리워드 포인트를 확인합니다.`}
             </p>
           </div>
 
@@ -364,14 +345,14 @@ export const ReferralTreeTab: React.FC<ReferralTreeTabProps> = ({ profile }) => 
                   onClick={() => setAdminViewScope('all')}
                   className={`px-3 py-1.5 rounded-lg transition ${adminViewScope === 'all' ? 'bg-white text-blue-600 shadow-2xs font-extrabold' : 'text-slate-500 hover:text-slate-800'}`}
                 >
-                  🌐 전체 계보
+                  🌐 전체 네트워크
                 </button>
                 <button
                   type="button"
                   onClick={() => setAdminViewScope('my')}
                   className={`px-3 py-1.5 rounded-lg transition ${adminViewScope === 'my' ? 'bg-white text-blue-600 shadow-2xs font-extrabold' : 'text-slate-500 hover:text-slate-800'}`}
                 >
-                  👤 내 하위만
+                  👤 내 추천만
                 </button>
               </div>
             )}
