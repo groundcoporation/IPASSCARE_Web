@@ -687,7 +687,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
   }, [messageContent]);
 
   const isLms = byteCount > 90 || Boolean(attachedImage);
-  const costPerMsg = attachedImage ? 150 : isLms ? 50 : 20; // MMS: 150, LMS: 50, SMS: 20
+  const costPerMsg = attachedImage ? 150 : isLms ? 60 : 20; // MMS: 150, LMS: 60, SMS: 20
   const totalCost = recipients.length * costPerMsg;
 
   // Real DB Charge Action via KSPay Web Service
@@ -697,6 +697,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
       return;
     }
 
+    const bonusAmount = chargeAmount === 300000 ? 20000 : chargeAmount === 200000 ? 10000 : 0;
     setChargeLoading(true);
     try {
       await KSPayWebService.openPaymentWindow(
@@ -705,6 +706,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
           userId: profile?.id,
           userName: profile?.name || '학원장',
           amount: chargeAmount,
+          bonusAmount: bonusAmount,
           goodName: `iPoint ${chargeAmount.toLocaleString()}P`,
           paymentMethod: selectedPayMethod
         },
@@ -1100,20 +1102,22 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
               </div>
             )}
 
-            {/* SMS Notice / Guide Card (Exact Match with Reference Image) */}
+            {/* SMS / LMS / MMS Notice Guide Card */}
             <div className="bg-slate-50/90 border border-slate-200 rounded-xl p-3 space-y-1.5 text-[10.5px] text-slate-600 mt-1">
               <div className="flex items-center justify-between font-bold text-slate-800 border-b border-slate-200/60 pb-1">
                 <span className="flex items-center gap-1.5 font-black text-slate-900 text-[11px]">
                   <AlertCircle size={13} className="text-blue-600" />
-                  SMS 발송안내
+                  SMS / LMS / MMS 발송안내
                 </span>
-                <span className="text-[10px] text-slate-400 font-semibold">단문 20P · 장문 50P · 포토 150P</span>
+                <span className="text-[10px] text-slate-600 font-extrabold font-mono">SMS 20P · LMS 60P · MMS 150P</span>
               </div>
               <ul className="space-y-0.5 text-slate-500 list-disc list-inside leading-relaxed text-[10px] font-medium">
-                <li>SMS 내용은 <b>최대 90 Byte</b>까지 작성 가능하며, 초과 시 자동으로 <b>LMS(장문)</b>으로 전환됩니다.</li>
+                <li><b>SMS (단문):</b> 90 Byte 이내 (한글 약 45자) 작성 시 건당 <b>20 P</b>가 차감됩니다.</li>
+                <li><b>LMS (장문):</b> 90 Byte 초과 시 자동으로 전환되며, 최대 1,000자(2,000 Byte)까지 건당 <b>60 P</b>가 차감됩니다.</li>
+                <li><b>MMS (포토):</b> 이미지/사진 첨부 시 건당 <b>150 P</b>가 차감됩니다.</li>
                 <li>원생 정보에 등록된 <b>어머니, 아버지, 학생 번호</b>를 원클릭으로 우측 전송함에 담을 수 있습니다.</li>
                 <li>우측 스마트폰 화면에서 직접 번호를 입력해 추가하거나, 잘못 담긴 수신자를 개별 삭제할 수 있습니다.</li>
-                <li><b>⏰ 예약 발송 설정</b>을 통해 원하는 날짜/시간에 자동 발송되며, 발송 전 언제든 취소 및 즉시 환불됩니다.</li>
+                <li><b>⏰ 예약 발송 설정</b>을 통해 원하는 날짜/시간에 자동 발송되며, 발송 전 언제든 예약 취소 시 포인트가 즉시 환불됩니다.</li>
                 <li><b>자주 쓰는 문자</b>에 등하원/수강료/휴원 등 반복 공지를 저장하여 다음 발송 시 1초 만에 불러올 수 있습니다.</li>
               </ul>
             </div>
@@ -1203,14 +1207,16 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
                     </button>
                   </div>
 
-                  {/* SMS (단문/장문) Status Bar with Replacement Tag Buttons */}
+                  {/* SMS (단문/장문/MMS) Status Bar with Replacement Tag Buttons */}
                   <div className="px-3 py-1.5 bg-slate-100/70 border-t border-slate-200 flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10.5px] font-black text-slate-800">
-                        {attachedImage ? 'MMS (포토)' : isLms ? 'LMS (장문)' : 'SMS (단문)'}
+                      <span className={`text-[10.5px] font-black px-1.5 py-0.5 rounded ${
+                        attachedImage ? 'bg-purple-100 text-purple-700' : isLms ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {attachedImage ? 'MMS (150P)' : isLms ? 'LMS (60P)' : 'SMS (20P)'}
                       </span>
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        ({byteCount} / 90 Byte)
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        ({byteCount} / {isLms ? '2,000' : '90'} Byte · {isLms ? '최대 1,000자' : '한글 약 45자'})
                       </span>
                     </div>
 
@@ -1775,7 +1781,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
       {/* MODAL 1: i-Point Recharge Modal */}
       {showChargeModal && (
         <div className="fixed inset-0 z-[5000] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white max-w-md w-full rounded-3xl p-6 space-y-5 shadow-2xl border border-slate-100" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white max-w-4xl w-full rounded-3xl p-6 sm:p-8 space-y-5 shadow-2xl border border-slate-100" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
                 <Coins className="text-amber-500" />
@@ -1788,12 +1794,12 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
 
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <label className="block text-xs font-bold text-slate-600">충전 포인트 선택</label>
+                <label className="block text-xs font-bold text-slate-600">충전 포인트 선택 (10만 / 20만 / 30만)</label>
                 {isAdmin && (
                   <button
                     type="button"
                     onClick={() => setChargeAmount(100)}
-                    className={`text-[10px] font-black px-2 py-0.5 rounded-lg border transition ${
+                    className={`text-[10px] font-black px-2.5 py-1 rounded-lg border transition ${
                       chargeAmount === 100 
                         ? 'bg-amber-500 text-white border-amber-600 shadow-xs' 
                         : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
@@ -1805,30 +1811,42 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* 3-Column Horizontal Grid with wider max-w-4xl */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {[
-                  { amount: 100000, label: '100,000 P (10만원)', bonus: 'SMS 5,000건 발송 (기본)', tag: '기본' },
-                  { amount: 200000, label: '200,000 P (20만원)', bonus: 'SMS 11,000건 (+20,000P 혜택)', tag: '최대혜택' },
-                ].map(item => (
-                  <button
-                    key={item.amount}
-                    type="button"
-                    onClick={() => setChargeAmount(item.amount)}
-                    className={`p-4 rounded-2xl border text-left transition-all relative ${
-                      chargeAmount === item.amount 
-                        ? 'border-blue-600 bg-blue-50/80 text-blue-900 ring-2 ring-blue-500 shadow-xs' 
-                        : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <span className={`absolute top-2.5 right-2.5 text-[9.5px] font-black px-1.5 py-0.5 rounded-full ${
-                      item.amount === 200000 ? 'bg-amber-500 text-white' : 'bg-blue-600 text-white'
-                    }`}>
-                      {item.tag}
-                    </span>
-                    <b className="text-sm block font-black">{item.label}</b>
-                    <span className="text-[11px] text-blue-600 font-bold mt-1 block">{item.bonus}</span>
-                  </button>
-                ))}
+                  { amount: 100000, label: '100,000 P', bonus: 0, desc: 'SMS 5,000건 / LMS 1,666건 가능', tag: '기본' },
+                  { amount: 200000, label: '200,000 P', bonus: 10000, desc: 'SMS 10,500건 / LMS 3,500건 가능', tag: '추천 (+1만P)' },
+                  { amount: 300000, label: '300,000 P', bonus: 20000, desc: 'SMS 16,000건 / LMS 5,333건 가능', tag: '최대혜택 (+2만P)' },
+                ].map(item => {
+                  const isSelected = chargeAmount === item.amount;
+                  return (
+                    <button
+                      key={item.amount}
+                      type="button"
+                      onClick={() => setChargeAmount(item.amount)}
+                      className={`p-4 sm:p-5 rounded-2xl border text-left transition-all relative flex flex-col justify-between min-h-[120px] ${
+                        isSelected 
+                          ? 'border-blue-600 bg-blue-50/90 text-blue-900 ring-2 ring-blue-500 shadow-sm' 
+                          : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-2.5">
+                        <b className="text-sm sm:text-base font-black text-slate-900">{item.label}</b>
+                        <span className={`text-[10.5px] font-black px-2.5 py-0.5 rounded-full whitespace-nowrap shrink-0 shadow-2xs ${
+                          item.amount === 300000 ? 'bg-amber-500 text-white' : item.amount === 200000 ? 'bg-indigo-600 text-white' : 'bg-slate-600 text-white'
+                        }`}>
+                          {item.tag}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-xs sm:text-sm text-blue-600 font-black block">
+                          {item.bonus > 0 ? `총 ${(item.amount + item.bonus).toLocaleString()} P 지급` : `${item.amount.toLocaleString()} P 지급`}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-semibold block">{item.desc}</span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
 
               {chargeAmount === 100 && (
@@ -1838,21 +1856,34 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
               )}
             </div>
 
-            <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200 text-xs text-slate-600 space-y-1">
-              <div className="flex justify-between font-bold">
-                <span>현재 보유 잔액:</span>
-                <span>{pointBalance.toLocaleString()} P</span>
-              </div>
-              <div className="flex justify-between font-extrabold text-blue-600">
-                <span>충전 후 총 잔액:</span>
-                <span>{(pointBalance + chargeAmount + (chargeAmount === 200000 ? 20000 : 0)).toLocaleString()} P</span>
-              </div>
-            </div>
+            {/* Total Balance Summary Box */}
+            {(() => {
+              const currentBonus = chargeAmount === 300000 ? 20000 : chargeAmount === 200000 ? 10000 : 0;
+              const totalAfterCharge = pointBalance + chargeAmount + currentBonus;
+              return (
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs text-slate-600 space-y-1.5">
+                  <div className="flex justify-between font-bold">
+                    <span>현재 보유 잔액:</span>
+                    <span className="font-mono">{pointBalance.toLocaleString()} P</span>
+                  </div>
+                  {currentBonus > 0 && (
+                    <div className="flex justify-between font-bold text-emerald-600">
+                      <span>추가 보너스 혜택:</span>
+                      <span className="font-mono">+{currentBonus.toLocaleString()} P</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-extrabold text-blue-600 pt-1.5 border-t border-slate-200 text-sm">
+                    <span>충전 후 총 잔액:</span>
+                    <span className="font-mono font-black text-base">{totalAfterCharge.toLocaleString()} P</span>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Payment Method Selector (신용카드 단일 지정) */}
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-600">결제 수단</label>
-              <div className="bg-emerald-50/70 border border-emerald-200/80 p-3 rounded-2xl flex items-center justify-between">
+              <div className="bg-emerald-50/70 border border-emerald-200/80 p-3.5 rounded-2xl flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-2xs shrink-0">
                     <CreditCard size={16} />
@@ -1866,23 +1897,31 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
               </div>
             </div>
 
-            {/* KSNET Security Notice */}
-            <div className="flex items-center justify-center gap-1.5 text-[10.5px] text-slate-400 font-semibold bg-slate-50 py-1.5 rounded-xl border border-slate-100">
-              <Lock size={12} className="text-emerald-600" />
-              <span>KSNET(KSPay) 256-bit 전자결제 시스템 연동</span>
+            {/* Payment Notice Footer (Clean & Focused) */}
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs text-slate-600 space-y-1.5">
+              <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                <span>📌</span>
+                <span>결제 및 포인트 이용 유의사항</span>
+              </div>
+              <ul className="list-disc pl-4 space-y-1 text-[11.5px] text-slate-500 font-medium">
+                <li>충전된 i-Point는 결제 완료 즉시 학원 공용 잔액에 실시간 자동 반영됩니다.</li>
+                <li>
+                  <strong>문자 발송 단가:</strong> SMS (단문 90Byte 이내) <strong>20 P</strong> / LMS (장문 최대 1,000자) <strong>60 P</strong> / MMS (포토 첨부) <strong>150 P</strong> 차감
+                </li>
+              </ul>
             </div>
 
             <div className="flex gap-2 pt-1">
               <button
                 onClick={() => setShowChargeModal(false)}
-                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-black py-3 rounded-xl text-xs"
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-black py-3.5 rounded-xl text-xs"
               >
                 취소
               </button>
               <button
                 onClick={handleSimulateCharge}
                 disabled={chargeLoading}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3 rounded-xl text-xs shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50"
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3.5 rounded-xl text-xs shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 {chargeLoading ? <RefreshCw className="animate-spin" size={14} /> : <CreditCard size={14} />}
                 {chargeAmount.toLocaleString()}원 결제 충전
