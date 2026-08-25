@@ -721,7 +721,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       assignedClasses.toLowerCase().includes(query) ||
       (student.school_name && student.school_name.toLowerCase().includes(query))
     );
-  });
+  }).sort((left, right) => left.student_name.localeCompare(right.student_name, 'ko-KR'));
   const modalStudent = editingId ? students.find((student) => student.id === editingId) || null : null;
   const isModalAppLinked = Boolean(modalStudent?.child_id);
   const sortedModalClasses = [...classes].sort((left, right) => {

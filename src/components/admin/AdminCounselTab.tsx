@@ -166,7 +166,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       }
 
       return true;
-    });
+    }).sort((left, right) => String(left.student_name || '').localeCompare(String(right.student_name || ''), 'ko-KR'));
   }, [students, search, selectedClassFilter]);
 
   // Selected Student Object

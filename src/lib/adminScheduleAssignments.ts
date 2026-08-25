@@ -42,6 +42,11 @@ export const loadActiveAppSchedulesByChild = async (childIds: string[]) => {
     if (!current.some((item) => item.id === schedule.id)) current.push(schedule);
     schedulesByChild.set(assignment.child_id, current);
   });
+  schedulesByChild.forEach((schedules) => schedules.sort((left, right) => {
+    const timeDiff = String(left.start_time || '99:99').localeCompare(String(right.start_time || '99:99'));
+    if (timeDiff !== 0) return timeDiff;
+    return left.target_class.localeCompare(right.target_class, 'ko-KR');
+  }));
 
   return schedulesByChild;
 };

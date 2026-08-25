@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight } from 'lucide-react';
+import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight, Search } from 'lucide-react';
 
 interface Bill {
   id: string;
@@ -145,6 +145,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
   const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
   const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
+  const [billingSearch, setBillingSearch] = useState('');
 
   // Tab 2: Invoices data
   const [bills, setBills] = useState<Bill[]>([]);
@@ -152,6 +153,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [directOnsitePayments, setDirectOnsitePayments] = useState<OfflinePayment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [invoiceSearch, setInvoiceSearch] = useState('');
   const [autoBillingEnabled, setAutoBillingEnabled] = useState(false);
   const [autoBillingSaving, setAutoBillingSaving] = useState(false);
   const [autoBillingLastRun, setAutoBillingLastRun] = useState<string | null>(null);
@@ -189,8 +191,23 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       students.set(studentId, student);
     });
 
-    return Array.from(students.values());
+    return Array.from(students.values()).sort((left, right) =>
+      left.studentName.localeCompare(right.studentName, 'ko-KR')
+    );
   }, [billingTargets]);
+
+  const visibleBillingTargetStudents = useMemo(() => {
+    const query = billingSearch.trim().toLowerCase();
+    if (!query) return billingTargetStudents;
+    return billingTargetStudents.filter((student) =>
+      student.studentName.toLowerCase().includes(query)
+      || student.packages.some((target) =>
+        target.packageName.toLowerCase().includes(query)
+        || target.optionLabel.toLowerCase().includes(query)
+        || target.classNames.some((className) => className.toLowerCase().includes(query))
+      )
+    );
+  }, [billingTargetStudents, billingSearch]);
 
   const billStatusKey = (target: OwnedPackageTarget, month = selectedMonth) =>
     `${target.studentId}:${target.optionId || 'none'}:${month}`;
@@ -201,7 +218,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       target.hasTargetMonthPackage || Boolean(targetBillStatuses[billStatusKey(target)])
     );
 
-  const selectableBillingStudents = billingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
+  const selectableBillingStudents = visibleBillingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
 
   useEffect(() => {
     const availableIds = new Set(selectableBillingStudents.map((student) => student.studentId));
@@ -954,8 +971,14 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Filter bills
   const filteredBills = bills.filter((b) => {
-    if (statusFilter === 'all') return true;
-    return b.status === statusFilter;
+    if (statusFilter !== 'all' && b.status !== statusFilter) return false;
+    const query = invoiceSearch.trim().toLowerCase();
+    if (!query) return true;
+    return (b.academy_students?.student_name || '').toLowerCase().includes(query)
+      || (b.package_options?.packages?.name || '').toLowerCase().includes(query)
+      || (b.package_options?.label || '').toLowerCase().includes(query)
+      || (b.class_schedules?.target_class || '').toLowerCase().includes(query)
+      || (b.memo || '').toLowerCase().includes(query);
   });
 
   const appSendableBills = filteredBills.filter((bill) =>
@@ -1040,7 +1063,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       current.bills.push(bill);
       groups.set(bill.student_id, current);
     });
-    return Array.from(groups.values());
+    return Array.from(groups.values()).sort((left, right) =>
+      left.studentName.localeCompare(right.studentName, 'ko-KR')
+    );
   }, [filteredBills]);
 
   // Calculate sums
@@ -1155,6 +1180,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             </div>
           </div>
 
+          <div className="relative max-w-md">
+            <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={billingSearch}
+              onChange={(event) => setBillingSearch(event.target.value)}
+              placeholder="원생명, 수업반, 이용권 검색"
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
+
           {/* Always render table structure so column headers show even when empty */}
           <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
             <div className="overflow-x-auto">
@@ -1207,8 +1243,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                         <span className="text-xs font-bold text-slate-400 block mt-2">청구 대상 목록 조회 중...</span>
                       </td>
                     </tr>
-                  ) : billingTargetStudents.length > 0 ? (
-                    billingTargetStudents.map((student) => {
+                  ) : visibleBillingTargetStudents.length > 0 ? (
+                    visibleBillingTargetStudents.map((student) => {
                       const alreadyBilled = isStudentAlreadyBilled(student);
                       const studentStates = student.packages.map((target) => {
                         if (target.hasTargetMonthPackage) return 'renewed';
@@ -1361,7 +1397,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   ) : (
                     <tr>
                       <td colSpan={12} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
-                        배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!
+                        {billingSearch ? '검색 조건에 맞는 청구 대상이 없습니다.' : '배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!'}
                       </td>
                     </tr>
                   )}
@@ -1420,6 +1456,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               >
                 미납
               </button>
+            </div>
+
+            <div className="relative min-w-[240px] flex-1 max-w-sm">
+              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={invoiceSearch}
+                onChange={(event) => setInvoiceSearch(event.target.value)}
+                placeholder="원생명, 수업반, 이용권 검색"
+                className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
