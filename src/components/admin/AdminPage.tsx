@@ -17,6 +17,7 @@ import { AdminCounselTab } from "./AdminCounselTab";
 import { AdminStudyTab } from "./AdminStudyTab";
 import { AdminRoleManagementTab } from "./AdminRoleManagementTab";
 import { AdminSmsTab } from "./AdminSmsTab";
+import { AdminDashboardTab } from "./AdminDashboardTab";
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
@@ -108,8 +109,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [loginError, setLoginError] = useState("");
 
   // Re-designed 2-Tier Layout Navigation States
-  const [mainTab, setMainTab] = useState<'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'referral_mgmt' | 'basic_settings'>('student_mgmt');
-  const [subTab, setSubTab] = useState<string>('students');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'referral_mgmt' | 'basic_settings'>('dashboard');
+  const [subTab, setSubTab] = useState<string>('dashboard_home');
   const [loading, setLoading] = useState(false);
   const [, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -1676,10 +1677,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900 font-sans antialiased">
       
       {/* 1. TOP NAVIGATION HEADER (대메뉴) */}
-      <header className="bg-white border-b border-slate-200 h-[76px] fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 shadow-xs">
+      <header className="bg-white border-b border-slate-200 h-[76px] fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 xl:px-6 shadow-xs">
         <div 
           onClick={onBackToSite}
-          className="flex items-center gap-3 cursor-pointer group"
+          className="flex items-center gap-2.5 cursor-pointer group shrink-0 mr-2 xl:mr-4"
           title="홈페이지로 돌아가기"
         >
           <div className="bg-blue-600 text-white p-2.5 rounded-2xl flex items-center justify-center shadow-md group-hover:scale-105 transition-transform">
@@ -1692,15 +1693,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         </div>
 
         {/* Large Horizontal Top Tabs (대메뉴) */}
-        <nav className="hidden lg:flex items-center gap-1.5 h-full">
+        <nav className="hidden lg:flex items-center gap-1 xl:gap-2 h-full">
           {[
-            { id: 'student_mgmt', label: '👤 학생관리', subDefault: 'students' },
-            { id: 'attendance_mgmt', label: '⏰ 출결관리', subDefault: 'admin_attendance' },
-            { id: 'billing_mgmt', label: '💳 수납관리', subDefault: 'billing' },
-            { id: 'sms_mgmt', label: '💬 문자관리', subDefault: 'sms_send' },
-            ...(['admin', 'director'].includes(profile?.role ?? '') ? [{ id: 'role_mgmt', label: '🛡️ 권한 부여', subDefault: 'role_management' }] : []),
-            { id: 'referral_mgmt', label: '🌲 추천 포인트트리', subDefault: 'referrals' },
-            ...(profile?.role === 'admin' ? [{ id: 'basic_settings', label: '⚙️ 기본설정', subDefault: 'settings' }] : [])
+            { id: 'dashboard', label: '대시보드', subDefault: 'dashboard_home' },
+            { id: 'student_mgmt', label: '학생관리', subDefault: 'students' },
+            { id: 'attendance_mgmt', label: '출결관리', subDefault: 'admin_attendance' },
+            { id: 'billing_mgmt', label: '수납관리', subDefault: 'billing' },
+            { id: 'sms_mgmt', label: '문자관리', subDefault: 'sms_send' },
+            ...(['admin', 'director'].includes(profile?.role ?? '') ? [{ id: 'role_mgmt', label: '권한 부여', subDefault: 'role_management' }] : []),
+            { id: 'referral_mgmt', label: '추천 포인트트리', subDefault: 'referrals' },
+            ...(profile?.role === 'admin' ? [{ id: 'basic_settings', label: '기본설정', subDefault: 'settings' }] : [])
           ].map((menu) => {
             const isActive = mainTab === menu.id;
             return (
@@ -1711,10 +1713,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                   setSubTab(menu.subDefault);
                   setSearch("");
                 }}
-                className={`px-6 h-[76px] text-sm font-black flex items-center justify-center transition-all border-b-[3px] ${
+                className={`px-3.5 xl:px-4.5 py-2.5 rounded-xl text-[13.5px] xl:text-sm whitespace-nowrap tracking-tight flex items-center justify-center transition-all ${
                   isActive 
-                    ? 'border-blue-600 text-blue-600 bg-blue-50/20' 
-                    : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50/50'
+                    ? 'bg-blue-50 text-blue-600 font-black border border-blue-200/80 shadow-2xs' 
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 font-bold border border-transparent'
                 }`}
               >
                 {menu.label}
@@ -1724,44 +1726,43 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         </nav>
 
         {/* Top Right Utilities */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 xl:gap-3 shrink-0 ml-2">
           {/* Back to Homepage Button */}
           <button 
             onClick={onBackToSite}
-            className="flex items-center gap-1.5 border border-slate-200 bg-white hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-700 transition shadow-xs"
+            className="flex items-center gap-1.5 border border-slate-200 bg-white hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 transition shadow-xs whitespace-nowrap"
             title="홈페이지로 돌아가기"
           >
             <Home size={14} className="text-blue-600" />
-            <span className="hidden sm:inline">홈페이지 바로가기</span>
+            <span className="hidden xl:inline">홈페이지</span>
           </button>
 
           {profile?.role === "admin" && (
-            <div className="bg-slate-100/80 px-2 py-1.5 rounded-xl border border-slate-200/50 flex items-center">
-              <span className="text-[11px] font-extrabold text-slate-400 px-2">지점</span>
+            <div className="bg-slate-100/80 px-2 py-1.5 rounded-xl border border-slate-200/50 flex items-center shrink-0">
+              <span className="text-[11px] font-extrabold text-slate-400 px-1.5">지점</span>
               <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={setBranchFilter} />
             </div>
           )}
 
           {profile?.role !== "admin" && (
-            <div className={`hidden sm:flex items-center gap-2 rounded-xl border px-3 py-2 ${activeBranchName ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
-              <Building2 size={14} />
+            <div className={`hidden sm:flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 ${activeBranchName ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+              <Building2 size={13} />
               <div className="leading-tight">
-                <p className="text-[9px] font-black uppercase tracking-wider opacity-60">소속 지점</p>
-                <p className="max-w-[180px] truncate text-[11px] font-black">{activeBranchName ?? '지점 미지정'}</p>
+                <p className="max-w-[120px] xl:max-w-[160px] truncate text-[11px] font-black">{activeBranchName ?? '지점 미지정'}</p>
               </div>
             </div>
           )}
 
           <button 
             onClick={logout} 
-            className="flex items-center gap-2 border border-slate-200 bg-white hover:bg-slate-50 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-700 transition shadow-xs"
+            className="flex items-center gap-1.5 border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 transition shadow-xs whitespace-nowrap"
           >
             <User size={13} className="text-slate-400" />
-            <span>{profile?.name ?? "관리자"}님</span>
-            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-black">
+            <span className="hidden sm:inline">{profile?.name ?? "관리자"}님</span>
+            <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-black">
               {roleLabel(profile?.role)}
             </span>
-            <LogOut size={13} className="text-slate-400 ml-1" />
+            <LogOut size={13} className="text-slate-400 ml-0.5" />
           </button>
         </div>
       </header>
@@ -1776,6 +1777,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             {/* Sidebar Active Section Header */}
             <div>
               <span className="text-[10px] font-black text-blue-400 bg-blue-950/80 px-2.5 py-1 rounded-full uppercase tracking-wider">
+                {mainTab === 'dashboard' && 'DASHBOARD'}
                 {mainTab === 'student_mgmt' && 'STUDENT MGMT'}
                 {mainTab === 'attendance_mgmt' && 'ATTENDANCE MGMT'}
                 {mainTab === 'billing_mgmt' && 'BILLING MGMT'}
@@ -1786,6 +1788,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               </span>
               <h2 className="text-sm font-black text-white mt-2 px-1 flex items-center gap-1.5">
                 <LayoutDashboard size={14} className="text-blue-500" />
+                {mainTab === 'dashboard' && '통합 대시보드'}
                 {mainTab === 'student_mgmt' && '학생관리'}
                 {mainTab === 'attendance_mgmt' && '출결관리'}
                 {mainTab === 'billing_mgmt' && '수납관리'}
@@ -1798,6 +1801,27 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
             {/* Sidebar Navigation Items (소메뉴) */}
             <nav className="space-y-1">
+              {/* DASHBOARD SUBMENU */}
+              {mainTab === 'dashboard' && [
+                { id: 'dashboard_home', label: '학원 운영 현황 요약', icon: LayoutDashboard },
+              ].map((item) => {
+                const isActive = subTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => { setSubTab(item.id); setSearch(""); }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-3 text-xs font-bold rounded-xl text-left transition ${
+                      isActive 
+                        ? 'bg-blue-600 text-white font-extrabold shadow-sm' 
+                        : 'hover:bg-slate-800 hover:text-white'
+                    }`}
+                  >
+                    <item.icon size={15} />
+                    {item.label}
+                  </button>
+                );
+              })}
+
               {/* STUDENT MGMT SUBMENU */}
               {mainTab === 'student_mgmt' && [
                 { id: 'teachers', label: '강사 및 임직원 관리', icon: GraduationCap },
@@ -1945,6 +1969,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         <main className="flex-1 md:pl-[240px] min-h-screen">
           <div className="w-full max-w-none space-y-6 p-4 sm:p-6 xl:p-8">
             
+            {/* DASHBOARD TAB */}
+            {subTab === "dashboard_home" && (
+              <AdminDashboardTab
+                profile={profile}
+                activeBranchId={activeBranchId}
+                branches={branches}
+                onNavigateTab={(targetMain, targetSub) => {
+                  setMainTab(targetMain as any);
+                  if (targetSub) setSubTab(targetSub);
+                  setSearch("");
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+              />
+            )}
+
             {/* STUDENTS LIST TAB (100% Original Complete Component) */}
             {subTab === "students" && (
               <AdminStudentTab activeBranchId={activeBranchId} branches={branches} />
