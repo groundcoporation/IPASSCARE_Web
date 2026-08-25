@@ -50,6 +50,9 @@ interface ClassSchedule {
   id: string;
   target_class: string;
   branch_id: string | null;
+  day_of_week: string | null;
+  start_time: string | null;
+  end_time: string | null;
 }
 
 interface PackageOption {
@@ -59,6 +62,7 @@ interface PackageOption {
   branch_id: string;
   packages: {
     name: string;
+    voucher_type: string | null;
   } | null;
 }
 
@@ -75,6 +79,43 @@ const emptyAssignment = (): ClassAssignment => ({
   billing_cycle: '월 기간제',
   payment_day: '매월 1일',
 });
+
+const nextMonthStart = () => {
+  const now = new Date();
+  return new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 1))
+    .toISOString().slice(0, 10);
+};
+
+const monthLabel = (offset: number) => {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월`;
+};
+
+const scheduleLabel = (schedule: {
+  target_class: string;
+  day_of_week?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+}) => {
+  const time = schedule.start_time?.slice(0, 5) || '';
+  const endTime = schedule.end_time?.slice(0, 5) || '';
+  const timeRange = time ? `${time}${endTime ? `~${endTime}` : ''}` : '';
+  const detail = [schedule.day_of_week ? `${schedule.day_of_week}요일` : '', timeRange]
+    .filter(Boolean).join(' ');
+  return detail ? `${schedule.target_class} · ${detail}` : schedule.target_class;
+};
+
+const voucherTypeLabel = (voucherType?: string | null) => {
+  if (voucherType === 'shuttle') return '차량';
+  if (voucherType === 'gps') return 'GPS';
+  if (voucherType === 'single' || voucherType === 'one_time') return '단품';
+  if (voucherType === 'lesson') return '수업';
+  return '기타';
+};
+
+const WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일'];
+const normalizedWeekday = (value?: string | null) => (value || '').replace('요일', '').trim();
 
 interface AdminStudentTabProps {
   activeBranchId: string | null;
@@ -108,26 +149,49 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [isSmsEnabled, setIsSmsEnabled] = useState(true);
   const [classAssignments, setClassAssignments] = useState<ClassAssignment[]>([emptyAssignment()]);
   const [saveLoading, setSaveLoading] = useState(false);
+  const [courseTab, setCourseTab] = useState<'current' | 'next'>('current');
+  const [nextMonthClassIds, setNextMonthClassIds] = useState<string[]>([]);
+  const [nextMonthClassDay, setNextMonthClassDay] = useState('전체');
+  const [nextMonthPackages, setNextMonthPackages] = useState<ClassAssignment[]>([]);
+  const [currentPackageLabels, setCurrentPackageLabels] = useState<string[]>([]);
 
   // Load students, classes, & package options
   const loadData = async () => {
     setLoading(true);
     try {
       // 1. Load class schedules for assigning
-      let classesQuery = supabase.from('class_schedules').select('id, target_class, branch_id');
+      let classesQuery = supabase.from('class_schedules').select('id, target_class, branch_id, day_of_week, start_time, end_time');
       if (activeBranchId && activeBranchId !== 'all') {
         classesQuery = classesQuery.eq('branch_id', activeBranchId);
       }
       const { data: classesData } = await classesQuery;
       setClasses((classesData || []) as ClassSchedule[]);
 
-      // 2. Load package options for pricing
-      let packagesQuery = supabase.from('package_options').select('id, label, price, branch_id, packages(name)');
+      // 2. Load every package category with its options. Querying only the
+      // option table made non-lesson products easy to omit when relationship
+      // metadata differed, so the package itself is now the source of truth.
+      let packagesQuery = supabase.from('packages').select(`
+        id,
+        name,
+        voucher_type,
+        branch_id,
+        package_options(id, label, price, branch_id)
+      `);
       if (activeBranchId && activeBranchId !== 'all') {
         packagesQuery = packagesQuery.eq('branch_id', activeBranchId);
       }
       const { data: packageData } = await packagesQuery;
-      setPackageOptions((packageData || []) as any[]);
+      const flattenedOptions = ((packageData || []) as any[]).flatMap((pkg) =>
+        (pkg.package_options || []).map((option: any) => ({
+          ...option,
+          branch_id: option.branch_id || pkg.branch_id,
+          packages: {
+            name: pkg.name,
+            voucher_type: pkg.voucher_type || 'lesson',
+          },
+        })),
+      );
+      setPackageOptions(flattenedOptions);
 
       // 3. Load students
       let studentsQuery = supabase.from('academy_students').select(`
@@ -172,7 +236,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   }, [activeBranchId]);
 
   // Open modal for registration/edit
-  const openModal = (student?: Student) => {
+  const openModal = async (student?: Student) => {
     if (student) {
       setEditingId(student.id);
       setSelectedBranchId(student.branch_id);
@@ -189,6 +253,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setAdmissionDate(student.admission_date || '');
       setMemo(student.memo || '');
       setIsSmsEnabled(student.is_sms_enabled);
+      setCourseTab('current');
+      setNextMonthClassDay('전체');
 
       // Get first assigned class details if exists
       const assignments = (student.academy_student_classes || [])
@@ -201,6 +267,44 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             payment_day: assignment.payment_day || '매월 1일',
           }))
         : [emptyAssignment()]);
+
+      if (student.child_id) {
+        const [{ data: owned }, { data: plans }] = await Promise.all([
+          supabase
+            .from('user_packages')
+            .select('option_id, package_name, status')
+            .eq('child_id', student.child_id)
+            .in('status', ['active', 'expired', 'exhausted']),
+          supabase
+            .from('academy_student_monthly_plans')
+            .select('item_type, class_schedule_id, package_option_id, billing_cycle, payment_day')
+            .eq('student_id', student.id)
+            .eq('effective_month', nextMonthStart())
+            .eq('status', 'planned'),
+        ]);
+        const ownedRows = (owned || []) as Array<{ option_id: string | null; package_name: string | null }>;
+        setCurrentPackageLabels(Array.from(new Set(ownedRows.map((row) => row.package_name).filter(Boolean) as string[])));
+        const firstOptionId = ownedRows.find((row) => row.option_id)?.option_id || '';
+        const planRows = (plans || []) as any[];
+        setNextMonthClassIds(planRows.length > 0
+          ? planRows.filter((plan) => plan.item_type === 'class').map((plan) => plan.class_schedule_id).filter(Boolean)
+          : (student.app_schedule_classes || []).map((schedule) => schedule.id));
+        setNextMonthPackages(planRows.length > 0
+          ? planRows.filter((plan) => plan.item_type === 'package').map((plan: any) => ({
+              class_schedule_id: '',
+              package_option_id: plan.package_option_id || '',
+              billing_cycle: plan.billing_cycle || '월 기간제',
+              payment_day: plan.payment_day || '매월 1일',
+            }))
+          : (firstOptionId ? [{
+              ...emptyAssignment(),
+              package_option_id: firstOptionId,
+            }] : []));
+      } else {
+        setCurrentPackageLabels([]);
+        setNextMonthClassIds([]);
+        setNextMonthPackages([]);
+      }
     } else {
       setEditingId(null);
       setSelectedBranchId(activeBranchId && activeBranchId !== 'all' ? activeBranchId : (branches.length > 0 ? branches[0].id : ''));
@@ -217,6 +321,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setAdmissionDate(new Date().toISOString().slice(0, 10));
       setMemo('');
       setIsSmsEnabled(true);
+      setCourseTab('current');
+      setNextMonthClassDay('전체');
+      setCurrentPackageLabels([]);
+      setNextMonthClassIds([]);
+      setNextMonthPackages([]);
       setClassAssignments([emptyAssignment()]);
     }
     setIsModalOpen(true);
@@ -246,9 +355,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     if (!studentName.trim()) return alert('학생 이름을 입력해주세요.');
     if (!attendanceCode.trim()) return alert('출결번호를 입력해주세요.');
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
-    if (classAssignments.length === 0) return alert('수업 또는 이용권을 한 개 이상 추가해 주세요.');
-    if (classAssignments.some((assignment) => !assignment.package_option_id)) return alert('모든 수강 항목에 이용권 요금제를 지정해 주세요.');
-    const assignmentKeys = classAssignments.map((assignment) => `${assignment.class_schedule_id || 'package-only'}:${assignment.package_option_id}`);
+    const editingStudent = editingId ? students.find((student) => student.id === editingId) : null;
+    const isAppLinked = Boolean(editingStudent?.child_id);
+    const assignmentsToValidate = isAppLinked ? nextMonthPackages : classAssignments;
+    if (!isAppLinked && assignmentsToValidate.length === 0) return alert('수업 또는 이용권을 한 개 이상 추가해 주세요.');
+    if (assignmentsToValidate.some((assignment) => !assignment.package_option_id)) return alert('모든 수강 항목에 이용권 요금제를 지정해 주세요.');
+    const assignmentKeys = assignmentsToValidate.map((assignment) => `${assignment.class_schedule_id || 'package-only'}:${assignment.package_option_id}`);
     if (new Set(assignmentKeys).size !== assignmentKeys.length) return alert('동일한 수업반과 이용권 조합이 중복되어 있습니다.');
 
     setSaveLoading(true);
@@ -290,8 +402,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         studentId = data.id;
       }
 
-      // Manage Class Assignment Mapping
-      if (studentId) {
+      // Web-only students keep using academy_student_classes. App-linked
+      // students save only next month's plan; current app data is read-only.
+      if (studentId && !isAppLinked) {
         if (editingId) {
           const { error: deleteError } = await supabase
             .from('academy_student_classes')
@@ -311,6 +424,46 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             status: 'active'
           })));
         if (assignmentError) throw assignmentError;
+      }
+
+      if (studentId && isAppLinked) {
+        // Class plans are synchronized through a transactional RPC that also
+        // creates the future-dated app assignments and target-month bookings.
+        const { error: futureScheduleError } = await supabase.rpc(
+          'sync_future_month_student_schedules',
+          {
+            p_student_id: studentId,
+            p_effective_month: nextMonthStart(),
+            p_schedule_ids: nextMonthClassIds,
+          },
+        );
+        if (futureScheduleError) throw futureScheduleError;
+
+        // Billable packages are independent from class assignments and can be
+        // added/removed without changing the future timetable.
+        const { error: deletePlanError } = await supabase
+          .from('academy_student_monthly_plans')
+          .delete()
+          .eq('student_id', studentId)
+          .eq('effective_month', nextMonthStart())
+          .eq('item_type', 'package');
+        if (deletePlanError) throw deletePlanError;
+
+        const nextPlanRows = nextMonthPackages.map((assignment) => ({
+            student_id: studentId,
+            branch_id: selectedBranchId,
+            effective_month: nextMonthStart(),
+            item_type: 'package',
+            class_schedule_id: null,
+            package_option_id: assignment.package_option_id,
+            billing_cycle: assignment.billing_cycle,
+            payment_day: assignment.payment_day,
+            status: 'planned',
+          }));
+        const { error: planError } = nextPlanRows.length > 0
+          ? await supabase.from('academy_student_monthly_plans').insert(nextPlanRows)
+          : { error: null };
+        if (planError) throw planError;
       }
 
       setIsModalOpen(false);
@@ -569,6 +722,18 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       (student.school_name && student.school_name.toLowerCase().includes(query))
     );
   });
+  const modalStudent = editingId ? students.find((student) => student.id === editingId) || null : null;
+  const isModalAppLinked = Boolean(modalStudent?.child_id);
+  const sortedModalClasses = [...classes].sort((left, right) => {
+    const dayDiff = WEEKDAYS.indexOf(normalizedWeekday(left.day_of_week))
+      - WEEKDAYS.indexOf(normalizedWeekday(right.day_of_week));
+    if (dayDiff !== 0) return dayDiff;
+    return `${left.start_time || ''}:${left.target_class}`.localeCompare(`${right.start_time || ''}:${right.target_class}`);
+  });
+  const availableClassDays = WEEKDAYS.filter((day) => sortedModalClasses.some((item) => normalizedWeekday(item.day_of_week) === day));
+  const visibleModalClasses = nextMonthClassDay === '전체'
+    ? sortedModalClasses
+    : sortedModalClasses.filter((item) => normalizedWeekday(item.day_of_week) === nextMonthClassDay);
 
   return (
     <div className="space-y-6">
@@ -834,24 +999,93 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               </div>
 
               <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/40 p-3">
+                {isModalAppLinked && (
+                  <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-1">
+                    <button type="button" onClick={() => setCourseTab('current')} className={`rounded-lg px-3 py-2 text-xs font-black ${courseTab === 'current' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500'}`}>이번 달<br/><span className="text-[10px]">{monthLabel(0)}</span></button>
+                    <button type="button" onClick={() => setCourseTab('next')} className={`rounded-lg px-3 py-2 text-xs font-black ${courseTab === 'next' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500'}`}>다음 달<br/><span className="text-[10px]">{monthLabel(1)}</span></button>
+                  </div>
+                )}
+                {isModalAppLinked && courseTab === 'current' ? (
+                  <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
+                    <div><div className="text-xs font-black text-slate-800">이번 달 수업·이용권</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">앱의 실제 예약 및 보유 이용권 기준이며 여기서는 수정할 수 없습니다.</div></div>
+                    <div><div className="mb-1.5 text-[11px] font-black text-slate-500">수업</div><div className="flex flex-wrap gap-1.5">{(modalStudent?.app_schedule_classes || []).length > 0 ? modalStudent?.app_schedule_classes?.map((schedule) => <span key={schedule.id} className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-700">{scheduleLabel(schedule)}</span>) : <span className="text-xs font-bold text-slate-400">배정된 수업 없음</span>}</div></div>
+                    <div><div className="mb-1.5 text-[11px] font-black text-slate-500">이용권</div><div className="flex flex-wrap gap-1.5">{currentPackageLabels.length > 0 ? currentPackageLabels.map((label) => <span key={label} className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">{label}</span>) : <span className="text-xs font-bold text-slate-400">보유 이용권 없음</span>}</div></div>
+                  </div>
+                ) : (
+                <>
                 <div className="flex items-center justify-between gap-3">
-                  <div><div className="text-xs font-black text-slate-800">수강 수업반 및 요금제</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">학생이 수강하는 수업을 여러 개 등록할 수 있습니다.</div></div>
-                  <button type="button" onClick={() => setClassAssignments((current) => [...current, emptyAssignment()])} className="flex shrink-0 items-center gap-1 rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white hover:bg-blue-700"><Plus size={14} /> 수업 추가</button>
+                  <div><div className="text-xs font-black text-slate-800">{isModalAppLinked ? `${monthLabel(1)} 수업 및 이용권` : '수강 수업반 및 요금제'}</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">{isModalAppLinked ? '다음 달 청구서에는 여기서 저장한 이용권과 수업이 반영됩니다.' : '학생이 수강하는 수업을 여러 개 등록할 수 있습니다.'}</div></div>
+                  {!isModalAppLinked && <button type="button" onClick={() => setClassAssignments((current) => [...current, emptyAssignment()])} className="flex shrink-0 items-center gap-1 rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white hover:bg-blue-700"><Plus size={14} /> 항목 추가</button>}
                 </div>
-                {classAssignments.map((assignment, index) => {
-                  const updateAssignment = (values: Partial<ClassAssignment>) => setClassAssignments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item));
+                {isModalAppLinked && (
+                  <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[11px] font-black text-blue-700">다음 달 수업 선택</div>
+                        <div className="text-[10px] font-medium text-slate-500">선택 {nextMonthClassIds.length}개</div>
+                      </div>
+                      {nextMonthClassIds.length > 0 && <button type="button" onClick={() => setNextMonthClassIds([])} className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">전체 해제</button>}
+                    </div>
+
+                    {nextMonthClassIds.length > 0 && (
+                      <div className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto rounded-xl bg-blue-50 p-2">
+                        {nextMonthClassIds.map((id) => {
+                          const selected = classes.find((item) => item.id === id);
+                          return selected ? <button key={id} type="button" onClick={() => setNextMonthClassIds((current) => current.filter((itemId) => itemId !== id))} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-blue-700 shadow-xs">{normalizedWeekday(selected.day_of_week)} {selected.start_time?.slice(0, 5)} · {selected.target_class} ×</button> : null;
+                        })}
+                      </div>
+                    )}
+
+                    <div className="flex gap-1.5 overflow-x-auto pb-1">
+                      {['전체', ...availableClassDays].map((day) => <button key={day} type="button" onClick={() => setNextMonthClassDay(day)} className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-black ${nextMonthClassDay === day ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{day}{day !== '전체' ? '요일' : ''}</button>)}
+                    </div>
+
+                    <div className="grid max-h-72 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+                      {visibleModalClasses.map((item) => {
+                        const checked = nextMonthClassIds.includes(item.id);
+                        return <label key={item.id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition ${checked ? 'border-blue-300 bg-blue-50' : 'border-transparent bg-slate-50 hover:border-slate-200'}`}>
+                          <input type="checkbox" checked={checked} onChange={(e) => setNextMonthClassIds((current) => e.target.checked ? Array.from(new Set([...current, item.id])) : current.filter((id) => id !== item.id))} className="h-4 w-4 shrink-0 rounded text-blue-600"/>
+                          <span className="min-w-0">
+                            <span className="block truncate text-xs font-black text-slate-800">{item.target_class}</span>
+                            <span className="mt-0.5 block text-[10px] font-bold text-slate-500">{normalizedWeekday(item.day_of_week)}요일 · {item.start_time?.slice(0, 5) || '--:--'}~{item.end_time?.slice(0, 5) || '--:--'}</span>
+                          </span>
+                        </label>;
+                      })}
+                      {visibleModalClasses.length === 0 && <div className="col-span-full rounded-xl bg-slate-50 py-6 text-center text-xs font-bold text-slate-400">해당 요일의 수업이 없습니다.</div>}
+                    </div>
+                  </div>
+                )}
+                {isModalAppLinked && <div className="flex items-center justify-between"><div><div className="text-[11px] font-black text-emerald-700">다음 달 청구 이용권</div><div className="text-[10px] text-slate-500">차량·단품을 포함해 여러 개 추가할 수 있습니다.</div></div><button type="button" onClick={() => setNextMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white"><Plus size={12}/> 이용권 추가</button></div>}
+                {(isModalAppLinked ? nextMonthPackages : classAssignments).map((assignment, index) => {
+                  const selectablePackageOptions = isModalAppLinked
+                    ? packageOptions
+                    : packageOptions.filter((option) => (option.packages?.voucher_type || 'lesson') === 'lesson');
+                  const selectedPackageOption = selectablePackageOptions.find((option) => option.id === assignment.package_option_id);
+                  const updateAssignment = (values: Partial<ClassAssignment>) => isModalAppLinked
+                    ? setNextMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item))
+                    : setClassAssignments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item));
+                  const itemCount = isModalAppLinked ? nextMonthPackages.length : classAssignments.length;
                   return (
-                    <div key={index} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
-                      <div className="flex items-center justify-between"><span className="text-[11px] font-black text-blue-700">수강 항목 {index + 1}</span>{classAssignments.length > 1 && <button type="button" onClick={() => setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex items-center gap-1 text-[10px] font-bold text-rose-500"><Trash2 size={13} /> 삭제</button>}</div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.target_class}</option>)}</select></div>
-                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강료 요금제 지정 *</label><select value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" required><option value="">수강 요금제 선택</option>{packageOptions.map((option) => <option key={option.id} value={option.id}>[{option.packages?.name || '패키지'}] {option.label} ({option.price.toLocaleString()}원)</option>)}</select></div>
-                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">납부 주기 방식</label><select value={assignment.billing_cycle} onChange={(e) => updateAssignment({ billing_cycle: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold"><option value="월 기간제">월 기간제</option><option value="분기제">분기제</option><option value="횟수 쿠폰제">횟수 쿠폰제</option></select></div>
-                        <div><label className="mb-1.5 block text-xs font-bold text-slate-500">매월 수납 기준일</label><select value={assignment.payment_day} onChange={(e) => updateAssignment({ payment_day: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold">{['매월 1일', '매월 5일', '매월 10일', '매월 15일', '매월 25일', '등록일 기준'].map((day) => <option key={day} value={day}>{day}</option>)}</select></div>
+                    <div key={index} className={`space-y-3 rounded-2xl border p-3 ${isModalAppLinked ? 'border-emerald-100 bg-gradient-to-br from-white to-emerald-50/60' : 'border-slate-200 bg-white'} shadow-xs`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-black ${isModalAppLinked ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>{index + 1}</span>
+                          <div className="min-w-0">
+                            <div className="truncate text-[11px] font-black text-slate-700">{selectedPackageOption?.packages?.name || (isModalAppLinked ? '청구할 이용권을 선택하세요' : `수강 항목 ${index + 1}`)}</div>
+                            {selectedPackageOption && <div className="mt-0.5 flex items-center gap-1.5 text-[10px] font-bold text-slate-500"><span className="rounded-full bg-white px-1.5 py-0.5 text-emerald-700">{voucherTypeLabel(selectedPackageOption.packages?.voucher_type)}</span><span>{selectedPackageOption.label}</span><span>·</span><span>{selectedPackageOption.price.toLocaleString()}원</span></div>}
+                          </div>
+                        </div>
+                        {(isModalAppLinked || itemCount > 1) && <button type="button" aria-label="이용권 삭제" onClick={() => isModalAppLinked ? setNextMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index)) : setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-400 transition hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>}
+                      </div>
+                      <div className={`grid grid-cols-1 gap-3 ${isModalAppLinked ? '' : 'sm:grid-cols-2'}`}>
+                        {!isModalAppLinked && <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{classes.map((item) => <option key={item.id} value={item.id}>{scheduleLabel(item)}</option>)}</select></div>}
+                        <div><label className="mb-1.5 block text-[11px] font-bold text-slate-500">{isModalAppLinked ? '이용권 변경' : '이용권 요금제 지정 *'}</label><select value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" required><option value="">이용권을 선택해 주세요</option>{selectablePackageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}</select></div>
                       </div>
                     </div>
                   );
                 })}
+                </>
+                )}
               </div>
 
               <div className="grid grid-cols-3 gap-3">

@@ -13,6 +13,8 @@ export const loadActiveAppSchedulesByChild = async (childIds: string[]) => {
   const schedulesByChild = new Map<string, ActiveAppSchedule[]>();
   uniqueChildIds.forEach((childId) => schedulesByChild.set(childId, []));
   if (uniqueChildIds.length === 0) return schedulesByChild;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   const { data, error } = await supabase
     .from('student_schedule_assignments')
@@ -28,6 +30,8 @@ export const loadActiveAppSchedulesByChild = async (childIds: string[]) => {
       )
     `)
     .eq('is_active', true)
+    .lte('starts_on', today)
+    .or(`ends_on.is.null,ends_on.gte.${today}`)
     .in('child_id', uniqueChildIds);
 
   if (error) throw error;
@@ -41,4 +45,3 @@ export const loadActiveAppSchedulesByChild = async (childIds: string[]) => {
 
   return schedulesByChild;
 };
-

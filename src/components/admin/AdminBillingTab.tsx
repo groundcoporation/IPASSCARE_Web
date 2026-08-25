@@ -384,9 +384,29 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       });
       studentsByParentId.forEach((siblings) => siblings.sort((left, right) => String(left.id).localeCompare(String(right.id))));
       const selectedPeriod = billingMonthPeriod(selectedMonth);
+      const { data: monthlyPlans, error: monthlyPlanError } = appStudents.length > 0
+        ? await supabase
+            .from('academy_student_monthly_plans')
+            .select(`
+              id,
+              item_type,
+              student_id,
+              branch_id,
+              class_schedule_id,
+              package_option_id,
+              billing_cycle,
+              payment_day,
+              class_schedules(target_class),
+              package_options(id, label, price, packages(id, name, voucher_type))
+            `)
+            .eq('effective_month', selectedPeriod.start)
+            .eq('status', 'planned')
+            .in('student_id', appStudents.map((student) => student.id))
+        : { data: [], error: null };
+      if (monthlyPlanError) throw monthlyPlanError;
 
-      // Match the app's member schedule exactly: its source of truth is every
-      // active student_schedule_assignments row, without date filtering.
+      // Resolve assignments effective during the selected billing month.
+      // Future-dated assignments must not leak into the current month.
       const childIds = appStudents.map((student) => student.child_id).filter(Boolean);
       const parentUserIds = Array.from(new Set(
         activeStudents.map((student) => student.parent_user_id).filter(Boolean),
@@ -396,6 +416,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             .from('student_schedule_assignments')
             .select('child_id, schedule_id, starts_on, ends_on, is_active, class_schedules:schedule_id(target_class)')
             .eq('is_active', true)
+            .lte('starts_on', selectedPeriod.end)
+            .or(`ends_on.is.null,ends_on.gte.${selectedPeriod.start}`)
             .in('child_id', childIds)
         : { data: [], error: null };
       if (assignmentError) throw assignmentError;
@@ -523,6 +545,46 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         })
         .filter((target): target is OwnedPackageTarget => target !== null);
 
+      const plannedRows = monthlyPlans as any[] || [];
+      const plannedClassNamesByStudent = new Map<string, string[]>();
+      plannedRows.filter((plan) => plan.item_type === 'class').forEach((plan) => {
+        const className = plan.class_schedules?.target_class;
+        if (!className) return;
+        const names = plannedClassNamesByStudent.get(plan.student_id) || [];
+        if (!names.includes(className)) names.push(className);
+        plannedClassNamesByStudent.set(plan.student_id, names);
+      });
+
+      const plannedTargetsByStudentAndOption = new Map<string, OwnedPackageTarget>();
+      plannedRows.filter((plan) => plan.item_type === 'package').forEach((plan) => {
+        const student = activeStudents.find((item) => item.id === plan.student_id);
+        const option = plan.package_options;
+        if (!student || !option) return;
+        const key = `${plan.student_id}:${plan.package_option_id}`;
+        const existing = plannedTargetsByStudentAndOption.get(key);
+        if (existing) return;
+        plannedTargetsByStudentAndOption.set(key, {
+          userPackageId: `plan:${plan.id}`,
+          packageId: option.packages?.id || null,
+          hasTargetMonthPackage: false,
+          voucherType: option.packages?.voucher_type || 'lesson',
+          studentId: student.id,
+          studentName: student.student_name || '원생',
+          branchId: student.branch_id,
+          childId: student.child_id,
+          isSmsEnabled: student.is_sms_enabled !== false,
+          optionId: plan.package_option_id,
+          packageName: option.packages?.name || '수강료',
+          optionLabel: option.label || '요금제 정보 없음',
+          price: Number(option.price || 0),
+          billingCycle: plan.billing_cycle || '월 기간제',
+          paymentDay: plan.payment_day || '매월 1일',
+          classNames: plannedClassNamesByStudent.get(plan.student_id) || [],
+        });
+      });
+      const plannedTargets = Array.from(plannedTargetsByStudentAndOption.values());
+      const plannedStudentIds = new Set(plannedTargets.map((target) => target.studentId));
+
       // Shared vehicle passes are shown once per parent. academy_bills still
       // requires a student_id, so use a stable representative student only as
       // the bill recipient while clearly marking the package as family-shared.
@@ -598,7 +660,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           } satisfies OwnedPackageTarget)),
       );
 
-      const targets = [...appTargets, ...sharedShuttleTargets, ...webTargets];
+      const targets = [
+        ...appTargets.filter((target) => !plannedStudentIds.has(target.studentId)),
+        ...plannedTargets,
+        ...sharedShuttleTargets.filter((target) => !plannedStudentIds.has(target.studentId)),
+        ...webTargets,
+      ];
       setBillingTargets(targets);
 
       const targetStudentIds = Array.from(new Set(targets.map((target) => target.studentId)));
