@@ -6,6 +6,7 @@ import {
   History, Clock, Coins
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
+import { loadActiveAppSchedulesByChild } from "../../lib/adminScheduleAssignments";
 import { ReferralTreeTab } from "./ReferralTreeTab";
 import { AdminStudentTab } from "./AdminStudentTab";
 import { AdminTeacherTab } from "./AdminTeacherTab";
@@ -306,9 +307,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
 
       const { data: studentsData } = await query;
-      const studentsWithHistory = (studentsData || []).filter((student: any) => (
+      const rawStudentsWithHistory = (studentsData || []).filter((student: any) => (
         !student.parent_user_id || student.parent_user?.status !== 'deleted'
       ));
+      const schedulesByChild = await loadActiveAppSchedulesByChild(
+        rawStudentsWithHistory.map((student: any) => student.child_id).filter(Boolean),
+      );
+      const studentsWithHistory = rawStudentsWithHistory.map((student: any) => ({
+        ...student,
+        app_schedule_classes: student.child_id ? schedulesByChild.get(student.child_id) || [] : undefined,
+      }));
       const studentsList = studentsWithHistory.filter((student: any) => (
         !student.child_id || isBeforeChildDeletion(selectedAttendanceDate, student.child?.deleted_at)
       ));
@@ -1458,7 +1466,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       if (!matchesSearch) return false;
 
       // 2. Class Filter
-      const targetClass = student.academy_student_classes?.[0]?.class_schedules?.target_class || '미배정';
+      const targetClass = (student.child_id
+        ? student.app_schedule_classes?.[0]
+        : student.academy_student_classes?.[0]?.class_schedules
+      )?.target_class || '미배정';
       if (selectedAttendanceClassFilter !== 'all' && targetClass !== selectedAttendanceClassFilter) {
         return false;
       }
@@ -1484,7 +1495,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   }, [todayAttendanceStudents, search, selectedAttendanceClassFilter, todayAttendanceRecords, attendanceViewFilter, isStudentScheduledOnDate]);
 
   const uniqueClasses = useMemo(() => {
-    return Array.from(new Set((todayAttendanceStudents || []).map(s => s?.academy_student_classes?.[0]?.class_schedules?.target_class).filter(Boolean)));
+    return Array.from(new Set((todayAttendanceStudents || []).map((student) => (
+      student?.child_id
+        ? student?.app_schedule_classes?.[0]?.target_class
+        : student?.academy_student_classes?.[0]?.class_schedules?.target_class
+    )).filter(Boolean)));
   }, [todayAttendanceStudents]);
 
   // Calendar Grid Day Generator for attendanceCalendarMonth (YYYY-MM)
@@ -2156,7 +2171,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                         {filteredAttendanceStudents.length > 0 ? (
                           filteredAttendanceStudents.map((s, idx) => {
                             const record = todayAttendanceRecords[s.id];
-                            const firstClass = s.academy_student_classes?.[0]?.class_schedules;
+                            const firstClass = s.child_id
+                              ? s.app_schedule_classes?.[0]
+                              : s.academy_student_classes?.[0]?.class_schedules;
                             const currentClassName = firstClass?.target_class || '미배정';
                             const classTime = (firstClass?.start_time && firstClass?.end_time) 
                               ? `${firstClass.start_time.slice(0, 5)}~${firstClass.end_time.slice(0, 5)}`

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { KSPayWebService } from '../../services/payment/KSPayWebService';
 import { 
   Send, Search, Smartphone, Clock, History, BookmarkPlus, 
@@ -26,6 +27,7 @@ interface Student {
   father_phone: string | null;
   student_phone: string | null;
   target_class?: string;
+  target_classes?: string[];
   attendance_code?: string;
 }
 
@@ -348,6 +350,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
     try {
       let query = supabase.from('academy_students').select(`
         id,
+        child_id,
         student_name,
         mother_phone,
         father_phone,
@@ -365,8 +368,15 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
 
       const { data, error } = await query;
       if (!error && data) {
+        const schedulesByChild = await loadActiveAppSchedulesByChild(
+          data.map((item: any) => item.child_id).filter(Boolean),
+        );
         const mappedStudents: Student[] = data.map((item: any) => {
-          const firstClass = item.academy_student_classes?.[0]?.class_schedules?.target_class;
+          const classNames = item.child_id
+            ? (schedulesByChild.get(item.child_id) || []).map((schedule) => schedule.target_class)
+            : (item.academy_student_classes || [])
+                .map((assignment: any) => assignment.class_schedules?.target_class)
+                .filter(Boolean);
           return {
             id: item.id,
             student_name: item.student_name,
@@ -374,7 +384,8 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
             father_phone: item.father_phone,
             student_phone: item.student_phone,
             attendance_code: item.attendance_code,
-            target_class: firstClass || '일반수강'
+            target_class: classNames[0] || '일반수강',
+            target_classes: classNames,
           };
         });
 
@@ -383,7 +394,9 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
         // Extract unique classes
         const classSet = new Set<string>();
         mappedStudents.forEach(s => {
-          if (s.target_class) classSet.add(s.target_class);
+          (s.target_classes?.length ? s.target_classes : [s.target_class]).forEach((className) => {
+            if (className) classSet.add(className);
+          });
         });
         setClasses(Array.from(classSet));
       }
@@ -521,7 +534,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
   // Filtered Students
   const filteredStudents = useMemo(() => {
     return students.filter(student => {
-      const matchesClass = selectedClass === 'all' || student.target_class === selectedClass;
+      const matchesClass = selectedClass === 'all' || (student.target_classes || [student.target_class]).includes(selectedClass);
       const query = searchQuery.toLowerCase().trim();
       const matchesQuery = !query || 
         student.student_name.toLowerCase().includes(query) ||
@@ -999,7 +1012,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
                           </td>
                           <td className="p-2 font-semibold text-slate-800 whitespace-nowrap">
                             <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                              {s.target_class || '일반'}
+                              {(s.target_classes?.length ? s.target_classes.join(', ') : s.target_class) || '일반'}
                             </span>
                           </td>
                           <td className="p-2 font-black text-slate-900 whitespace-nowrap">

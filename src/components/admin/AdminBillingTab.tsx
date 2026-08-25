@@ -93,6 +93,9 @@ interface StudentClassRow {
 
 interface OwnedPackageTarget {
   userPackageId: string;
+  packageId: string | null;
+  hasTargetMonthPackage: boolean;
+  voucherType: string | null;
   studentId: string;
   studentName: string;
   branchId: string;
@@ -105,6 +108,7 @@ interface OwnedPackageTarget {
   billingCycle: string;
   paymentDay: string;
   classNames: string[];
+  isShared?: boolean;
 }
 
 interface AdminBillingTabProps {
@@ -148,6 +152,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [directOnsitePayments, setDirectOnsitePayments] = useState<OfflinePayment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [autoBillingEnabled, setAutoBillingEnabled] = useState(false);
+  const [autoBillingSaving, setAutoBillingSaving] = useState(false);
+  const [autoBillingLastRun, setAutoBillingLastRun] = useState<string | null>(null);
+  const [autoBillingTargetStudentIds, setAutoBillingTargetStudentIds] = useState<Set<string>>(new Set());
+  const [autoBillingTargetSaving, setAutoBillingTargetSaving] = useState(false);
 
   // Manual payment modal state
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
@@ -188,7 +197,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   const isStudentAlreadyBilled = (student: (typeof billingTargetStudents)[number]) =>
     student.packages.length > 0
-    && student.packages.every((target) => Boolean(targetBillStatuses[billStatusKey(target)]));
+    && student.packages.every((target) =>
+      target.hasTargetMonthPackage || Boolean(targetBillStatuses[billStatusKey(target)])
+    );
 
   const selectableBillingStudents = billingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
 
@@ -205,6 +216,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   const allBillingStudentsSelected = selectableBillingStudents.length > 0
     && selectableBillingStudents.every((student) => selectedBillingStudentIds.has(student.studentId));
+  const allAutoBillingStudentsSelected = billingTargetStudents.length > 0
+    && billingTargetStudents.every((student) => autoBillingTargetStudentIds.has(student.studentId));
 
   const toggleBillingStudent = (studentId: string) => {
     const student = billingTargetStudents.find((item) => item.studentId === studentId);
@@ -223,6 +236,102 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         ? new Set()
         : new Set(selectableBillingStudents.map((student) => student.studentId)),
     );
+  };
+
+  const loadAutoBillingSetting = async () => {
+    if (!activeBranchId || activeBranchId === 'all') {
+      setAutoBillingEnabled(false);
+      setAutoBillingLastRun(null);
+      setAutoBillingTargetStudentIds(new Set());
+      return;
+    }
+    const [settingResult, targetResult] = await Promise.all([
+      supabase
+        .from('academy_billing_automation_settings')
+        .select('is_enabled, last_run_at')
+        .eq('branch_id', activeBranchId)
+        .maybeSingle(),
+      supabase
+        .from('academy_billing_automation_targets')
+        .select('student_id')
+        .eq('branch_id', activeBranchId)
+        .eq('is_enabled', true),
+    ]);
+    if (settingResult.error || targetResult.error) {
+      console.error('자동 청구 설정 조회 실패:', settingResult.error || targetResult.error);
+      return;
+    }
+    setAutoBillingEnabled(Boolean(settingResult.data?.is_enabled));
+    setAutoBillingLastRun(settingResult.data?.last_run_at || null);
+    setAutoBillingTargetStudentIds(new Set((targetResult.data || []).map((row) => row.student_id)));
+  };
+
+  const saveAutoBillingTargets = async (studentIds: string[], enabled: boolean) => {
+    if (!activeBranchId || activeBranchId === 'all' || autoBillingTargetSaving || studentIds.length === 0) return;
+    setAutoBillingTargetSaving(true);
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) throw new Error('로그인이 필요합니다.');
+      const now = new Date().toISOString();
+      const { error } = await supabase
+        .from('academy_billing_automation_targets')
+        .upsert(studentIds.map((studentId) => ({
+          branch_id: activeBranchId,
+          student_id: studentId,
+          is_enabled: enabled,
+          updated_by: authData.user.id,
+          updated_at: now,
+        })), { onConflict: 'branch_id,student_id' });
+      if (error) throw error;
+      setAutoBillingTargetStudentIds((previous) => {
+        const next = new Set(previous);
+        studentIds.forEach((studentId) => enabled ? next.add(studentId) : next.delete(studentId));
+        return next;
+      });
+    } catch (error: any) {
+      alert(`자동 청구 대상 저장 실패: ${error?.message || '알 수 없는 오류'}`);
+    } finally {
+      setAutoBillingTargetSaving(false);
+    }
+  };
+
+  const toggleAutoBillingStudent = (studentId: string) => {
+    void saveAutoBillingTargets([studentId], !autoBillingTargetStudentIds.has(studentId));
+  };
+
+  const toggleAllAutoBillingStudents = () => {
+    void saveAutoBillingTargets(
+      billingTargetStudents.map((student) => student.studentId),
+      !allAutoBillingStudentsSelected,
+    );
+  };
+
+  const toggleAutoBilling = async () => {
+    if (!activeBranchId || activeBranchId === 'all' || autoBillingSaving) return;
+    setAutoBillingSaving(true);
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) throw new Error('로그인이 필요합니다.');
+      const nextEnabled = !autoBillingEnabled;
+      const { error } = await supabase
+        .from('academy_billing_automation_settings')
+        .upsert({
+          branch_id: activeBranchId,
+          is_enabled: nextEnabled,
+          billing_day: 1,
+          updated_by: authData.user.id,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'branch_id' });
+      if (error) throw error;
+      setAutoBillingEnabled(nextEnabled);
+      alert(nextEnabled
+        ? '자동 청구를 켰습니다. 매월 1일 미갱신 대상에게 앱 청구서가 자동 발송됩니다.'
+        : '자동 청구를 껐습니다. 기존 청구서에는 영향을 주지 않습니다.');
+    } catch (error: any) {
+      alert(`자동 청구 설정 변경 실패: ${error?.message || '알 수 없는 오류'}`);
+    } finally {
+      setAutoBillingSaving(false);
+    }
   };
 
   // Load Billing Targets
@@ -266,25 +375,33 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const appStudents = activeStudents.filter((student) => Boolean(student.child_id));
       const webOnlyStudents = activeStudents.filter((student) => !student.child_id);
       const studentByChildId = new Map(appStudents.map((student) => [student.child_id, student]));
+      const studentsByParentId = new Map<string, any[]>();
+      activeStudents.forEach((student) => {
+        if (!student.parent_user_id) return;
+        const siblings = studentsByParentId.get(student.parent_user_id) || [];
+        siblings.push(student);
+        studentsByParentId.set(student.parent_user_id, siblings);
+      });
+      studentsByParentId.forEach((siblings) => siblings.sort((left, right) => String(left.id).localeCompare(String(right.id))));
+      const selectedPeriod = billingMonthPeriod(selectedMonth);
 
-      // App-linked children use the app's active schedule assignments as the
-      // single source of truth. academy_student_classes remains the source for
-      // students registered only on the web.
+      // Match the app's member schedule exactly: its source of truth is every
+      // active student_schedule_assignments row, without date filtering.
       const childIds = appStudents.map((student) => student.child_id).filter(Boolean);
-      const today = new Date().toISOString().slice(0, 10);
+      const parentUserIds = Array.from(new Set(
+        activeStudents.map((student) => student.parent_user_id).filter(Boolean),
+      ));
       const { data: appAssignments, error: assignmentError } = childIds.length > 0
         ? await supabase
             .from('student_schedule_assignments')
             .select('child_id, schedule_id, starts_on, ends_on, is_active, class_schedules:schedule_id(target_class)')
             .eq('is_active', true)
-            .lte('starts_on', today)
             .in('child_id', childIds)
         : { data: [], error: null };
       if (assignmentError) throw assignmentError;
 
       const appClassNamesByChildId = new Map<string, string[]>();
       (appAssignments as any[] || [])
-        .filter((assignment) => !assignment.ends_on || assignment.ends_on >= today)
         .forEach((assignment) => {
           const className = assignment.class_schedules?.target_class;
           if (!assignment.child_id || !className) return;
@@ -293,18 +410,42 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           appClassNamesByChildId.set(assignment.child_id, names);
         });
 
-      const selectedPeriod = billingMonthPeriod(selectedMonth);
+      const previousMonthDate = new Date(Date.UTC(
+        Number(selectedMonth.slice(0, 4)),
+        Number(selectedMonth.slice(5, 7)) - 2,
+        1,
+      ));
+      const previousMonth = previousMonthDate.toISOString().slice(0, 7);
+      const previousPeriod = billingMonthPeriod(previousMonth);
       const { data: ownedPackages, error: packageError } = await supabase
         .from('user_packages')
-        .select('id, child_id, option_id, package_name, price, voucher_type, status, valid_from, valid_until, expiry_date')
+        .select('id, child_id, package_id, option_id, package_name, price, voucher_type, status, valid_from, valid_until, expiry_date, created_at')
         .in('status', ['active', 'expired', 'exhausted'])
         .not('child_id', 'is', null)
-        .or(`valid_from.is.null,valid_from.lte.${selectedPeriod.end}`)
-        .or(`valid_until.is.null,valid_until.gte.${selectedPeriod.start}`)
-        .or(`expiry_date.is.null,expiry_date.gte.${selectedPeriod.start}`);
+        .in('child_id', childIds)
+        .or(`valid_from.is.null,valid_from.lte.${selectedPeriod.end}`);
       if (packageError) throw packageError;
 
-      const optionIds = Array.from(new Set((ownedPackages as any[] || [])
+      // A vehicle pass may intentionally be issued to the parent as a shared
+      // package. Fetch only shared shuttle passes here; other shared lesson,
+      // single-item, bundle, and GPS products must stay out of tuition billing.
+      const { data: sharedShuttlePackages, error: sharedPackageError } = parentUserIds.length > 0
+        ? await supabase
+            .from('user_packages')
+            .select('id, user_id, child_id, branch_id, package_id, option_id, package_name, price, voucher_type, status, valid_from, valid_until, expiry_date, created_at')
+            .in('status', ['active', 'expired', 'exhausted'])
+            .is('child_id', null)
+            .eq('voucher_type', 'shuttle')
+            .in('user_id', parentUserIds)
+            .or(`valid_from.is.null,valid_from.lte.${selectedPeriod.end}`)
+        : { data: [], error: null };
+      if (sharedPackageError) throw sharedPackageError;
+
+      const allOwnedPackages = [
+        ...(ownedPackages as any[] || []),
+        ...(sharedShuttlePackages as any[] || []),
+      ];
+      const optionIds = Array.from(new Set(allOwnedPackages
         .map((item) => item.option_id)
         .filter(Boolean)));
       const { data: options, error: optionError } = optionIds.length > 0
@@ -316,9 +457,43 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       if (optionError) throw optionError;
       const optionById = new Map((options as any[] || []).map((option) => [option.id, option]));
 
-      const appTargets: OwnedPackageTarget[] = (ownedPackages as any[] || [])
-        .filter((owned) => !owned.voucher_type || owned.voucher_type === 'lesson')
-        .map((owned) => {
+      // Child-linked paid products are billing targets regardless of whether
+      // they are lessons, shuttle passes, or one-off products. GPS/family
+      // shared products are not child tuition and stay out of this ledger.
+      const billablePackages = (ownedPackages as any[] || [])
+        .filter((owned) => owned.voucher_type !== 'gps');
+      const packagesByChildAndProduct = new Map<string, any[]>();
+      billablePackages.forEach((owned) => {
+        const productKey = owned.package_id || owned.option_id || owned.package_name || owned.id;
+        const key = `${owned.child_id}:${productKey}`;
+        packagesByChildAndProduct.set(key, [...(packagesByChildAndProduct.get(key) || []), owned]);
+      });
+
+      const packageEnd = (owned: any) => owned.valid_until || owned.expiry_date || null;
+      const overlaps = (owned: any, period: { start: string; end: string }) => {
+        const start = owned.valid_from || null;
+        const end = packageEnd(owned);
+        return Boolean(start || end)
+          && (!start || start <= period.end)
+          && (!end || end >= period.start);
+      };
+      const newestFirst = (left: any, right: any) => {
+        const leftDate = packageEnd(left) || left.valid_from || left.created_at || '';
+        const rightDate = packageEnd(right) || right.valid_from || right.created_at || '';
+        return rightDate.localeCompare(leftDate);
+      };
+
+      const appTargets: OwnedPackageTarget[] = Array.from(packagesByChildAndProduct.values())
+        .map((ownedGroup) => {
+          const targetMonthPackage = ownedGroup
+            .filter((owned) => overlaps(owned, selectedPeriod))
+            .sort(newestFirst)[0];
+          const renewalSourcePackage = ownedGroup
+            .filter((owned) => overlaps(owned, previousPeriod)
+              || (!owned.valid_from && !packageEnd(owned) && owned.status === 'active'))
+            .sort(newestFirst)[0];
+          const owned = targetMonthPackage || renewalSourcePackage;
+          if (!owned) return null;
           const student: any = studentByChildId.get(owned.child_id);
           if (!student) return null;
           const activeClasses = (student.academy_student_classes || [])
@@ -326,6 +501,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           const option: any = owned.option_id ? optionById.get(owned.option_id) : null;
           return {
             userPackageId: owned.id,
+            packageId: owned.package_id || null,
+            hasTargetMonthPackage: Boolean(targetMonthPackage),
+            voucherType: owned.voucher_type || 'lesson',
             studentId: student.id,
             studentName: student.student_name || '원생',
             branchId: student.branch_id,
@@ -342,11 +520,64 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         })
         .filter((target): target is OwnedPackageTarget => target !== null);
 
+      // Shared vehicle passes are shown once per parent. academy_bills still
+      // requires a student_id, so use a stable representative student only as
+      // the bill recipient while clearly marking the package as family-shared.
+      const sharedPackagesByParentAndProduct = new Map<string, any[]>();
+      (sharedShuttlePackages as any[] || []).forEach((owned) => {
+        const productKey = owned.package_id || owned.option_id || owned.package_name || owned.id;
+        const key = `${owned.user_id}:${productKey}`;
+        sharedPackagesByParentAndProduct.set(
+          key,
+          [...(sharedPackagesByParentAndProduct.get(key) || []), owned],
+        );
+      });
+      const sharedShuttleTargets: OwnedPackageTarget[] = Array.from(sharedPackagesByParentAndProduct.values())
+        .map((ownedGroup) => {
+          const targetMonthPackage = ownedGroup
+            .filter((owned) => overlaps(owned, selectedPeriod))
+            .sort(newestFirst)[0];
+          const renewalSourcePackage = ownedGroup
+            .filter((owned) => overlaps(owned, previousPeriod)
+              || (!owned.valid_from && !packageEnd(owned) && owned.status === 'active'))
+            .sort(newestFirst)[0];
+          const owned = targetMonthPackage || renewalSourcePackage;
+          if (!owned) return null;
+
+          const representativeStudent = (studentsByParentId.get(owned.user_id) || [])
+            .find((student) => !owned.branch_id || student.branch_id === owned.branch_id);
+          if (!representativeStudent) return null;
+          const option: any = owned.option_id ? optionById.get(owned.option_id) : null;
+          return {
+            userPackageId: owned.id,
+            packageId: owned.package_id || null,
+            hasTargetMonthPackage: Boolean(targetMonthPackage),
+            voucherType: 'shuttle',
+            studentId: representativeStudent.id,
+            studentName: representativeStudent.student_name || '원생',
+            branchId: representativeStudent.branch_id,
+            childId: null,
+            isSmsEnabled: representativeStudent.is_sms_enabled !== false,
+            optionId: owned.option_id,
+            packageName: option?.packages?.name || owned.package_name || '차량 이용권',
+            optionLabel: option?.label || (owned.option_id ? '요금제 정보 없음' : '공용 이용권'),
+            price: Number(owned.price ?? option?.price ?? 0),
+            billingCycle: '월 기간제',
+            paymentDay: '매월 1일',
+            classNames: [],
+            isShared: true,
+          } satisfies OwnedPackageTarget;
+        })
+        .filter((target): target is OwnedPackageTarget => target !== null);
+
       const webTargets: OwnedPackageTarget[] = webOnlyStudents.flatMap((student) =>
         (student.academy_student_classes || [])
           .filter((mapping: any) => mapping.status === 'active' && mapping.package_option_id)
           .map((mapping: any) => ({
             userPackageId: `web:${mapping.id}`,
+            packageId: null,
+            hasTargetMonthPackage: false,
+            voucherType: 'lesson',
             studentId: student.id,
             studentName: student.student_name || '원생',
             branchId: student.branch_id,
@@ -364,7 +595,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           } satisfies OwnedPackageTarget)),
       );
 
-      const targets = [...appTargets, ...webTargets];
+      const targets = [...appTargets, ...sharedShuttleTargets, ...webTargets];
       setBillingTargets(targets);
 
       const targetStudentIds = Array.from(new Set(targets.map((target) => target.studentId)));
@@ -454,10 +685,14 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     }
   }, [activeBranchId, subTab, selectedMonth]);
 
+  useEffect(() => {
+    void loadAutoBillingSetting();
+  }, [activeBranchId]);
+
   // Generate Invoices for all active students in the selected month
   const handleGenerateBills = async (targetMonth: string) => {
     const selectedTargets = billingTargets.filter((target) =>
-      selectedBillingStudentIds.has(target.studentId),
+      selectedBillingStudentIds.has(target.studentId) && !target.hasTargetMonthPackage,
     );
 
     if (selectedBillingStudentIds.size === 0) {
@@ -522,7 +757,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           amount_paid: 0,
           billing_date: new Date().toISOString().slice(0, 10),
           status: 'unpaid',
-          memo: `보유 이용권: ${target.packageName} (${target.optionLabel}) | 연결 수업: ${target.classNames.join(', ') || '없음'}`
+          memo: target.isShared
+            ? `보유 이용권: ${target.packageName} (${target.optionLabel}) | 적용 대상: 가족 공용`
+            : `보유 이용권: ${target.packageName} (${target.optionLabel}) | 연결 수업: ${target.classNames.join(', ') || '없음'}`
         };
 
         const { error: insErr } = await supabase
@@ -783,6 +1020,32 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       {/* RENDER VIEW 1: BILLING TARGETS (👥 청구대상 관리) */}
       {subTab === 'targets' ? (
         <div className="space-y-4">
+          <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-black text-slate-900">매월 1일 자동 청구</span>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${autoBillingEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                  {autoBillingEnabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs font-medium text-slate-500">
+                체크한 원생에게만 발송하며, 갱신 완료 또는 이미 청구된 대상은 자동으로 제외합니다.
+                <b className="ml-1 text-emerald-700">현재 대상 {autoBillingTargetStudentIds.size}명</b>
+                {autoBillingLastRun ? ` 최근 실행: ${new Date(autoBillingLastRun).toLocaleString('ko-KR')}` : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoBillingEnabled}
+              onClick={() => void toggleAutoBilling()}
+              disabled={!activeBranchId || activeBranchId === 'all' || autoBillingSaving}
+              className={`relative h-8 w-14 shrink-0 rounded-full transition disabled:cursor-not-allowed disabled:opacity-40 ${autoBillingEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+              title={activeBranchId === 'all' ? '자동 청구를 설정할 지점을 먼저 선택하세요.' : '자동 청구 설정'}
+            >
+              <span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow-sm transition-all ${autoBillingEnabled ? 'left-7' : 'left-1'}`} />
+            </button>
+          </div>
           <div className="flex justify-between items-center bg-blue-50 border border-blue-100/60 p-4 rounded-2xl">
             <div className="text-xs text-blue-800 font-medium">
               💡 <b>청구대상 관리:</b> 학원에 재학 중인 원생들의 수업반 요금 배정 장부입니다. <br />
@@ -829,14 +1092,30 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 <thead className="bg-slate-100/80 text-[11px] font-black uppercase text-slate-700 border-b border-slate-200">
                   <tr className="whitespace-nowrap">
                     <th scope="col" className="w-12 px-4 py-3.5 text-center">
-                      <input
-                        type="checkbox"
-                        checked={allBillingStudentsSelected}
-                        onChange={toggleAllBillingStudents}
-                        disabled={selectableBillingStudents.length === 0}
-                        aria-label="청구 대상 전체 선택"
-                        className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600"
-                      />
+                      <div className="flex flex-col items-center gap-1">
+                        <span>이번 청구</span>
+                        <input
+                          type="checkbox"
+                          checked={allBillingStudentsSelected}
+                          onChange={toggleAllBillingStudents}
+                          disabled={selectableBillingStudents.length === 0}
+                          aria-label="청구 대상 전체 선택"
+                          className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600"
+                        />
+                      </div>
+                    </th>
+                    <th scope="col" className="w-20 px-3 py-3.5 text-center">
+                      <div className="flex flex-col items-center gap-1">
+                        <span>자동 청구</span>
+                        <input
+                          type="checkbox"
+                          checked={allAutoBillingStudentsSelected}
+                          onChange={toggleAllAutoBillingStudents}
+                          disabled={billingTargetStudents.length === 0 || autoBillingTargetSaving || activeBranchId === 'all'}
+                          aria-label="자동 청구 대상 전체 선택"
+                          className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        />
+                      </div>
                     </th>
                     <th scope="col" className="px-4 py-3.5 min-w-[140px]">연결 수업</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[150px]">이용권 요금제</th>
@@ -853,7 +1132,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 <tbody className="divide-y divide-slate-100 border-t border-slate-100">
                   {loading ? (
                     <tr>
-                      <td colSpan={11} className="text-center py-16">
+                      <td colSpan={12} className="text-center py-16">
                         <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
                         <span className="text-xs font-bold text-slate-400 block mt-2">청구 대상 목록 조회 중...</span>
                       </td>
@@ -861,9 +1140,36 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   ) : billingTargetStudents.length > 0 ? (
                     billingTargetStudents.map((student) => {
                       const alreadyBilled = isStudentAlreadyBilled(student);
+                      const studentStates = student.packages.map((target) => {
+                        if (target.hasTargetMonthPackage) return 'renewed';
+                        const bill = targetBillStatuses[billStatusKey(target)];
+                        if (!bill) return 'pending';
+                        if (bill.status === 'paid') return 'paid';
+                        if (bill.status === 'partial') return 'partial';
+                        return bill.paymentRequestId ? 'sent' : 'issued';
+                      });
+                      const studentState = studentStates.every((state) => state === 'renewed')
+                        ? 'renewed'
+                        : studentStates.every((state) => state === 'paid')
+                          ? 'paid'
+                          : studentStates.some((state) => state === 'pending')
+                            ? 'pending'
+                            : studentStates.some((state) => state === 'partial')
+                              ? 'partial'
+                              : studentStates.some((state) => state === 'sent')
+                                ? 'sent'
+                                : 'issued';
+                      const studentStateMeta = {
+                        renewed: { label: '갱신 완료', row: 'bg-violet-50/80', badge: 'border-violet-200 bg-violet-100 text-violet-700' },
+                        paid: { label: '완납', row: 'bg-emerald-50/80', badge: 'border-emerald-200 bg-emerald-100 text-emerald-700' },
+                        partial: { label: '일부 수납', row: 'bg-amber-50/80', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
+                        sent: { label: '앱 발송됨', row: 'bg-sky-50/80', badge: 'border-sky-200 bg-sky-100 text-sky-700' },
+                        issued: { label: '청구서 생성됨', row: 'bg-blue-50/80', badge: 'border-blue-200 bg-blue-100 text-blue-700' },
+                        pending: { label: '청구 예정', row: 'bg-slate-50/80', badge: 'border-slate-200 bg-white text-slate-600' },
+                      }[studentState];
                       return (
                       <React.Fragment key={student.studentId}>
-                        <tr className="border-t border-slate-200 bg-blue-50/60">
+                        <tr className={`border-t border-slate-200 ${studentStateMeta.row}`}>
                           <td className="px-4 py-2.5 text-center">
                             <input
                               type="checkbox"
@@ -874,16 +1180,29 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
                             />
                           </td>
+                          <td className="px-3 py-2.5 text-center">
+                            <input
+                              type="checkbox"
+                              checked={autoBillingTargetStudentIds.has(student.studentId)}
+                              onChange={() => toggleAutoBillingStudent(student.studentId)}
+                              disabled={autoBillingTargetSaving || activeBranchId === 'all'}
+                              aria-label={`${student.studentName} 자동 청구 대상 선택`}
+                              className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            />
+                          </td>
                           <td colSpan={10} className="px-4 py-2.5">
                             <div className="flex items-center justify-between gap-3">
                               <div>
-                                <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
-                                <span className="ml-2 text-[11px] font-bold text-blue-600 bg-blue-100/60 px-2 py-0.5 rounded-full">
+                                 <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
+                                 <span className={`ml-2 rounded-full border px-2 py-0.5 text-[10px] font-black ${studentStateMeta.badge}`}>
+                                   {studentStateMeta.label}
+                                 </span>
+                                 <span className="ml-2 text-[11px] font-bold text-blue-600 bg-blue-100/60 px-2 py-0.5 rounded-full">
                                   이용권 {student.packages.length}개
                                 </span>
                               </div>
                               <span className="text-xs font-black text-slate-800">
-                                예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + item.price, 0).toLocaleString()}</b>원
+                                예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원
                               </span>
                             </div>
                           </td>
@@ -891,13 +1210,46 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                         {student.packages.map((ownedPackage) => {
                           const packageName = ownedPackage.packageName;
                           const packageLabel = ownedPackage.optionLabel;
+                          const normalizedVoucherType = (ownedPackage.voucherType || '').toLowerCase();
+                          const normalizedPackageName = packageName.toLowerCase();
+                          const voucherTypeLabel = normalizedVoucherType.includes('shuttle') || normalizedVoucherType.includes('bus') || normalizedVoucherType.includes('vehicle') || /버스|차량|셔틀/.test(normalizedPackageName)
+                            ? '버스 이용권'
+                            : normalizedVoucherType.includes('single') || normalizedVoucherType.includes('one') || /단품|1회/.test(normalizedPackageName)
+                              ? '단품 이용권'
+                              : '수업 이용권';
                           const price = ownedPackage.price > 0 ? `${ownedPackage.price.toLocaleString()}원` : '단가 미지정';
                           const dayNum = (ownedPackage.paymentDay || '1일').replace(/[^0-9]/g, '') || '01';
                           const formattedDay = dayNum.padStart(2, '0');
                           const statusForMonth = (month: string) => targetBillStatuses[
                             `${ownedPackage.studentId}:${ownedPackage.optionId || 'none'}:${month}`
                           ];
+                          const selectedBillStatus = statusForMonth(selectedMonth);
+                          const rowState = ownedPackage.hasTargetMonthPackage
+                            ? 'renewed'
+                            : selectedBillStatus?.status === 'paid'
+                              ? 'paid'
+                              : selectedBillStatus?.status === 'partial'
+                                ? 'partial'
+                                : selectedBillStatus?.status === 'cancelled' || selectedBillStatus?.status === 'canceled'
+                                  ? 'cancelled'
+                                  : selectedBillStatus?.paymentRequestId
+                                    ? 'sent'
+                                    : selectedBillStatus
+                                      ? 'issued'
+                                      : 'pending';
+                          const rowStyle = {
+                            renewed: 'border-l-4 border-l-violet-500 bg-violet-50/40 hover:bg-violet-50/80',
+                            paid: 'border-l-4 border-l-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/80',
+                            partial: 'border-l-4 border-l-amber-500 bg-amber-50/40 hover:bg-amber-50/80',
+                            cancelled: 'border-l-4 border-l-rose-400 bg-rose-50/30 hover:bg-rose-50/70',
+                            sent: 'border-l-4 border-l-sky-500 bg-sky-50/40 hover:bg-sky-50/80',
+                            issued: 'border-l-4 border-l-blue-500 bg-blue-50/30 hover:bg-blue-50/70',
+                            pending: 'border-l-4 border-l-slate-200 bg-white hover:bg-slate-50',
+                          }[rowState];
                           const renderBillStatus = (monthLabel: string, month: string) => {
+                            if (ownedPackage.hasTargetMonthPackage && month === selectedMonth) {
+                              return <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">{monthLabel} 이용권 보유</span>;
+                            }
                             const billStatus = statusForMonth(month);
                             if (!billStatus) {
                               return <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-400">{monthLabel} 미청구</span>;
@@ -915,10 +1267,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             return <span className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${paid ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : partial ? 'border-amber-200 bg-amber-50 text-amber-700' : cancelled ? 'border-rose-200 bg-rose-50 text-rose-600' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>{label}</span>;
                           };
                           return (
-                            <tr key={ownedPackage.userPackageId} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
+                            <tr key={ownedPackage.userPackageId} className={`font-bold text-slate-700 transition whitespace-nowrap ${rowStyle}`}>
                               <td className="px-4 py-3" aria-hidden="true" />
-                              <td className="px-4 py-3"><div className="flex max-w-xs flex-wrap gap-1">{ownedPackage.classNames.length > 0 ? ownedPackage.classNames.map((className) => <span key={className} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600 font-bold">{className}</span>) : <span className="text-[10px] text-slate-400">연결 수업 없음</span>}</div></td>
-                              <td className="px-4 py-3"><div className="text-xs font-black text-slate-900">{packageName}</div><div className="text-[10px] text-slate-400 font-medium">{packageLabel}</div></td>
+                              <td className="px-3 py-3" aria-hidden="true" />
+                              <td className="px-4 py-3"><div className="flex max-w-xs flex-wrap gap-1">{ownedPackage.isShared ? <span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-black text-amber-700">가족 공용</span> : ownedPackage.classNames.length > 0 ? ownedPackage.classNames.map((className) => <span key={className} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600 font-bold">{className}</span>) : <span className="text-[10px] text-slate-400">연결 수업 없음</span>}</div></td>
+                              <td className="px-4 py-3"><div className="flex items-center gap-1.5"><span className="text-xs font-black text-slate-900">{packageName}</span><span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{voucherTypeLabel}</span></div><div className="text-[10px] text-slate-400 font-medium">{packageLabel}</div></td>
                               <td className="px-4 py-3 text-center">
                                 {renderBillStatus(`${Number(selectedMonth.slice(5))}월`, selectedMonth)}
                               </td>
@@ -926,9 +1279,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{ownedPackage.paymentDay}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-400 text-center">없음</td>
                               <td className="px-4 py-3 font-black text-blue-600 text-right">₩ {price}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-700 text-center"><span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded font-bold">{selectedMonth}-{formattedDay} 청구예정 <ArrowRight size={10} className="text-slate-400" /></span></td>
-                              <td className="px-4 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${student.isSmsEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400'}`}>{student.isSmsEnabled ? '발송' : '미발송'}</span></td>
-                              <td className="px-4 py-3 text-center"><span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700 font-black">{ownedPackage.classNames.length}개 수업</span></td>
+                              <td className="px-4 py-3 text-xs font-medium text-slate-700 text-center">{ownedPackage.hasTargetMonthPackage ? <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 font-black text-emerald-700">갱신 완료</span> : <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded font-bold">{selectedMonth}-{formattedDay} 청구예정 <ArrowRight size={10} className="text-slate-400" /></span>}</td>
+                              <td className="px-4 py-3 text-center">{ownedPackage.hasTargetMonthPackage ? <span className="text-slate-300">-</span> : <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${student.isSmsEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400'}`}>{student.isSmsEnabled ? '발송' : '미발송'}</span>}</td>
+                              <td className="px-4 py-3 text-center">{ownedPackage.isShared ? <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700">공용 차량</span> : <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700 font-black">{ownedPackage.classNames.length}개 수업</span>}</td>
                             </tr>
                           );
                         })}
@@ -937,7 +1290,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     })
                   ) : (
                     <tr>
-                      <td colSpan={11} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
+                      <td colSpan={12} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
                         배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!
                       </td>
                     </tr>
@@ -1095,6 +1448,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           const packageLabel = bill.package_options ? `[${bill.package_options.packages?.name || ''}] ${bill.package_options.label}` : bill.memo || '수강 정보 연동 안 됨';
                           const isPaid = bill.status === 'paid';
                           const canSendToApp = bill.status === 'unpaid' && !bill.payment_request_id && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
+                          const isDeclined = bill.status === 'declined';
+                          const isExpired = bill.status === 'expired';
                           const methodText: Record<string, string> = { app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
                           return (
                             <tr key={bill.id} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
@@ -1122,9 +1477,21 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{isPaid ? `${bill.amount_paid.toLocaleString()}원` : '-'}</td>
                               <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-500 text-center">{bill.payment_date ? new Date(bill.payment_date).toLocaleDateString('ko-KR') : '-'}</td>
-                              <td className="px-4 py-3 text-center">{isPaid ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-black text-emerald-700"><CheckCircle2 size={11} /> 완납</span> : <span className="inline-flex items-center gap-1 rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700"><AlertCircle size={11} /> 미납</span>}</td>
                               <td className="px-4 py-3 text-center">
-                                {bill.payment_request_id
+                                {isPaid
+                                  ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-black text-emerald-700"><CheckCircle2 size={11} /> 완납</span>
+                                  : isDeclined
+                                    ? <span className="inline-flex items-center gap-1 rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700"><AlertCircle size={11} /> 학부모 거절</span>
+                                    : isExpired
+                                      ? <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600"><AlertCircle size={11} /> 기한 만료</span>
+                                      : <span className="inline-flex items-center gap-1 rounded-full border border-amber-100 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700"><AlertCircle size={11} /> 미납</span>}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {isDeclined
+                                  ? <span className="inline-flex rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700">거절됨</span>
+                                  : isExpired
+                                    ? <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600">만료됨</span>
+                                    : bill.payment_request_id
                                   ? <span className="inline-flex rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-black text-indigo-700">발송 완료</span>
                                   : canSendToApp
                                     ? <span className="text-[10px] font-bold text-slate-400">발송 가능</span>

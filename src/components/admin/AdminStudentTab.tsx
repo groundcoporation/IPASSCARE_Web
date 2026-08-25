@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download } from 'lucide-react';
 import ExcelJS from 'exceljs';
+import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
 
 interface Student {
   id: string;
@@ -41,6 +42,7 @@ interface Student {
       target_class: string;
     } | null;
   }>;
+  app_schedule_classes?: ActiveAppSchedule[];
 }
 
 interface ClassSchedule {
@@ -149,7 +151,13 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         (!student.child_id || student.child?.deleted_at == null)
         && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
       ));
-      setStudents(activeStudents as Student[]);
+      const schedulesByChild = await loadActiveAppSchedulesByChild(
+        activeStudents.map((student: any) => student.child_id).filter(Boolean),
+      );
+      setStudents(activeStudents.map((student: any) => ({
+        ...student,
+        app_schedule_classes: student.child_id ? schedulesByChild.get(student.child_id) || [] : undefined,
+      })) as Student[]);
     } catch (err) {
       console.error('Error loading students page data:', err);
     } finally {
@@ -541,8 +549,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     const query = searchQuery.toLowerCase().trim();
     if (!query) return true;
     
-    const assignedClasses = (student.academy_student_classes || [])
-      .map((assignment) => assignment.class_schedules?.target_class || '이용권 단독')
+    const assignedClasses = (student.child_id
+      ? student.app_schedule_classes || []
+      : (student.academy_student_classes || []).map((assignment) => assignment.class_schedules))
+      .map((schedule) => schedule?.target_class || '이용권 단독')
       .join(' ');
     const displayParentName = student.parent_name || student.parent_user?.name || '';
     
@@ -642,7 +652,13 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               ) : filteredStudents.length > 0 ? (
                 filteredStudents.map((student) => {
                   const hasAppLinked = student.parent_user_id !== null;
-                  const assignments = student.academy_student_classes || [];
+                  const assignments = student.child_id
+                    ? (student.app_schedule_classes || []).map((schedule) => ({
+                        class_schedule_id: schedule.id,
+                        package_option_id: null,
+                        class_schedules: schedule,
+                      }))
+                    : student.academy_student_classes || [];
                   const displayParentName = student.parent_name || student.parent_user?.name || '미기입';
                   
                   return (

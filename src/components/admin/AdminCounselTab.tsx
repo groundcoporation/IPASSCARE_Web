@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { 
   Users, Search, Plus, Calendar, Save, Trash2, Edit3, MessageSquare, 
   Clock, AlertCircle, RefreshCw, CheckCircle2, Phone, BookOpen, ChevronRight, X,
@@ -69,6 +70,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       // 1. Fetch Students
       let query = supabase.from('academy_students').select(`
         id,
+        child_id,
         student_name,
         parent_name,
         attendance_code,
@@ -85,7 +87,14 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       }
 
       const { data: stuData } = await query;
-      const stuList = stuData || [];
+      const rawStudents = stuData || [];
+      const schedulesByChild = await loadActiveAppSchedulesByChild(
+        rawStudents.map((student: any) => student.child_id).filter(Boolean),
+      );
+      const stuList = rawStudents.map((student: any) => ({
+        ...student,
+        app_schedule_classes: student.child_id ? schedulesByChild.get(student.child_id) || [] : undefined,
+      }));
       setStudents(stuList);
 
       if (stuList.length > 0 && !selectedStudentId) {
@@ -128,7 +137,10 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   // Extract unique classes
   const uniqueClasses = useMemo(() => {
     const list = students.flatMap(s => 
-      (s.academy_student_classes || []).map((c: any) => c.class_schedules?.target_class)
+      (s.child_id
+        ? s.app_schedule_classes || []
+        : (s.academy_student_classes || []).map((c: any) => c.class_schedules)
+      ).map((schedule: any) => schedule?.target_class)
     ).filter(Boolean);
     return Array.from(new Set(list));
   }, [students]);
@@ -146,7 +158,10 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       if (!matchesSearch) return false;
 
       if (selectedClassFilter !== 'all') {
-        const studentClasses = (s.academy_student_classes || []).map((c: any) => c.class_schedules?.target_class);
+        const studentClasses = (s.child_id
+          ? s.app_schedule_classes || []
+          : (s.academy_student_classes || []).map((c: any) => c.class_schedules)
+        ).map((schedule: any) => schedule?.target_class);
         if (!studentClasses.includes(selectedClassFilter)) return false;
       }
 
@@ -355,7 +370,10 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
               filteredStudents.map(student => {
                 const isSelected = selectedStudentId === student.id;
                 const logCount = counselLogs.filter(l => l.student_id === student.id).length;
-                const className = student.academy_student_classes?.[0]?.class_schedules?.target_class || '미배정';
+                const className = (student.child_id
+                  ? student.app_schedule_classes?.[0]
+                  : student.academy_student_classes?.[0]?.class_schedules
+                )?.target_class || '미배정';
 
                 return (
                   <div
