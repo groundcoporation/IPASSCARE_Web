@@ -38,6 +38,7 @@ interface Student {
     package_option_id: string | null;
     billing_cycle: string | null;
     payment_day: string | null;
+    status: string | null;
     class_schedules: {
       target_class: string;
     } | null;
@@ -138,6 +139,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           package_option_id,
           billing_cycle,
           payment_day,
+          status,
           class_schedules(target_class)
         )
       `);
@@ -189,7 +191,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setIsSmsEnabled(student.is_sms_enabled);
 
       // Get first assigned class details if exists
-      const assignments = student.academy_student_classes || [];
+      const assignments = (student.academy_student_classes || [])
+        .filter((assignment) => (assignment.status || 'active') === 'active');
       setClassAssignments(assignments.length > 0
         ? assignments.map((assignment) => ({
             class_schedule_id: assignment.class_schedule_id || '',

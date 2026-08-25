@@ -499,6 +499,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           const activeClasses = (student.academy_student_classes || [])
             .filter((mapping: any) => mapping.status === 'active');
           const option: any = owned.option_id ? optionById.get(owned.option_id) : null;
+          const billingConfig = activeClasses.find((mapping: any) => (
+            mapping.package_option_id === owned.option_id
+          )) || activeClasses[0];
           return {
             userPackageId: owned.id,
             packageId: owned.package_id || null,
@@ -513,8 +516,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             packageName: option?.packages?.name || owned.package_name || '수강료',
             optionLabel: option?.label || (owned.option_id ? '요금제 정보 없음' : '옵션 미지정'),
             price: Number(owned.price ?? option?.price ?? 0),
-            billingCycle: activeClasses[0]?.billing_cycle || '월 기간제',
-            paymentDay: activeClasses[0]?.payment_day || '매월 1일',
+            billingCycle: billingConfig?.billing_cycle || '월 기간제',
+            paymentDay: billingConfig?.payment_day || '매월 1일',
             classNames: appClassNamesByChildId.get(student.child_id) || [],
           } satisfies OwnedPackageTarget;
         })
