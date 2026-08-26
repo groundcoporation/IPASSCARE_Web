@@ -406,10 +406,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         const cur = recordsMap[key] || {};
         if (res.pickup_shuttle_status === 'missed') {
           cur.no_pickup = true;
+          cur.no_shuttle = true;
           cur.ride_in = undefined;
         } else if (res.pickup_shuttle_status === 'boarded' && !cur.ride_in) {
           cur.ride_in = cur.check_in || '14:00';
           cur.no_pickup = false;
+          cur.no_shuttle = false;
         }
         if (res.dropoff_shuttle_status === 'missed') {
           cur.no_dropoff = true;
@@ -1199,14 +1201,29 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   };
 
   // Real-time timeline attendance action helpers
-  const handleTimelineAction = async (studentId: string, actionType: 'ride_in' | 'no_pickup' | 'check_in' | 'check_out' | 'ride_out' | 'no_dropoff' | 'no_shuttle' | 'is_absent' | 'reset') => {
+  const handleTimelineAction = async (studentId: string, actionType: 'ride_in' | 'no_pickup' | 'check_in' | 'check_out' | 'ride_out' | 'no_dropoff' | 'no_shuttle' | 'is_absent' | 'reset' | 'cancel_ride_in' | 'cancel_check_in' | 'cancel_check_out' | 'cancel_ride_out' | 'cancel_absent') => {
     const student = todayAttendanceStudents.find(s => s.id === studentId);
+    const studentName = student?.student_name || '해당 원생';
     if (actionType === 'reset') {
-      const studentName = student?.student_name || '해당 원생';
       const shouldReset = confirm(
-        `${studentName} 원생의 ${selectedAttendanceDate} 출결 처리를 취소하시겠습니까?\n승하차·등하원·미탑승 상태가 모두 초기화됩니다.`
+        `${studentName} 원생의 ${selectedAttendanceDate} 전체 출결 처리를 초기화하시겠습니까?\n승하차·등하원·미탑승 상태가 모두 초기화됩니다.`
       );
       if (!shouldReset) return;
+    } else if (actionType === 'cancel_ride_in') {
+      const shouldCancel = confirm(`${studentName} 원생의 [승차 / 미탑승] 처리를 취소하시겠습니까?`);
+      if (!shouldCancel) return;
+    } else if (actionType === 'cancel_check_in') {
+      const shouldCancel = confirm(`${studentName} 원생의 [등원] 처리를 취소하시겠습니까?`);
+      if (!shouldCancel) return;
+    } else if (actionType === 'cancel_check_out') {
+      const shouldCancel = confirm(`${studentName} 원생의 [하원] 처리를 취소하시겠습니까?`);
+      if (!shouldCancel) return;
+    } else if (actionType === 'cancel_ride_out') {
+      const shouldCancel = confirm(`${studentName} 원생의 [하차 / 미탑승] 처리를 취소하시겠습니까?`);
+      if (!shouldCancel) return;
+    } else if (actionType === 'cancel_absent') {
+      const shouldCancel = confirm(`${studentName} 원생의 [결석] 처리를 취소하시겠습니까?`);
+      if (!shouldCancel) return;
     }
 
     const nowTime = new Date().toTimeString().slice(0, 5);
@@ -1221,6 +1238,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         const next = { ...prev };
         delete next[studentId];
         return next;
+      }
+      if (actionType === 'cancel_ride_in') {
+        return { ...prev, [studentId]: { ...current, ride_in: undefined, no_pickup: false, no_shuttle: false } };
+      }
+      if (actionType === 'cancel_check_in') {
+        return { ...prev, [studentId]: { ...current, check_in: undefined } };
+      }
+      if (actionType === 'cancel_check_out') {
+        return { ...prev, [studentId]: { ...current, check_out: undefined } };
+      }
+      if (actionType === 'cancel_ride_out') {
+        return { ...prev, [studentId]: { ...current, ride_out: undefined, no_dropoff: false } };
+      }
+      if (actionType === 'cancel_absent') {
+        return { ...prev, [studentId]: { ...current, is_absent: false } };
       }
       if (actionType === 'ride_in') {
         return { ...prev, [studentId]: { ...current, ride_in: nowTime, no_pickup: false, no_shuttle: false, is_absent: false } };
@@ -1251,6 +1283,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       if (actionType === 'reset') {
         await supabase.from("attendance_logs").delete().eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
         await supabase.from("reservations").update({ pickup_shuttle_status: null, dropoff_shuttle_status: null, attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+      } else if (actionType === 'cancel_ride_in') {
+        await supabase.from("reservations").update({ pickup_shuttle_status: null }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        await supabase.from("attendance_logs").update({ shuttle_ride_time: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+      } else if (actionType === 'cancel_check_in') {
+        await supabase.from("reservations").update({ attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        await supabase.from("attendance_logs").update({ check_in: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+      } else if (actionType === 'cancel_check_out') {
+        await supabase.from("reservations").update({ attendance_status: '등원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        await supabase.from("attendance_logs").update({ check_out: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+      } else if (actionType === 'cancel_ride_out') {
+        await supabase.from("reservations").update({ dropoff_shuttle_status: null }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        await supabase.from("attendance_logs").update({ shuttle_drop_time: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+      } else if (actionType === 'cancel_absent') {
+        await supabase.from("reservations").update({ attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        await supabase.from("attendance_logs").update({ status: '등원' }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
       } else if (actionType === 'no_pickup' || actionType === 'no_shuttle') {
         await supabase.from("reservations").update({ pickup_shuttle_status: 'missed' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         try {
@@ -1290,6 +1337,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           payload.check_out = nowIso;
           await supabase.from("reservations").update({ dropoff_shuttle_status: 'dropped_off', attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         } else if (actionType === 'is_absent') {
+          payload.status = '결석';
           await supabase.from("reservations").update({ attendance_status: '결석' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         }
 
@@ -1416,7 +1464,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     return (todayAttendanceStudents || []).filter(s => {
       if (!s) return false;
       const rec = todayAttendanceRecords[s.id];
-      const hasAny = rec && (rec.ride_in || rec.check_in || rec.check_out || rec.ride_out || rec.is_absent || rec.no_shuttle);
+      const hasAny = rec && (rec.ride_in || rec.check_in || rec.check_out || rec.ride_out || rec.is_absent || rec.no_shuttle || rec.no_pickup || rec.no_dropoff);
       return isStudentScheduledOnDate(s) && !hasAny;
     }).length;
   }, [todayAttendanceStudents, todayAttendanceRecords, isStudentScheduledOnDate]);
@@ -1425,7 +1473,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     return (todayAttendanceStudents || []).filter(s => {
       if (!s) return false;
       const rec = todayAttendanceRecords[s.id];
-      return rec && (rec.check_in || rec.check_out || rec.ride_in || rec.ride_out);
+      return rec && (rec.check_in || rec.check_out || rec.ride_in || rec.ride_out || rec.no_shuttle || rec.no_pickup || rec.no_dropoff);
     }).length;
   }, [todayAttendanceStudents, todayAttendanceRecords]);
 
@@ -1480,7 +1528,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       // 3. Status Record
       const record = todayAttendanceRecords[student.id];
       const isScheduled = isStudentScheduledOnDate(student);
-      const hasAnyAction = record && (record.ride_in || record.check_in || record.check_out || record.ride_out || record.is_absent || record.no_shuttle);
+      const hasAnyAction = record && (record.ride_in || record.check_in || record.check_out || record.ride_out || record.is_absent || record.no_shuttle || record.no_pickup || record.no_dropoff);
       const isUnprocessed = isScheduled && !hasAnyAction;
 
       // 4. View Filter Tab
@@ -2335,18 +2383,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 <td className="px-2 py-3 text-center">
                                   {record?.ride_in ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_ride_in')}
                                       className="inline-flex items-center gap-1 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition"
-                                      title="클릭 시 취소"
+                                      title="클릭 시 승차 취소"
                                     >
                                       <Bus size={12} />
                                       <span>{record.ride_in} 승차</span>
                                     </button>
-                                  ) : record?.no_shuttle ? (
+                                  ) : (record?.no_shuttle || record?.no_pickup) ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_ride_in')}
                                       className="inline-block bg-amber-50 border border-amber-200 text-amber-700 font-bold px-2 py-1 rounded-xl text-[11px] hover:bg-amber-100 transition"
-                                      title="클릭 시 취소"
+                                      title="클릭 시 미탑승 취소"
                                     >
                                       미탑승(자가등원)
                                     </button>
@@ -2373,9 +2421,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 <td className="px-2 py-3 text-center">
                                   {record?.check_in ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_check_in')}
                                       className="inline-block bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition"
-                                      title="클릭 시 취소"
+                                      title="클릭 시 등원 취소"
                                     >
                                       🏫 {record.check_in} 등원
                                     </button>
@@ -2393,9 +2441,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 <td className="px-2 py-3 text-center">
                                   {record?.check_out ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_check_out')}
                                       className="inline-block bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition"
-                                      title="클릭 시 취소"
+                                      title="클릭 시 하원 취소"
                                     >
                                       🎒 {record.check_out} 하원
                                     </button>
@@ -2413,17 +2461,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 <td className="px-2 py-3 text-center">
                                   {record?.ride_out ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_ride_out')}
                                       className="inline-block bg-purple-50 border border-purple-200 hover:bg-purple-100 text-purple-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition"
-                                      title="클릭 시 취소"
+                                      title="클릭 시 하차 취소"
                                     >
                                       🚌 {record.ride_out} 하차
                                     </button>
                                   ) : record?.no_dropoff ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_ride_out')}
                                       className="inline-block bg-amber-50 border border-amber-200 text-amber-700 font-bold px-2 py-1 rounded-xl text-[11px] hover:bg-amber-100 transition"
-                                      title="클릭 시 취소"
+                                      title="클릭 시 하차 미탑승 취소"
                                     >
                                       하차 미탑승(자가귀가)
                                     </button>
@@ -2450,7 +2498,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 <td className="px-2 py-3 text-center">
                                   {record?.is_absent ? (
                                     <button
-                                      onClick={() => handleTimelineAction(s.id, 'reset')}
+                                      onClick={() => handleTimelineAction(s.id, 'cancel_absent')}
                                       className="inline-block bg-rose-100 border border-rose-200 text-rose-700 font-black px-2 py-1 rounded-xl text-[11px] hover:bg-rose-200 transition"
                                       title="클릭 시 결석 취소"
                                     >
@@ -2821,18 +2869,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   <td className="px-2 py-3 text-center">
                                     {record?.ride_in ? (
                                       <button
-                                        onClick={() => handleTimelineAction(s.id, 'reset')}
+                                        onClick={() => handleTimelineAction(s.id, 'cancel_ride_in')}
                                         className="inline-flex items-center gap-1 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition shadow-2xs"
-                                        title="클릭 시 취소"
+                                        title="클릭 시 승차 취소"
                                       >
                                         <Bus size={12} />
                                         <span>{record.ride_in} 승차</span>
                                       </button>
                                     ) : record?.no_pickup || record?.no_shuttle ? (
                                       <button
-                                        onClick={() => handleTimelineAction(s.id, 'reset')}
+                                        onClick={() => handleTimelineAction(s.id, 'cancel_ride_in')}
                                         className="inline-block bg-amber-50 border border-amber-200 text-amber-700 font-bold px-2 py-1 rounded-xl text-[11px] hover:bg-amber-100 transition shadow-2xs"
-                                        title="클릭 시 취소"
+                                        title="클릭 시 미탑승 취소"
                                       >
                                         승차 미탑승
                                       </button>
@@ -2859,9 +2907,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   <td className="px-2 py-3 text-center">
                                     {record?.check_in ? (
                                       <button
-                                        onClick={() => handleTimelineAction(s.id, 'reset')}
+                                        onClick={() => handleTimelineAction(s.id, 'cancel_check_in')}
                                         className="inline-block bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition shadow-2xs"
-                                        title="클릭 시 취소"
+                                        title="클릭 시 등원 취소"
                                       >
                                         🏫 {record.check_in} 등원
                                       </button>
@@ -2879,9 +2927,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   <td className="px-2 py-3 text-center">
                                     {record?.check_out ? (
                                       <button
-                                        onClick={() => handleTimelineAction(s.id, 'reset')}
+                                        onClick={() => handleTimelineAction(s.id, 'cancel_check_out')}
                                         className="inline-block bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition shadow-2xs"
-                                        title="클릭 시 취소"
+                                        title="클릭 시 하원 취소"
                                       >
                                         🎒 {record.check_out} 하원
                                       </button>
@@ -2899,17 +2947,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   <td className="px-2 py-3 text-center">
                                     {record?.ride_out ? (
                                       <button
-                                        onClick={() => handleTimelineAction(s.id, 'reset')}
+                                        onClick={() => handleTimelineAction(s.id, 'cancel_ride_out')}
                                         className="inline-block bg-purple-50 border border-purple-200 hover:bg-purple-100 text-purple-700 font-black px-2.5 py-1 rounded-xl text-xs font-mono transition shadow-2xs"
-                                        title="클릭 시 취소"
+                                        title="클릭 시 하차 취소"
                                       >
                                         🚌 {record.ride_out} 하차
                                       </button>
                                     ) : record?.no_dropoff ? (
                                       <button
-                                        onClick={() => handleTimelineAction(s.id, 'reset')}
+                                        onClick={() => handleTimelineAction(s.id, 'cancel_ride_out')}
                                         className="inline-block bg-amber-50 border border-amber-200 text-amber-700 font-bold px-2 py-1 rounded-xl text-[11px] hover:bg-amber-100 transition shadow-2xs"
-                                        title="클릭 시 취소"
+                                        title="클릭 시 하차 미탑승 취소"
                                       >
                                         하차 미탑승
                                       </button>
