@@ -143,7 +143,12 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
     let noticeSaved = false;
     try {
       const { data: authData } = await supabase.auth.getUser();
-      const realName = profile?.name || '관리자';
+      const getBadgeName = () => {
+        if (profile?.role === 'admin') return '관리자';
+        if (profile?.role === 'director') return '원장';
+        if (profile?.role === 'teacher' || profile?.role === 'coach') return '선생님';
+        return '직원';
+      };
 
       const payload = {
         title: title.trim(),
@@ -151,6 +156,7 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
         is_important: isImportant,
         is_on_home: isOnHome,
         author_name: realName,
+        author_badge: getBadgeName(),
         author_id: authData?.user?.id || null,
         branch_id: targetBranchId,
         updated_at: new Date().toISOString(),
@@ -351,8 +357,15 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
                         </span>
                       </td>
 
-                      <td className="px-6 py-4 font-bold text-slate-600">
-                        {notice.author_name || '관리자'}
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-700">
+                          <span>{notice.author_name || '관리자'}</span>
+                          {Boolean(notice.author_badge) && (
+                            <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded font-extrabold">
+                              {notice.author_badge}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="px-6 py-4 font-mono text-slate-400 text-[11px]">
