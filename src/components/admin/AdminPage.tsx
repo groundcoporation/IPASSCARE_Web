@@ -3,7 +3,7 @@ import {
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
   GitFork, BookOpen, GraduationCap, Users, DollarSign, MessageSquare, LayoutDashboard, Bus, CheckCircle2, RefreshCw, Calendar as CalendarIcon, Building2, Home,
-  History, Clock, Coins
+  History, Clock, Coins, Bell, Megaphone
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { loadActiveAppSchedulesByChild } from "../../lib/adminScheduleAssignments";
@@ -18,6 +18,8 @@ import { AdminStudyTab } from "./AdminStudyTab";
 import { AdminRoleManagementTab } from "./AdminRoleManagementTab";
 import { AdminSmsTab } from "./AdminSmsTab";
 import { AdminDashboardTab } from "./AdminDashboardTab";
+import { AdminNoticeTab } from "./AdminNoticeTab";
+import { AdminHqNoticeTab } from "./AdminHqNoticeTab";
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
@@ -1804,6 +1806,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               {/* DASHBOARD SUBMENU */}
               {mainTab === 'dashboard' && [
                 { id: 'dashboard_home', label: '학원 운영 현황 요약', icon: LayoutDashboard },
+                { id: 'hq_notices', label: '본사 운영 공지 (웹 전용)', icon: Megaphone },
               ].map((item) => {
                 const isActive = subTab === item.id;
                 return (
@@ -1824,9 +1827,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
               {/* STUDENT MGMT SUBMENU */}
               {mainTab === 'student_mgmt' && [
-                { id: 'teachers', label: '강사 및 임직원 관리', icon: GraduationCap },
-                { id: 'classes', label: '클래스 관리', icon: BookOpen },
+                { id: 'notices', label: '학부모 공지사항 (앱 연동)', icon: Bell },
                 { id: 'students', label: '학생 목록', icon: Users },
+                { id: 'classes', label: '클래스 관리', icon: BookOpen },
+                { id: 'teachers', label: '강사 및 임직원 관리', icon: GraduationCap },
                 { id: 'counsel_log', label: '상담일지', icon: MessageSquare },
                 { id: 'study_log', label: '학습일지', icon: FileText },
               ].map((item) => {
@@ -1961,7 +1965,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
           <div className="p-4 border-t border-slate-800 text-[10px] text-slate-500 space-y-1 font-bold">
             <p>아이패스케어 관리자 모드</p>
-            <p>v2.4.0 (통합 안정화 버전)</p>
+            <p>v1.0.0 (공식 런칭 버전)</p>
           </div>
         </aside>
 
@@ -1984,6 +1988,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               />
             )}
 
+            {/* HQ NOTICES FULL TAB */}
+            {subTab === "hq_notices" && (
+              <AdminHqNoticeTab profile={profile} />
+            )}
+
             {/* STUDENTS LIST TAB (100% Original Complete Component) */}
             {subTab === "students" && (
               <AdminStudentTab activeBranchId={activeBranchId} branches={branches} />
@@ -1997,6 +2006,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             {/* CLASSES TAB (100% Original) */}
             {subTab === "classes" && (
               <AdminClassTab activeBranchId={activeBranchId} branches={branches} />
+            )}
+
+            {/* PARENT NOTICES TAB (100% App Synced) */}
+            {subTab === "notices" && (
+              <AdminNoticeTab activeBranchId={activeBranchId} branches={branches} profile={profile} />
             )}
 
             {/* COUNSEL LOG TAB (1:1 Student/Parent Consultation) */}

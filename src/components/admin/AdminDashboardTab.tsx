@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabaseClient';
 import { 
   Users, CalendarCheck2, CreditCard, MessageSquare, 
   TrendingUp, Clock, AlertCircle, ArrowRight, RefreshCw, 
-  Plus, CheckCircle2, ChevronRight, Bus, Sparkles, Building2
+  Plus, CheckCircle2, ChevronRight, Bus, Sparkles, Building2, Megaphone, X, Pin, FileText, Loader2
 } from 'lucide-react';
 
 interface AdminDashboardTabProps {
@@ -33,6 +33,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
   const [attendanceLogs, setAttendanceLogs] = useState<any[]>([]);
   const [bills, setBills] = useState<any[]>([]);
   const [pointBalance, setPointBalance] = useState<number>(0);
+  const [hqNotices, setHqNotices] = useState<any[]>([]);
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const currentMonthStr = useMemo(() => new Date().toISOString().slice(0, 7), []);
@@ -92,10 +93,16 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
         .select('point_balance, branch_id');
       if (targetBranch) smsBalanceQuery = smsBalanceQuery.eq('branch_id', targetBranch);
 
+      // 7. HQ Notices Query (headquarter_notices table)
+      const hqNoticesQuery = supabase
+        .from('headquarter_notices')
+        .select('*')
+        .order('created_at', { ascending: false });
+
       const [
-        studentsRes, schedulesRes, reservationsRes, logsRes, billsRes, smsRes
+        studentsRes, schedulesRes, reservationsRes, logsRes, billsRes, smsRes, hqNoticesRes
       ] = await Promise.all([
-        studentsQuery, schedulesQuery, reservationsQuery, logsQuery, billsQuery, smsBalanceQuery
+        studentsQuery, schedulesQuery, reservationsQuery, logsQuery, billsQuery, smsBalanceQuery, hqNoticesQuery
       ]);
 
       // Filter active students
@@ -109,6 +116,18 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
       setReservations(reservationsRes.data || []);
       setAttendanceLogs(logsRes.data || []);
       setBills(billsRes.data || []);
+      
+      const loadedHq = hqNoticesRes.data && hqNoticesRes.data.length > 0 ? hqNoticesRes.data : [
+        {
+          id: 'hq-launch-1',
+          title: '📢 [공식 런칭] 아이패스케어 스마트 ERP v1.0.0 정식 버전 오픈 안내',
+          content: '안녕하세요, 아이패스케어 가맹 학원 원장님 및 임직원 여러분!\n아이패스케어 스마트 ERP v1.0.0 정식 안정화 버전이 성공적으로 런칭되었습니다.',
+          is_important: true,
+          author_name: '아이패스케어 본사',
+          created_at: '2026-08-26T00:00:00Z'
+        }
+      ];
+      setHqNotices(loadedHq);
 
       const totalBalance = (smsRes.data || []).reduce((acc: number, row: any) => acc + (row.point_balance || 0), 0);
       setPointBalance(totalBalance);
@@ -164,19 +183,30 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
 
   // Chart 1: Monthly Student Growth (Jan ~ Dec of Current Year)
   const monthlyStudentChartData = useMemo(() => {
+    const currentMonthNum = new Date().getMonth() + 1;
     const months = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
-    const data = months.map(m => {
-      const monthPrefix = `${currentYear}-${m}`;
-      const count = students.filter(s => {
-        const date = s.admission_date || s.created_at || '2026-01-01';
-        return date.slice(0, 7) <= monthPrefix;
-      }).length;
-      return { month: `${parseInt(m, 10)}월`, count };
+    
+    let elapsedSum = 0;
+    const data = months.map((m, idx) => {
+      const monthNum = idx + 1;
+      const isFuture = monthNum > currentMonthNum;
+
+      let count = 0;
+      if (!isFuture) {
+        const monthPrefix = `${currentYear}-${m}`;
+        count = students.filter(s => {
+          const date = s.admission_date || s.created_at || '2026-01-01';
+          return date.slice(0, 7) <= monthPrefix;
+        }).length;
+        elapsedSum += count;
+      }
+
+      return { month: `${monthNum}월`, count, isFuture };
     });
 
     const maxCount = Math.max(...data.map(d => d.count), 10);
-    const avgCount = Math.round(data.reduce((acc, d) => acc + d.count, 0) / 12);
-    return { data, maxCount, avgCount };
+    const avgCount = currentMonthNum > 0 ? Math.round(elapsedSum / currentMonthNum) : 0;
+    return { data, maxCount, avgCount, currentMonthNum };
   }, [students, currentYear]);
 
   // Chart 2: Daily Attendance Trend for this month (1st ~ Last Day)
@@ -260,6 +290,36 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
             새로고침
           </button>
         </div>
+      </div>
+
+      {/* 1.5 HQ Announcement 1-Line Ticker Banner */}
+      <div 
+        onClick={() => onNavigateTab('dashboard', 'hq_notices')}
+        className="bg-white border border-slate-200/90 shadow-2xs hover:shadow-xs hover:border-blue-300 rounded-2xl p-3.5 px-5 flex items-center justify-between gap-4 cursor-pointer transition group"
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <span className="bg-blue-600 text-white text-[11px] font-black px-2.5 py-0.5 rounded-lg shrink-0 flex items-center gap-1">
+            <Megaphone size={12} /> 본사 공지
+          </span>
+          <p className="text-xs font-bold text-slate-800 group-hover:text-blue-600 truncate transition flex-1">
+            {hqNotices.length > 0 
+              ? hqNotices[0].title 
+              : '📢 아이패스케어 v1.0.0 공식 런칭! 원장님들의 성공적인 학원 운영을 전폭 지원합니다.'}
+          </p>
+          <span className="text-[11px] text-slate-400 shrink-0 font-mono hidden sm:inline">
+            {hqNotices.length > 0 ? hqNotices[0].created_at?.slice(0, 10) : todayStr}
+          </span>
+        </div>
+
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            onNavigateTab('dashboard', 'hq_notices');
+          }}
+          className="text-xs font-black text-blue-600 hover:text-blue-700 flex items-center gap-0.5 pl-2 border-l border-slate-200 shrink-0 group-hover:translate-x-0.5 transition-transform"
+        >
+          전체 보기 <ChevronRight size={13} />
+        </button>
       </div>
 
       {/* 2. Top 4 Golden KPI Cards */}
@@ -399,29 +459,36 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
             </span>
           </div>
 
-          {/* Bar Chart Container */}
-          <div className="pt-4 pb-2">
-            <div className="h-44 flex items-end justify-between gap-1 sm:gap-2 px-2 border-b border-slate-200">
-              {monthlyStudentChartData.data.map((item, idx) => {
-                const heightPercent = Math.max(8, Math.round((item.count / monthlyStudentChartData.maxCount) * 100));
-                const isCurrentMonth = item.month === `${new Date().getMonth() + 1}월`;
-                return (
-                  <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group">
-                    <span className="text-[10px] font-bold font-mono text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {item.count}
-                    </span>
-                    <div 
-                      className={`w-full max-w-[28px] rounded-t-lg transition-all duration-300 ${
-                        isCurrentMonth 
-                          ? 'bg-blue-600 group-hover:bg-blue-700 shadow-xs' 
-                          : 'bg-emerald-400/80 group-hover:bg-emerald-500'
-                      }`}
-                      style={{ height: `${heightPercent}%` }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
+            {/* Bar Chart Container */}
+            <div className="pt-4 pb-2">
+              <div className="h-44 flex items-end justify-between gap-1 sm:gap-2 px-2 border-b border-slate-200">
+                {monthlyStudentChartData.data.map((item, idx) => {
+                  const isCurrentMonth = item.month === `${monthlyStudentChartData.currentMonthNum}월`;
+                  const heightPercent = item.count > 0 
+                    ? Math.max(8, Math.round((item.count / monthlyStudentChartData.maxCount) * 100))
+                    : 0;
+
+                  return (
+                    <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group">
+                      <span className="text-[10px] font-bold font-mono text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                        {item.isFuture ? '-' : `${item.count}명`}
+                      </span>
+                      {item.isFuture ? (
+                        <div className="w-full max-w-[24px] h-1 rounded-full bg-slate-100 mb-1" title="미도래 월" />
+                      ) : (
+                        <div 
+                          className={`w-full max-w-[28px] rounded-t-lg transition-all duration-300 ${
+                            isCurrentMonth 
+                              ? 'bg-blue-600 group-hover:bg-blue-700 shadow-xs' 
+                              : 'bg-emerald-400/80 group-hover:bg-emerald-500'
+                          }`}
+                          style={{ height: `${heightPercent}%` }}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
 
             {/* X-Axis Labels */}
             <div className="flex justify-between gap-1 sm:gap-2 px-2 pt-2 text-[10px] font-bold text-slate-400">
