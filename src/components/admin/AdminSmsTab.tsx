@@ -542,7 +542,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
         (student.father_phone && student.father_phone.includes(query)) ||
         (student.student_phone && student.student_phone.includes(query));
       return matchesClass && matchesQuery;
-    });
+    }).sort((left, right) => left.student_name.localeCompare(right.student_name, 'ko-KR'));
   }, [students, selectedClass, searchQuery]);
 
   // Filtered Point Transactions

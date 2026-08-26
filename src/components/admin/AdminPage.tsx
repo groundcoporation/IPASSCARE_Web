@@ -1494,6 +1494,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         return true;
       }
       return true;
+    }).sort((left, right) => {
+      const leftClass = left.child_id
+        ? left.app_schedule_classes?.[0]
+        : left.academy_student_classes?.[0]?.class_schedules;
+      const rightClass = right.child_id
+        ? right.app_schedule_classes?.[0]
+        : right.academy_student_classes?.[0]?.class_schedules;
+      const timeDiff = String(leftClass?.start_time || '99:99').localeCompare(String(rightClass?.start_time || '99:99'));
+      if (timeDiff !== 0) return timeDiff;
+      const classDiff = String(leftClass?.target_class || '미배정').localeCompare(String(rightClass?.target_class || '미배정'), 'ko-KR');
+      if (classDiff !== 0) return classDiff;
+      return String(left.student_name || '').localeCompare(String(right.student_name || ''), 'ko-KR');
     });
   }, [todayAttendanceStudents, search, selectedAttendanceClassFilter, todayAttendanceRecords, attendanceViewFilter, isStudentScheduledOnDate]);
 

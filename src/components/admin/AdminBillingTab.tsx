@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight } from 'lucide-react';
+import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight, Search } from 'lucide-react';
 
 interface Bill {
   id: string;
@@ -145,6 +145,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
   const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
   const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
+  const [billingSearch, setBillingSearch] = useState('');
 
   // Tab 2: Invoices data
   const [bills, setBills] = useState<Bill[]>([]);
@@ -152,6 +153,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [directOnsitePayments, setDirectOnsitePayments] = useState<OfflinePayment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [invoiceSearch, setInvoiceSearch] = useState('');
   const [autoBillingEnabled, setAutoBillingEnabled] = useState(false);
   const [autoBillingSaving, setAutoBillingSaving] = useState(false);
   const [autoBillingLastRun, setAutoBillingLastRun] = useState<string | null>(null);
@@ -189,8 +191,23 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       students.set(studentId, student);
     });
 
-    return Array.from(students.values());
+    return Array.from(students.values()).sort((left, right) =>
+      left.studentName.localeCompare(right.studentName, 'ko-KR')
+    );
   }, [billingTargets]);
+
+  const visibleBillingTargetStudents = useMemo(() => {
+    const query = billingSearch.trim().toLowerCase();
+    if (!query) return billingTargetStudents;
+    return billingTargetStudents.filter((student) =>
+      student.studentName.toLowerCase().includes(query)
+      || student.packages.some((target) =>
+        target.packageName.toLowerCase().includes(query)
+        || target.optionLabel.toLowerCase().includes(query)
+        || target.classNames.some((className) => className.toLowerCase().includes(query))
+      )
+    );
+  }, [billingTargetStudents, billingSearch]);
 
   const billStatusKey = (target: OwnedPackageTarget, month = selectedMonth) =>
     `${target.studentId}:${target.optionId || 'none'}:${month}`;
@@ -201,7 +218,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       target.hasTargetMonthPackage || Boolean(targetBillStatuses[billStatusKey(target)])
     );
 
-  const selectableBillingStudents = billingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
+  const selectableBillingStudents = visibleBillingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
 
   useEffect(() => {
     const availableIds = new Set(selectableBillingStudents.map((student) => student.studentId));
@@ -384,9 +401,29 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       });
       studentsByParentId.forEach((siblings) => siblings.sort((left, right) => String(left.id).localeCompare(String(right.id))));
       const selectedPeriod = billingMonthPeriod(selectedMonth);
+      const { data: monthlyPlans, error: monthlyPlanError } = appStudents.length > 0
+        ? await supabase
+            .from('academy_student_monthly_plans')
+            .select(`
+              id,
+              item_type,
+              student_id,
+              branch_id,
+              class_schedule_id,
+              package_option_id,
+              billing_cycle,
+              payment_day,
+              class_schedules(target_class),
+              package_options(id, label, price, packages(id, name, voucher_type))
+            `)
+            .eq('effective_month', selectedPeriod.start)
+            .eq('status', 'planned')
+            .in('student_id', appStudents.map((student) => student.id))
+        : { data: [], error: null };
+      if (monthlyPlanError) throw monthlyPlanError;
 
-      // Match the app's member schedule exactly: its source of truth is every
-      // active student_schedule_assignments row, without date filtering.
+      // Resolve assignments effective during the selected billing month.
+      // Future-dated assignments must not leak into the current month.
       const childIds = appStudents.map((student) => student.child_id).filter(Boolean);
       const parentUserIds = Array.from(new Set(
         activeStudents.map((student) => student.parent_user_id).filter(Boolean),
@@ -396,6 +433,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             .from('student_schedule_assignments')
             .select('child_id, schedule_id, starts_on, ends_on, is_active, class_schedules:schedule_id(target_class)')
             .eq('is_active', true)
+            .lte('starts_on', selectedPeriod.end)
+            .or(`ends_on.is.null,ends_on.gte.${selectedPeriod.start}`)
             .in('child_id', childIds)
         : { data: [], error: null };
       if (assignmentError) throw assignmentError;
@@ -523,6 +562,46 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         })
         .filter((target): target is OwnedPackageTarget => target !== null);
 
+      const plannedRows = monthlyPlans as any[] || [];
+      const plannedClassNamesByStudent = new Map<string, string[]>();
+      plannedRows.filter((plan) => plan.item_type === 'class').forEach((plan) => {
+        const className = plan.class_schedules?.target_class;
+        if (!className) return;
+        const names = plannedClassNamesByStudent.get(plan.student_id) || [];
+        if (!names.includes(className)) names.push(className);
+        plannedClassNamesByStudent.set(plan.student_id, names);
+      });
+
+      const plannedTargetsByStudentAndOption = new Map<string, OwnedPackageTarget>();
+      plannedRows.filter((plan) => plan.item_type === 'package').forEach((plan) => {
+        const student = activeStudents.find((item) => item.id === plan.student_id);
+        const option = plan.package_options;
+        if (!student || !option) return;
+        const key = `${plan.student_id}:${plan.package_option_id}`;
+        const existing = plannedTargetsByStudentAndOption.get(key);
+        if (existing) return;
+        plannedTargetsByStudentAndOption.set(key, {
+          userPackageId: `plan:${plan.id}`,
+          packageId: option.packages?.id || null,
+          hasTargetMonthPackage: false,
+          voucherType: option.packages?.voucher_type || 'lesson',
+          studentId: student.id,
+          studentName: student.student_name || '원생',
+          branchId: student.branch_id,
+          childId: student.child_id,
+          isSmsEnabled: student.is_sms_enabled !== false,
+          optionId: plan.package_option_id,
+          packageName: option.packages?.name || '수강료',
+          optionLabel: option.label || '요금제 정보 없음',
+          price: Number(option.price || 0),
+          billingCycle: plan.billing_cycle || '월 기간제',
+          paymentDay: plan.payment_day || '매월 1일',
+          classNames: plannedClassNamesByStudent.get(plan.student_id) || [],
+        });
+      });
+      const plannedTargets = Array.from(plannedTargetsByStudentAndOption.values());
+      const plannedStudentIds = new Set(plannedTargets.map((target) => target.studentId));
+
       // Shared vehicle passes are shown once per parent. academy_bills still
       // requires a student_id, so use a stable representative student only as
       // the bill recipient while clearly marking the package as family-shared.
@@ -598,7 +677,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           } satisfies OwnedPackageTarget)),
       );
 
-      const targets = [...appTargets, ...sharedShuttleTargets, ...webTargets];
+      const targets = [
+        ...appTargets.filter((target) => !plannedStudentIds.has(target.studentId)),
+        ...plannedTargets,
+        ...sharedShuttleTargets.filter((target) => !plannedStudentIds.has(target.studentId)),
+        ...webTargets,
+      ];
       setBillingTargets(targets);
 
       const targetStudentIds = Array.from(new Set(targets.map((target) => target.studentId)));
@@ -887,8 +971,14 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Filter bills
   const filteredBills = bills.filter((b) => {
-    if (statusFilter === 'all') return true;
-    return b.status === statusFilter;
+    if (statusFilter !== 'all' && b.status !== statusFilter) return false;
+    const query = invoiceSearch.trim().toLowerCase();
+    if (!query) return true;
+    return (b.academy_students?.student_name || '').toLowerCase().includes(query)
+      || (b.package_options?.packages?.name || '').toLowerCase().includes(query)
+      || (b.package_options?.label || '').toLowerCase().includes(query)
+      || (b.class_schedules?.target_class || '').toLowerCase().includes(query)
+      || (b.memo || '').toLowerCase().includes(query);
   });
 
   const appSendableBills = filteredBills.filter((bill) =>
@@ -973,7 +1063,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       current.bills.push(bill);
       groups.set(bill.student_id, current);
     });
-    return Array.from(groups.values());
+    return Array.from(groups.values()).sort((left, right) =>
+      left.studentName.localeCompare(right.studentName, 'ko-KR')
+    );
   }, [filteredBills]);
 
   // Calculate sums
@@ -1088,6 +1180,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             </div>
           </div>
 
+          <div className="relative max-w-md">
+            <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={billingSearch}
+              onChange={(event) => setBillingSearch(event.target.value)}
+              placeholder="원생명, 수업반, 이용권 검색"
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
+
           {/* Always render table structure so column headers show even when empty */}
           <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
             <div className="overflow-x-auto">
@@ -1140,8 +1243,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                         <span className="text-xs font-bold text-slate-400 block mt-2">청구 대상 목록 조회 중...</span>
                       </td>
                     </tr>
-                  ) : billingTargetStudents.length > 0 ? (
-                    billingTargetStudents.map((student) => {
+                  ) : visibleBillingTargetStudents.length > 0 ? (
+                    visibleBillingTargetStudents.map((student) => {
                       const alreadyBilled = isStudentAlreadyBilled(student);
                       const studentStates = student.packages.map((target) => {
                         if (target.hasTargetMonthPackage) return 'renewed';
@@ -1294,7 +1397,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   ) : (
                     <tr>
                       <td colSpan={12} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
-                        배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!
+                        {billingSearch ? '검색 조건에 맞는 청구 대상이 없습니다.' : '배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!'}
                       </td>
                     </tr>
                   )}
@@ -1353,6 +1456,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               >
                 미납
               </button>
+            </div>
+
+            <div className="relative min-w-[240px] flex-1 max-w-sm">
+              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={invoiceSearch}
+                onChange={(event) => setInvoiceSearch(event.target.value)}
+                placeholder="원생명, 수업반, 이용권 검색"
+                className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
