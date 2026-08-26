@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { 
-  Bell, Plus, Pencil, Trash2, Search, Loader2, Sparkles, 
-  Send, Pin, Home, Building2, Eye, X, CheckCircle2, AlertCircle, RefreshCw
+  Bell, Plus, Pencil, Trash2, Search, Loader2,
+  Send, Pin, Home, Building2, Eye, X, CheckCircle2, RefreshCw
 } from 'lucide-react';
 
 interface Notice {
@@ -12,6 +12,7 @@ interface Notice {
   is_important: boolean;
   is_on_home: boolean;
   author_name: string | null;
+  author_badge: string | null;
   author_id: string | null;
   branch_id: string | null;
   created_at: string;
@@ -143,6 +144,10 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
     let noticeSaved = false;
     try {
       const { data: authData } = await supabase.auth.getUser();
+      const realName = profile?.name?.trim()
+        || authData?.user?.user_metadata?.name?.trim()
+        || authData?.user?.email?.split('@')[0]
+        || '관리자';
       const getBadgeName = () => {
         if (profile?.role === 'admin') return '관리자';
         if (profile?.role === 'director') return '원장';
