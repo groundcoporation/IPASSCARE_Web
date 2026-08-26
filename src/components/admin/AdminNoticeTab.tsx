@@ -114,67 +114,22 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
     setIsDetailOpen(true);
   };
 
-  // Push notification sender to parents
-  const sendPushToAppUsers = async (branchIdTarget: string | null, noticeTitle: string, noticeBody: string, noticeId: string) => {
-    try {
-      let userQuery = supabase.from('users').select('id, push_token');
-      if (branchIdTarget) {
-        userQuery = userQuery.eq('branch_id', branchIdTarget);
+  const sendPushToAppUsers = async (noticeId: string) => {
+    const { data, error } = await supabase.functions.invoke('send-notice-push', {
+      body: { noticeId },
+    });
+    if (error) {
+      let detail = error.message || '공지 푸시 발송에 실패했습니다.';
+      try {
+        const errorBody = await (error as any)?.context?.json?.();
+        detail = errorBody?.error || detail;
+      } catch {
+        // 응답 본문을 읽지 못하면 Supabase 기본 오류 메시지를 사용합니다.
       }
-      userQuery = userQuery.not('push_token', 'is', null);
-
-      const { data: targetUsers, error } = await userQuery;
-      if (error || !targetUsers || targetUsers.length === 0) {
-        console.log('No push token users found for target branch');
-        return;
-      }
-
-      // 1. Insert DB notifications
-      const notiRows = targetUsers.map(u => ({
-        user_id: u.id,
-        title: `📢 신규 공지: ${noticeTitle.trim()}`,
-        message: noticeBody.substring(0, 80),
-        type: 'notice',
-        notice_id: noticeId,
-        is_read: false,
-        created_at: new Date().toISOString(),
-      }));
-
-      await supabase.from('notifications').insert(notiRows);
-
-      // 2. Expo Push API Call
-      const validTokens = targetUsers
-        .filter(u => u.push_token && u.push_token.startsWith('ExponentPushToken'))
-        .map(u => u.push_token);
-
-      if (validTokens.length > 0) {
-        const pushMessages = validTokens.map(token => ({
-          to: token,
-          sound: 'default',
-          title: `📢 신규 공지: ${noticeTitle.trim()}`,
-          body: noticeBody.trim(),
-          data: { type: 'notice', relatedId: noticeId },
-          priority: 'high',
-          channelId: 'default',
-          android: { 
-            channelId: 'default',
-            priority: 'high',
-          },
-        }));
-
-        await fetch('https://exp.host/--/api/v2/push/send', {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Accept-encoding': 'gzip, deflate',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(pushMessages),
-        });
-      }
-    } catch (e) {
-      console.error('Push notification delivery error:', e);
+      throw new Error(detail);
     }
+    if (!data?.success) throw new Error(data?.error || '공지 푸시 발송에 실패했습니다.');
+    return data as { targetCount: number; sentCount: number; failedCount: number };
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -185,6 +140,7 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
     }
 
     setSaveLoading(true);
+    let noticeSaved = false;
     try {
       const { data: authData } = await supabase.auth.getUser();
       const realName = profile?.name || '관리자';
@@ -217,17 +173,26 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
         if (error) throw error;
         savedId = data.id;
       }
+      noticeSaved = true;
 
-      // Send push notification if requested on create
+      let pushResult: { targetCount: number; sentCount: number; failedCount: number } | null = null;
       if (!editingId && isSendNotification && savedId) {
-        void sendPushToAppUsers(targetBranchId, title, content, savedId);
+        pushResult = await sendPushToAppUsers(savedId);
       }
 
-      alert(editingId ? '공지사항이 수정되었습니다.' : '공지사항이 등록되었으며, 학부모 어플에 즉시 반영되었습니다!');
+      if (editingId) {
+        alert('공지사항이 수정되었습니다.');
+      } else if (pushResult) {
+        alert(`공지사항이 등록되었습니다.\n푸시 요청 성공 ${pushResult.sentCount}명 / 실패 ${pushResult.failedCount}명`);
+      } else {
+        alert('공지사항이 등록되어 학부모 앱 공지 목록에 반영되었습니다.');
+      }
       setIsModalOpen(false);
       loadNotices();
     } catch (err: any) {
-      alert(`공지 저장 실패: ${err.message || '알 수 없는 오류'}`);
+      alert(noticeSaved
+        ? `공지는 저장되었지만 푸시 발송에 실패했습니다: ${err.message || '알 수 없는 오류'}`
+        : `공지 저장 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSaveLoading(false);
     }
@@ -529,7 +494,9 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
                   >
                     <option value="all">🌐 전체 지점 공통 (모든 학부모)</option>
                     {branches.map(b => (
-                      <option key={b.id} value={b.id}>🏢 {b.name}</option>
+                      <option key={b.id} value={b.id}>
+                        {b.id === 'unassigned' ? '⚠️ 미정 (소속 없는 회원만)' : `🏢 ${b.name}`}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -538,6 +505,28 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
                   <Building2 size={15} />
                   <span>우리 학원 지점 전용 공지로 등록됩니다.</span>
                 </div>
+              )}
+
+              {/* Push Notification Trigger (Create mode only) */}
+              {!editingId && (
+                <label className={`p-3.5 rounded-2xl border flex items-center justify-between cursor-pointer transition ${
+                  isSendNotification ? 'bg-indigo-50 border-indigo-300 text-indigo-900' : 'bg-white border-indigo-200 text-slate-700'
+                }`}>
+                  <div className="space-y-0.5 pr-3">
+                    <b className="text-xs font-black flex items-center gap-1.5 text-indigo-700">
+                      <Send size={13} /> 앱 Push 알림 함께 발송
+                    </b>
+                    <span className="text-[10.5px] text-slate-500 block">
+                      체크하면 공지 등록과 동시에 대상 학부모 스마트폰으로 알림을 보냅니다.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={isSendNotification}
+                    onChange={(e) => setIsSendNotification(e.target.checked)}
+                    className="rounded text-indigo-600 focus:ring-indigo-500 w-5 h-5 shrink-0"
+                  />
+                </label>
               )}
 
               {/* Title Input */}
@@ -602,28 +591,6 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
                   />
                 </label>
               </div>
-
-              {/* Push Notification Trigger (Create mode only) */}
-              {!editingId && (
-                <label className={`p-3.5 rounded-2xl border flex items-center justify-between cursor-pointer transition ${
-                  isSendNotification ? 'bg-indigo-50 border-indigo-200 text-indigo-900' : 'bg-slate-50 border-slate-200 text-slate-700'
-                }`}>
-                  <div className="space-y-0.5">
-                    <b className="text-xs font-black flex items-center gap-1.5 text-indigo-700">
-                      <Send size={13} /> Push 알림 발송
-                    </b>
-                    <span className="text-[10.5px] text-slate-500 block">
-                      등록과 동시에 대상 학부모 스마트폰으로 실시간 알림을 보냅니다.
-                    </span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={isSendNotification}
-                    onChange={(e) => setIsSendNotification(e.target.checked)}
-                    className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
-                  />
-                </label>
-              )}
 
               <div className="p-4 border-t border-slate-100 flex items-center justify-end gap-2 pt-4">
                 <button
