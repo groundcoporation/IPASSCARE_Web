@@ -16,6 +16,7 @@ export interface WithdrawalRecord {
   reason: string;
   reason_detail?: string | null;
   source: 'app' | 'admin';
+  event_type?: 'academy_withdrawal' | 'account_withdrawal' | null;
   package_name?: string | null;
   paid_amount?: number;
   total_count?: number;
@@ -26,6 +27,8 @@ export interface WithdrawalRecord {
   refund_memo?: string | null;
   refunded_at?: string | null;
   created_at: string;
+  /** user_withdrawals에 실제 저장된 행인지, 기존 앱 삭제 상태를 복원한 조회용 행인지 구분 */
+  is_inferred?: boolean;
 }
 
 interface Student {
@@ -74,6 +77,16 @@ interface Student {
     remaining_count: number;
     price?: number;
   } | null;
+}
+
+interface UnregisteredMember {
+  id: string;
+  name: string;
+  username: string | null;
+  email: string | null;
+  phone: string | null;
+  branch_id: string | null;
+  created_at: string;
 }
 
 interface ClassSchedule {
@@ -154,10 +167,12 @@ interface AdminStudentTabProps {
 
 export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId, branches }) => {
   const [students, setStudents] = useState<Student[]>([]);
+  const [unregisteredMembers, setUnregisteredMembers] = useState<UnregisteredMember[]>([]);
   const [classes, setClasses] = useState<ClassSchedule[]>([]);
   const [packageOptions, setPackageOptions] = useState<PackageOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [assignedClassOnly, setAssignedClassOnly] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [excelLoading, setExcelLoading] = useState(false);
 
@@ -187,7 +202,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [currentEditingStudent, setCurrentEditingStudent] = useState<Student | null>(null);
 
   // 🚀 Top View Tab: 'active' (재원생 명부) | 'withdrawn' (퇴원·탈퇴 회원)
-  const [viewTab, setViewTab] = useState<'active' | 'withdrawn'>('active');
+  const [viewTab, setViewTab] = useState<'active' | 'unregistered' | 'withdrawn'>('active');
   const [withdrawals, setWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [withdrawalLoading, setWithdrawalLoading] = useState(false);
   const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalRecord | null>(null);
@@ -233,19 +248,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       );
       setPackageOptions(flattenedOptions);
 
-      // 3. Load students from academy_students, children, and users
+      // 3. Load actual students from academy_students and children.
+      // Registered users without a child belong in member management, not the student roster.
       let studentsQuery = supabase.from('academy_students').select(`
         *,
         parent_user:users(name, email, status, phone, branch_id),
-        child:children(deleted_at, back_number, branch_id),
-        academy_student_classes(
-          class_schedule_id,
-          package_option_id,
-          billing_cycle,
-          payment_day,
-          status,
-          class_schedules(target_class)
-        )
+        child:children(deleted_at, back_number, branch_id)
       `);
       if (activeBranchId && activeBranchId !== 'all') {
         studentsQuery = studentsQuery.eq('branch_id', activeBranchId);
@@ -259,7 +267,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         childrenQuery = childrenQuery.eq('branch_id', activeBranchId);
       }
 
-      let usersQuery = supabase.from('users').select('id, name, phone, email, status, role, branch_id, created_at').neq('status', 'deleted');
+      let usersQuery = supabase
+        .from('users')
+        .select('id, name, username, email, phone, status, role, branch_id, created_at')
+        .neq('status', 'deleted');
       if (activeBranchId && activeBranchId !== 'all') {
         usersQuery = usersQuery.eq('branch_id', activeBranchId);
       }
@@ -270,9 +281,45 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         usersQuery,
       ]);
 
+      if (studentsResult.error) throw studentsResult.error;
+      if (childrenResult.error) throw childrenResult.error;
+      if (usersResult.error) throw usersResult.error;
+
       const rawAcademyStudents = (studentsResult.data || []) as any[];
       const rawChildren = (childrenResult.data || []) as any[];
       const rawUsers = (usersResult.data || []) as any[];
+
+      // Keep the base academy_students query independent from class joins.
+      // A broken/ambiguous nested relationship must not make the entire student list disappear.
+      const academyStudentIds = rawAcademyStudents.map((student) => student.id).filter(Boolean);
+      const studentClassesByStudent = new Map<string, Student['academy_student_classes']>();
+      if (academyStudentIds.length > 0) {
+        const { data: studentClassesData, error: studentClassesError } = await supabase
+          .from('academy_student_classes')
+          .select('student_id, class_schedule_id, package_option_id, billing_cycle, payment_day, status')
+          .in('student_id', academyStudentIds);
+
+        if (studentClassesError) throw studentClassesError;
+
+        const classesById = new Map((classesData || []).map((schedule: any) => [schedule.id, schedule]));
+        ((studentClassesData || []) as any[]).forEach((assignment) => {
+          const current = studentClassesByStudent.get(assignment.student_id) || [];
+          const schedule = assignment.class_schedule_id
+            ? classesById.get(assignment.class_schedule_id) || null
+            : null;
+          current.push({
+            class_schedule_id: assignment.class_schedule_id,
+            package_option_id: assignment.package_option_id,
+            billing_cycle: assignment.billing_cycle,
+            payment_day: assignment.payment_day,
+            status: assignment.status,
+            class_schedules: schedule
+              ? { target_class: (schedule as ClassSchedule).target_class }
+              : null,
+          });
+          studentClassesByStudent.set(assignment.student_id, current);
+        });
+      }
 
       // Clean attendance code helper (clean 4 digits or back number, NO APP-UUID!)
       const formatCleanAttendanceCode = (code: string | null | undefined, phone: string | null | undefined, backNum: string | null | undefined) => {
@@ -284,7 +331,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       };
 
       const existingChildIds = new Set<string>();
-      const existingParentUserIds = new Set<string>();
 
       // 1. Existing academy_students
       const activeStudents: any[] = rawAcademyStudents
@@ -294,11 +340,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         ))
         .map((student: any) => {
           if (student.child_id) existingChildIds.add(student.child_id);
-          if (student.parent_user_id) existingParentUserIds.add(student.parent_user_id);
           const cleanPhone = student.mother_phone || student.father_phone || student.student_phone || student.parent_user?.phone;
           return {
             ...student,
             attendance_code: formatCleanAttendanceCode(student.attendance_code, cleanPhone, student.child?.back_number),
+            academy_student_classes: studentClassesByStudent.get(student.id) || [],
           };
         });
 
@@ -307,7 +353,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         if (existingChildIds.has(child.id)) return;
         if (child.parent && child.parent.status === 'deleted') return;
         existingChildIds.add(child.id);
-        if (child.parent_id) existingParentUserIds.add(child.parent_id);
 
         const parentPhone = child.parent?.phone || '';
         activeStudents.push({
@@ -332,34 +377,25 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         });
       });
 
-      // 3. Add any registered parents without children yet
-      rawUsers.forEach((user: any) => {
-        if (['admin', 'teacher', 'coach', 'driver'].includes(user.role)) return;
-        if (existingParentUserIds.has(user.id)) return;
-        existingParentUserIds.add(user.id);
-
-        const cleanPhone = user.phone || '';
-        activeStudents.push({
-          id: `user-${user.id}`,
-          student_name: `${user.name || '회원'} (자녀 미등록)`,
-          attendance_code: formatCleanAttendanceCode(null, cleanPhone, null),
-          mother_phone: cleanPhone,
-          father_phone: '',
-          student_phone: '',
-          school_name: '',
-          grade_level: '',
-          admission_date: user.created_at?.slice(0, 10) || '',
-          notes: '앱 가입 (자녀 정보 미등록)',
-          parent_name: user.name || '',
-          parent_user_id: user.id,
-          child_id: null,
-          branch_id: user.branch_id || activeBranchId || 'branch_1',
-          created_at: user.created_at || new Date().toISOString(),
-          parent_user: { name: user.name, email: user.email, status: user.status },
-          child: null,
-          academy_student_classes: [],
-        });
+      const usersWithStudents = new Set<string>();
+      rawAcademyStudents.forEach((student: any) => {
+        if (student.parent_user_id) usersWithStudents.add(student.parent_user_id);
       });
+      rawChildren.forEach((child: any) => {
+        if (child.parent_id) usersWithStudents.add(child.parent_id);
+      });
+      setUnregisteredMembers(rawUsers
+        .filter((user: any) => user.role === 'user' && !usersWithStudents.has(user.id))
+        .map((user: any) => ({
+          id: user.id,
+          name: user.name || '이름 미등록',
+          username: user.username || null,
+          email: user.email || null,
+          phone: user.phone || null,
+          branch_id: user.branch_id || null,
+          created_at: user.created_at,
+        }))
+        .sort((left: UnregisteredMember, right: UnregisteredMember) => left.name.localeCompare(right.name, 'ko-KR')));
 
       const childIds = activeStudents.map((student: any) => student.child_id).filter(Boolean);
       
@@ -397,10 +433,101 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       if (activeBranchId && activeBranchId !== 'all') {
         query = query.eq('branch_id', activeBranchId);
       }
-      const { data, error } = await query;
-      if (!error && data) {
-        setWithdrawals(data as WithdrawalRecord[]);
+      let deletedUsersQuery = supabase
+        .from('users')
+        .select('id, name, phone, email, branch_id, created_at')
+        .eq('status', 'deleted');
+      let academyStudentsQuery = supabase
+        .from('academy_students')
+        .select('id, parent_user_id, child_id, branch_id, student_name, parent_name, attendance_code, mother_phone, father_phone, student_phone');
+
+      if (activeBranchId && activeBranchId !== 'all') {
+        deletedUsersQuery = deletedUsersQuery.eq('branch_id', activeBranchId);
+        academyStudentsQuery = academyStudentsQuery.eq('branch_id', activeBranchId);
       }
+
+      const [withdrawalResult, deletedUsersResult, academyStudentsResult] = await Promise.all([
+        query,
+        deletedUsersQuery,
+        academyStudentsQuery,
+      ]);
+
+      if (withdrawalResult.error) throw withdrawalResult.error;
+      if (deletedUsersResult.error) throw deletedUsersResult.error;
+      if (academyStudentsResult.error) throw academyStudentsResult.error;
+
+      const stored = (withdrawalResult.data || []) as WithdrawalRecord[];
+      const students = (academyStudentsResult.data || []) as any[];
+      const studentsByParent = new Map<string, any[]>();
+      students.forEach((row) => {
+        if (!row.parent_user_id) return;
+        const rows = studentsByParent.get(row.parent_user_id) || [];
+        rows.push(row);
+        studentsByParent.set(row.parent_user_id, rows);
+      });
+
+      const storedChildIds = new Set(stored.map((row) => row.child_id).filter(Boolean));
+      const storedAccountUserIds = new Set(
+        stored.filter((row) => !row.child_id).map((row) => row.user_id).filter(Boolean),
+      );
+      const inferred: WithdrawalRecord[] = [];
+
+      // 앱 회원탈퇴는 users 행을 익명화하고 status만 deleted로 남긴다.
+      for (const user of deletedUsersResult.data || []) {
+        if (storedAccountUserIds.has(user.id)) continue;
+        const linkedStudents = studentsByParent.get(user.id) || [];
+        const emailTimestamp = typeof user.email === 'string'
+          ? user.email.match(/^deleted_(\d+)@unknown\.com$/)?.[1]
+          : undefined;
+        const deletedAt = emailTimestamp
+          ? new Date(Number(emailTimestamp)).toISOString()
+          : user.created_at;
+
+        const visibleStudents = linkedStudents.filter((student) => !storedChildIds.has(student.child_id));
+        if (visibleStudents.length > 0) {
+          visibleStudents.forEach((student) => {
+            inferred.push({
+              id: `deleted-user:${user.id}:${student.child_id || student.id}`,
+              user_id: user.id,
+              user_name: student.parent_name || '탈퇴한 사용자',
+              phone: student.mother_phone || student.father_phone || student.student_phone || null,
+              child_id: student.child_id || null,
+              child_name: student.student_name || '원생 미지정',
+              attendance_code: student.attendance_code || null,
+              branch_id: student.branch_id || user.branch_id || null,
+              reason: '앱 회원 탈퇴',
+              source: 'app',
+              event_type: 'account_withdrawal',
+              refund_status: 'none',
+              created_at: deletedAt,
+              is_inferred: true,
+            });
+            if (student.child_id) storedChildIds.add(student.child_id);
+          });
+        } else {
+          inferred.push({
+            id: `deleted-user:${user.id}`,
+            user_id: user.id,
+            user_name: '탈퇴한 사용자',
+            phone: null,
+            child_id: null,
+            child_name: null,
+            attendance_code: null,
+            branch_id: user.branch_id || null,
+            reason: '앱 회원 탈퇴',
+            source: 'app',
+            event_type: 'account_withdrawal',
+            refund_status: 'none',
+            created_at: deletedAt,
+            is_inferred: true,
+          });
+        }
+        storedAccountUserIds.add(user.id);
+      }
+
+      setWithdrawals([...stored, ...inferred].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      ));
     } catch (err) {
       console.warn('Error loading withdrawals:', err);
     } finally {
@@ -496,6 +623,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         branch_id: student.branch_id,
         reason: reason || '수강 종료 / 일정 종료',
         source: 'admin',
+        event_type: 'academy_withdrawal',
         package_name: pkgInfo?.package_name || null,
         paid_amount: pkgInfo?.price || 0,
         total_count: totalCount,
@@ -986,8 +1114,23 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
   };
 
-  // Filter students based on search query
+  const hasAssignedClass = (student: Student) => {
+    if (student.child_id) {
+      return (student.app_schedule_classes || []).length > 0;
+    }
+
+    return (student.academy_student_classes || []).some((assignment) => (
+      (assignment.status || 'active') === 'active'
+      && Boolean(assignment.class_schedule_id)
+    ));
+  };
+
+  const assignedClassStudentCount = students.filter(hasAssignedClass).length;
+
+  // Filter students based on class assignment and search query
   const filteredStudents = students.filter(student => {
+    if (assignedClassOnly && !hasAssignedClass(student)) return false;
+
     const query = searchQuery.toLowerCase().trim();
     if (!query) return true;
     
@@ -1018,6 +1161,16 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       (item.attendance_code && item.attendance_code.includes(query)) ||
       (item.reason && item.reason.toLowerCase().includes(query)) ||
       (item.package_name && item.package_name.toLowerCase().includes(query))
+    );
+  });
+  const filteredUnregisteredMembers = unregisteredMembers.filter((member) => {
+    const query = searchQuery.toLowerCase().trim();
+    if (!query) return true;
+    return (
+      member.name.toLowerCase().includes(query)
+      || (member.username || '').toLowerCase().includes(query)
+      || (member.email || '').toLowerCase().includes(query)
+      || (member.phone || '').includes(query)
     );
   });
 
@@ -1093,8 +1246,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         )}
       </div>
 
-      {/* 🚀 상단 탭 전환: [ 🟢 재원생 명부 ] vs [ 🔴 퇴원 · 탈퇴 회원 ] */}
-      <div className="flex items-center gap-2 border-b border-slate-200/80 pb-3">
+      {/* Student, childless member, and withdrawal views */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200/80 pb-3">
         <button
           onClick={() => setViewTab('active')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
@@ -1109,6 +1262,23 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             viewTab === 'active' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
           }`}>
             {students.length}명
+          </span>
+        </button>
+
+        <button
+          onClick={() => setViewTab('unregistered')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
+            viewTab === 'unregistered'
+              ? 'bg-amber-500 text-white shadow-sm'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          <span className="h-2 w-2 rounded-full bg-amber-300"></span>
+          <span>자녀 미등록 회원</span>
+          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+            viewTab === 'unregistered' ? 'bg-amber-600 text-white' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {unregisteredMembers.length}명
           </span>
         </button>
 
@@ -1130,16 +1300,43 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </button>
       </div>
 
-      {/* Toolbar Search */}
-      <div className="relative">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-        <input 
-          type="text"
-          placeholder={viewTab === 'active' ? "학생·보호자 이름, 연락처, 소속반, 학교명으로 검색..." : "퇴원/탈퇴 원생·학부모 이름, 연락처, 사유로 검색..."}
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full rounded-2xl bg-slate-100 py-3.5 pl-11 pr-4 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-        />
+      {/* Toolbar Search & Filters */}
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+        <div className="relative min-w-0 flex-1">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input 
+            type="text"
+            placeholder={viewTab === 'active'
+              ? '학생·보호자 이름, 연락처, 소속반, 학교명으로 검색...'
+              : viewTab === 'unregistered'
+                ? '회원 이름, 아이디, 연락처, 이메일로 검색...'
+                : '퇴원/탈퇴 원생·학부모 이름, 연락처, 사유로 검색...'}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full rounded-2xl bg-slate-100 py-3.5 pl-11 pr-4 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        {viewTab === 'active' && (
+          <button
+            type="button"
+            aria-pressed={assignedClassOnly}
+            onClick={() => setAssignedClassOnly((current) => !current)}
+            className={`flex shrink-0 items-center justify-center gap-2 rounded-2xl px-4 py-3.5 text-xs font-black transition ${
+              assignedClassOnly
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            <CheckCircle size={16} />
+            수업 반 지정
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${
+              assignedClassOnly ? 'bg-blue-700 text-white' : 'bg-white text-slate-600'
+            }`}>
+              {assignedClassStudentCount}명
+            </span>
+          </button>
+        )}
       </div>
 
       {/* 🟢 VIEW 1: 재원생 명부 테이블 */}
@@ -1283,7 +1480,52 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </div>
       )}
 
-      {/* 🔴 VIEW 2: 퇴원 · 탈퇴 회원 관리 테이블 */}
+      {/* 🟠 VIEW 2: 자녀 미등록 회원 */}
+      {viewTab === 'unregistered' && (
+        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
+          <div className="border-b border-amber-100 bg-amber-50/60 px-6 py-4">
+            <p className="text-xs font-bold text-amber-800">
+              앱에는 가입했지만 현재 등록된 자녀가 없는 일반 회원입니다. 재원생 수에는 포함되지 않습니다.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm text-slate-500">
+              <thead className="border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-700">
+                <tr className="whitespace-nowrap">
+                  <th scope="col" className="px-6 py-4">회원 이름</th>
+                  <th scope="col" className="px-6 py-4">아이디</th>
+                  <th scope="col" className="px-6 py-4">연락처</th>
+                  <th scope="col" className="px-6 py-4">이메일</th>
+                  <th scope="col" className="px-6 py-4">소속 지점</th>
+                  <th scope="col" className="px-6 py-4">가입일</th>
+                  <th scope="col" className="px-6 py-4">상태</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {loading ? (
+                  <tr><td colSpan={7} className="py-16 text-center"><Loader2 className="mx-auto animate-spin text-amber-500" size={24} /></td></tr>
+                ) : filteredUnregisteredMembers.length > 0 ? (
+                  filteredUnregisteredMembers.map((member) => (
+                    <tr key={member.id} className="hover:bg-amber-50/20">
+                      <td className="px-6 py-4 font-extrabold text-slate-900">{member.name}</td>
+                      <td className="px-6 py-4 font-mono text-xs font-bold text-slate-600">{member.username || '-'}</td>
+                      <td className="px-6 py-4 font-mono text-xs font-bold text-slate-700">{member.phone || '-'}</td>
+                      <td className="px-6 py-4 text-xs font-semibold text-slate-600">{member.email || '-'}</td>
+                      <td className="px-6 py-4 text-xs font-bold text-slate-700">{branches.find((branch) => branch.id === member.branch_id)?.name || '미정'}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-xs font-semibold text-slate-700">{member.created_at ? member.created_at.slice(0, 10).replace(/-/g, '.') : '-'}</td>
+                      <td className="px-6 py-4"><span className="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">자녀 미등록</span></td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr><td colSpan={7} className="bg-slate-50/10 py-20 text-center text-sm font-bold text-slate-400">해당하는 자녀 미등록 회원이 없습니다.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 🔴 VIEW 3: 퇴원 · 탈퇴 회원 관리 테이블 */}
       {viewTab === 'withdrawn' && (
         <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
@@ -1310,7 +1552,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 ) : filteredWithdrawals.length > 0 ? (
                   filteredWithdrawals.map((item) => {
                     const formattedDate = item.created_at ? item.created_at.slice(0, 16).replace('T', ' ') : '-';
-                    const isAppWithdrawal = item.source === 'app';
+                    const isAccountWithdrawal = item.event_type === 'account_withdrawal'
+                      || (!item.event_type && item.source === 'app');
                     
                     return (
                       <tr key={item.id} className="hover:bg-rose-50/20 transition">
@@ -1336,13 +1579,13 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="flex flex-col gap-1">
                             <span className="text-xs font-semibold text-slate-700 font-mono">{formattedDate}</span>
-                            {isAppWithdrawal ? (
+                            {isAccountWithdrawal ? (
                               <span className="inline-flex items-center gap-1 text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100 w-fit">
-                                📱 앱 직접 탈퇴
+                                📱 회원 탈퇴
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-full border border-slate-200 w-fit">
-                                🏫 학원 퇴원 처리
+                                🏫 학원 퇴원
                               </span>
                             )}
                           </div>
@@ -1399,13 +1642,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                           )}
                         </td>
                         <td className="px-6 py-4 text-right whitespace-nowrap">
-                          <button
-                            onClick={() => openRefundModal(item)}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl transition shadow-2xs"
-                          >
-                            <CreditCard size={13} />
-                            <span>환불 처리</span>
-                          </button>
+                          {item.is_inferred ? (
+                            <span className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded-xl">
+                              조회 기록
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => openRefundModal(item)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl transition shadow-2xs"
+                            >
+                              <CreditCard size={13} />
+                              <span>환불 처리</span>
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
