@@ -27,7 +27,7 @@ type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
 type PaymentOrderItem = { package_id?: string | null; option_id?: string | null; quantity?: number | null };
 type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; order_items?: PaymentOrderItem[] | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[]; isIpointCharge?: boolean };
-type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[] };
+type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[]; withdrawalStatus?: 'pending' | 'completed' | null };
 type ClassSchedule = { id: string; branch_id: string | null; target_class: string; day_of_week: string; start_time: string; end_time: string; max_people: number | null; branches: { name: string } | null };
 type ScheduleReservation = { id: string; schedule_id: string; class_date: string; status: string | null; attendance_status: string | null; child_id: string | null; user_id: string | null; children: { child_name: string | null } | null; users: { name: string | null; phone: string | null } | null };
 
@@ -616,31 +616,57 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id,deleted_at").order("child_name");
       let packagesQuery = supabase.from("user_packages").select("id,user_id,child_id,child_name,package_name,total_count,remaining_count,status,voucher_type,branch_id").or("voucher_type.is.null,voucher_type.neq.shuttle").order("created_at", { ascending: false });
       let logsQuery = supabase.from("attendance_logs").select("child_id,date,status,check_in").gte("date", period.from).lte("date", period.to).not("check_in", "is", null);
+      let withdrawalsQuery = supabase.from("user_withdrawals").select("id,child_id,user_id,child_name,user_name,refund_status");
+
       const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) {
         childrenQuery = childrenQuery.eq("branch_id", selectedBranch);
         packagesQuery = packagesQuery.eq("branch_id", selectedBranch);
         logsQuery = logsQuery.eq("branch_id", selectedBranch);
+        withdrawalsQuery = withdrawalsQuery.eq("branch_id", selectedBranch);
       }
-      const [childResult, packageResult, logResult] = await Promise.all([childrenQuery, packagesQuery, logsQuery]);
+      const [childResult, packageResult, logResult, withdrawalsResult] = await Promise.all([childrenQuery, packagesQuery, logsQuery, withdrawalsQuery]);
       if (childResult.error) throw childResult.error;
       if (packageResult.error) throw packageResult.error;
       if (logResult.error) throw logResult.error;
       const children = childResult.data ?? [];
       const packages = packageResult.data ?? [];
+      const withdrawals = (withdrawalsResult.data ?? []) as any[];
+
+      const withdrawalByChild = new Map<string, any>();
+      const withdrawalByUser = new Map<string, any>();
+      withdrawals.forEach((w: any) => {
+        if (w.child_id) withdrawalByChild.set(w.child_id, w);
+        if (w.user_id) withdrawalByUser.set(w.user_id, w);
+      });
+
       const parentIds = [...new Set(children.map((child: any) => child.parent_id).filter(Boolean))];
       const packageIds = packages.map((item: any) => item.id);
       const [parentResult, usageResult] = await Promise.all([
-        parentIds.length ? supabase.from("users").select("id,name").in("id", parentIds).neq("status", "deleted") : Promise.resolve({ data: [], error: null }),
+        parentIds.length ? supabase.from("users").select("id,name,status").in("id", parentIds) : Promise.resolve({ data: [], error: null }),
         packageIds.length ? supabase.from("package_usage_logs").select("user_package_id,child_id,quantity,consumed_at,reservations(class_date,attendance_status,deleted_at)").in("user_package_id", packageIds).eq("status", "consumed") : Promise.resolve({ data: [], error: null }),
       ]);
       if (parentResult.error) throw parentResult.error;
       if (usageResult.error) throw usageResult.error;
       const parents = new Map((parentResult.data ?? []).map((item: any) => [item.id, item.name]));
-      const visibleChildren = children.filter((child: any) => (
-        (!child.parent_id || parents.has(child.parent_id))
-        && isBeforeChildDeletion(period.from, child.deleted_at)
-      ));
+      const parentStatuses = new Map((parentResult.data ?? []).map((item: any) => [item.id, item.status]));
+
+      const visibleChildren = children.filter((child: any) => {
+        const wInfo = withdrawalByChild.get(child.id) || (child.parent_id ? withdrawalByUser.get(child.parent_id) : null);
+        if (wInfo) {
+          // 🎯 환불완료되었거나 환불없음이면 출결조회에서 깔끔하게 제외!
+          if (wInfo.refund_status === 'completed' || wInfo.refund_status === 'none') {
+            return false;
+          }
+          // 🎯 환불 대기 중이면 원장님이 출결 도장과 잔여횟수를 크로스체크할 수 있도록 장부에 유지!
+          return true;
+        }
+
+        const parentStatus = child.parent_id ? parentStatuses.get(child.parent_id) : null;
+        if (parentStatus === 'deleted') return false;
+        return isBeforeChildDeletion(period.from, child.deleted_at);
+      });
+
       const packageMap = new Map<string, any[]>();
       packages.forEach((item: any) => item.child_id && packageMap.set(item.child_id, [...(packageMap.get(item.child_id) ?? []), item]));
       const legacy = new Map<string, string[]>();
@@ -656,17 +682,47 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         for (let index = 0; index < Math.max(1, item.quantity ?? 1); index += 1) dates.push(date);
         usage.set(item.user_package_id, dates);
       });
+
       const rows: AttendanceRow[] = [];
       visibleChildren.forEach((child: any) => {
+        const wInfo = withdrawalByChild.get(child.id) || (child.parent_id ? withdrawalByUser.get(child.parent_id) : null);
+        const withdrawalStatus = wInfo?.refund_status === 'pending' ? 'pending' : null;
+
         const items = packageMap.get(child.id) ?? [];
-        if (!items.length) rows.push({ id: `child-${child.id}`, childId: child.id, childName: child.child_name ?? "이름 없음", parentName: parents.get(child.parent_id) ?? "-", packageName: "이용권 없음", weekly: null, total: 0, used: 0, remaining: 0, dates: [] });
+        if (!items.length) {
+          rows.push({ 
+            id: `child-${child.id}`, 
+            childId: child.id, 
+            childName: child.child_name ?? "이름 없음", 
+            parentName: parents.get(child.parent_id) ?? "-", 
+            packageName: "이용권 없음", 
+            weekly: null, 
+            total: 0, 
+            used: 0, 
+            remaining: 0, 
+            dates: [],
+            withdrawalStatus
+          });
+        }
         items.forEach((item: any) => {
           let dates = [...(usage.get(item.id) ?? [])].sort();
           if (!dates.length && items.length === 1) dates = [...(legacy.get(child.id) ?? [])].sort();
           dates = dates.filter((date) => isBeforeChildDeletion(date, child.deleted_at));
           const total = Math.min(MAX_SLOTS, item.total_count ?? 0);
           const used = Math.min(MAX_SLOTS, Math.max((item.total_count ?? 0) - (item.remaining_count ?? 0), dates.length));
-          rows.push({ id: item.id, childId: child.id, childName: child.child_name ?? item.child_name ?? "이름 없음", parentName: parents.get(child.parent_id) ?? "-", packageName: item.package_name ?? "수업권", weekly: weeklyCount(item.package_name), total, used, remaining: Math.max(0, item.remaining_count ?? total - used), dates: dates.slice(0, MAX_SLOTS) });
+          rows.push({ 
+            id: item.id, 
+            childId: child.id, 
+            childName: child.child_name ?? item.child_name ?? "이름 없음", 
+            parentName: parents.get(child.parent_id) ?? "-", 
+            packageName: item.package_name ?? "수업권", 
+            weekly: weeklyCount(item.package_name), 
+            total, 
+            used, 
+            remaining: Math.max(0, item.remaining_count ?? total - used), 
+            dates: dates.slice(0, MAX_SLOTS),
+            withdrawalStatus
+          });
         });
       });
       setAttendance(rows);
@@ -3032,8 +3088,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {shownAttendance.map((row) => (
-                        <tr key={row.id} className="hover:bg-blue-50/30">
-                          <Td sticky><div><b className="text-sm">{row.childName}</b></div><p className="mt-1 text-[11px] text-slate-400">보호자 {row.parentName}</p></Td>
+                        <tr key={row.id} className={`hover:bg-blue-50/30 ${row.withdrawalStatus === 'pending' ? 'bg-amber-50/20' : ''}`}>
+                          <Td sticky>
+                            <div className="flex items-center gap-1.5">
+                              <b className="text-sm">{row.childName}</b>
+                              {row.withdrawalStatus === 'pending' && (
+                                <span className="inline-flex items-center text-[10px] font-black bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full border border-amber-200 shadow-2xs">
+                                  🟡 환불대기
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-400">보호자 {row.parentName}</p>
+                          </Td>
                           <Td><b className="text-[12px]">{row.packageName}</b><p className="mt-1 text-[11px] text-slate-400">{row.total}회권 · 잔여 {row.remaining}회</p></Td>
                           <Td>{row.weekly ? <b>주 {row.weekly}회</b> : "-"}</Td>
                           <Td><b className="text-blue-700">{row.used}</b> / {row.total}</Td>

@@ -1,8 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, RefreshCw, X, CreditCard, LogOut } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
+
+export interface WithdrawalRecord {
+  id: string;
+  user_id?: string | null;
+  user_name?: string | null;
+  phone?: string | null;
+  child_id?: string | null;
+  child_name?: string | null;
+  attendance_code?: string | null;
+  branch_id?: string | null;
+  reason: string;
+  reason_detail?: string | null;
+  source: 'app' | 'admin';
+  package_name?: string | null;
+  paid_amount?: number;
+  total_count?: number;
+  used_count?: number;
+  remaining_count?: number;
+  refund_status: 'pending' | 'completed' | 'none';
+  refund_amount?: number;
+  refund_memo?: string | null;
+  refunded_at?: string | null;
+  created_at: string;
+}
 
 interface Student {
   id: string;
@@ -44,6 +68,12 @@ interface Student {
     } | null;
   }>;
   app_schedule_classes?: ActiveAppSchedule[];
+  active_package?: {
+    package_name: string;
+    total_count: number;
+    remaining_count: number;
+    price?: number;
+  } | null;
 }
 
 interface ClassSchedule {
@@ -154,6 +184,18 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [nextMonthClassDay, setNextMonthClassDay] = useState('전체');
   const [nextMonthPackages, setNextMonthPackages] = useState<ClassAssignment[]>([]);
   const [currentPackageLabels, setCurrentPackageLabels] = useState<string[]>([]);
+  const [currentEditingStudent, setCurrentEditingStudent] = useState<Student | null>(null);
+
+  // 🚀 Top View Tab: 'active' (재원생 명부) | 'withdrawn' (퇴원·탈퇴 회원)
+  const [viewTab, setViewTab] = useState<'active' | 'withdrawn'>('active');
+  const [withdrawals, setWithdrawals] = useState<WithdrawalRecord[]>([]);
+  const [withdrawalLoading, setWithdrawalLoading] = useState(false);
+  const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalRecord | null>(null);
+  const [refundModalOpen, setRefundModalOpen] = useState(false);
+  const [refundStatus, setRefundStatus] = useState<'pending' | 'completed' | 'none'>('pending');
+  const [refundAmount, setRefundAmount] = useState<number>(0);
+  const [refundMemo, setRefundMemo] = useState('');
+  const [refundSaving, setRefundSaving] = useState(false);
 
   // Load students, classes, & package options
   const loadData = async () => {
@@ -167,9 +209,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       const { data: classesData } = await classesQuery;
       setClasses((classesData || []) as ClassSchedule[]);
 
-      // 2. Load every package category with its options. Querying only the
-      // option table made non-lesson products easy to omit when relationship
-      // metadata differed, so the package itself is now the source of truth.
+      // 2. Load every package category with its options
       let packagesQuery = supabase.from('packages').select(`
         id,
         name,
@@ -217,12 +257,26 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         (!student.child_id || student.child?.deleted_at == null)
         && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
       ));
-      const schedulesByChild = await loadActiveAppSchedulesByChild(
-        activeStudents.map((student: any) => student.child_id).filter(Boolean),
-      );
+      const childIds = activeStudents.map((student: any) => student.child_id).filter(Boolean);
+      
+      const [schedulesByChild, pkgsResult] = await Promise.all([
+        loadActiveAppSchedulesByChild(childIds),
+        childIds.length > 0 
+          ? supabase.from('user_packages').select('child_id, package_name, total_count, remaining_count, price').in('child_id', childIds).order('created_at', { ascending: false })
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const pkgsMap = new Map<string, any>();
+      ((pkgsResult.data || []) as any[]).forEach((pkg: any) => {
+        if (!pkgsMap.has(pkg.child_id)) {
+          pkgsMap.set(pkg.child_id, pkg);
+        }
+      });
+
       setStudents(activeStudents.map((student: any) => ({
         ...student,
         app_schedule_classes: student.child_id ? schedulesByChild.get(student.child_id) || [] : undefined,
+        active_package: student.child_id ? pkgsMap.get(student.child_id) || null : null,
       })) as Student[]);
     } catch (err) {
       console.error('Error loading students page data:', err);
@@ -231,9 +285,137 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
   };
 
+  // Load withdrawn/departed records
+  const loadWithdrawals = async () => {
+    setWithdrawalLoading(true);
+    try {
+      let query = supabase.from('user_withdrawals').select('*').order('created_at', { ascending: false });
+      if (activeBranchId && activeBranchId !== 'all') {
+        query = query.eq('branch_id', activeBranchId);
+      }
+      const { data, error } = await query;
+      if (!error && data) {
+        setWithdrawals(data as WithdrawalRecord[]);
+      }
+    } catch (err) {
+      console.warn('Error loading withdrawals:', err);
+    } finally {
+      setWithdrawalLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
+    loadWithdrawals();
   }, [activeBranchId]);
+
+  // Open refund process modal
+  const openRefundModal = (item: WithdrawalRecord) => {
+    setSelectedWithdrawal(item);
+    setRefundStatus(item.refund_status || 'pending');
+    setRefundAmount(item.refund_amount || 0);
+    setRefundMemo(item.refund_memo || '');
+    setRefundModalOpen(true);
+  };
+
+  // Save refund processing
+  const handleSaveRefund = async () => {
+    if (!selectedWithdrawal) return;
+    setRefundSaving(true);
+    try {
+      const payload: any = {
+        refund_status: refundStatus,
+        refund_amount: Number(refundAmount) || 0,
+        refund_memo: refundMemo.trim(),
+      };
+      if (refundStatus === 'completed') {
+        payload.refunded_at = new Date().toISOString();
+      } else if (refundStatus === 'none' || refundStatus === 'pending') {
+        payload.refunded_at = null;
+      }
+      const { error } = await supabase.from('user_withdrawals').update(payload).eq('id', selectedWithdrawal.id);
+      if (error) throw error;
+      alert('환불 정산 정보가 안전하게 저장되었습니다.');
+      setRefundModalOpen(false);
+      loadWithdrawals();
+    } catch (err: any) {
+      alert(`환불 처리 저장 실패: ${err.message || err}`);
+    } finally {
+      setRefundSaving(false);
+    }
+  };
+
+  // Offline departure handler
+  const handleDepartStudent = async (student: Student) => {
+    const reason = prompt(
+      `[${student.student_name}] 원생의 퇴원(이탈) 사유를 선택하거나 입력해주세요:\n\n1. 이사 / 지역 이동\n2. 수강 종료 / 일정 종료\n3. 타 학원 이동\n4. 개인 사정\n\n직접 사유를 입력하셔도 됩니다.`,
+      '수강 종료 / 일정 종료'
+    );
+    if (reason === null) return;
+
+    if (!confirm(`[${student.student_name}] 원생을 '퇴원·탈퇴 회원'으로 이동 처리하시겠습니까?\n출결 및 이용권은 종료 상태로 아카이빙됩니다.`)) {
+      return;
+    }
+
+    try {
+      setSaveLoading(true);
+      let pkgInfo: any = null;
+      let actualAttendedCount = 0;
+      const targetChildId = student.child_id || student.id;
+
+      if (student.child_id) {
+        const { data: pkgs } = await supabase.from('user_packages').select('*').eq('child_id', student.child_id).limit(1);
+        if (pkgs && pkgs.length > 0) pkgInfo = pkgs[0];
+      }
+
+      // 🎯 수업 예약이 아닌 실제 "등원(출석)" 로그를 카운팅하여 실제 사용 횟수 산출
+      if (targetChildId) {
+        const { count } = await supabase
+          .from('attendance_logs')
+          .select('id', { count: 'exact', head: true })
+          .eq('child_id', targetChildId)
+          .not('check_in', 'is', null);
+        actualAttendedCount = count || 0;
+      }
+
+      const totalCount = pkgInfo?.total_count || 0;
+      const usedCount = Math.min(totalCount, actualAttendedCount);
+      const remainingCount = Math.max(0, totalCount - usedCount);
+      
+      await supabase.from('user_withdrawals').insert([{
+        user_id: student.parent_user_id || null,
+        user_name: student.parent_name || student.parent_user?.name || null,
+        phone: student.mother_phone || student.father_phone || student.student_phone || null,
+        child_id: student.child_id || null,
+        child_name: student.student_name,
+        attendance_code: student.attendance_code,
+        branch_id: student.branch_id,
+        reason: reason || '수강 종료 / 일정 종료',
+        source: 'admin',
+        package_name: pkgInfo?.package_name || null,
+        paid_amount: pkgInfo?.price || 0,
+        total_count: totalCount,
+        used_count: usedCount,
+        remaining_count: remainingCount,
+        refund_status: remainingCount > 0 ? 'pending' : 'none',
+      }]);
+
+      if (student.child_id) {
+        await supabase.from('children').update({ deleted_at: new Date().toISOString() }).eq('id', student.child_id);
+      } else {
+        await supabase.from('academy_students').delete().eq('id', student.id);
+      }
+
+      alert(`[${student.student_name}] 원생의 퇴원 처리가 완료되었습니다.\n상단의 [퇴원·탈퇴 회원] 탭에서 내역을 확인하실 수 있습니다.`);
+      setIsModalOpen(false);
+      loadData();
+      loadWithdrawals();
+    } catch (err: any) {
+      alert(`퇴원 처리 중 오류: ${err.message || err}`);
+    } finally {
+      setSaveLoading(false);
+    }
+  };
 
   // Open modal for registration/edit
   const openModal = async (student?: Student) => {
@@ -722,6 +904,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       (student.school_name && student.school_name.toLowerCase().includes(query))
     );
   }).sort((left, right) => left.student_name.localeCompare(right.student_name, 'ko-KR'));
+  const filteredWithdrawals = withdrawals.filter((item) => {
+    const query = searchQuery.toLowerCase().trim();
+    if (!query) return true;
+    return (
+      (item.child_name && item.child_name.toLowerCase().includes(query)) ||
+      (item.user_name && item.user_name.toLowerCase().includes(query)) ||
+      (item.phone && item.phone.includes(query)) ||
+      (item.attendance_code && item.attendance_code.includes(query)) ||
+      (item.reason && item.reason.toLowerCase().includes(query)) ||
+      (item.package_name && item.package_name.toLowerCase().includes(query))
+    );
+  });
+
   const modalStudent = editingId ? students.find((student) => student.id === editingId) || null : null;
   const isModalAppLinked = Boolean(modalStudent?.child_id);
   const sortedModalClasses = [...classes].sort((left, right) => {
@@ -744,41 +939,91 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             👥 학생 원생 명부 관리
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            원생 정보를 추가하거나, 기존 프로그램의 엑셀 백업 파일을 업로드하여 일괄 등록 및 관리합니다.
+            원생 정보를 추가하거나, 기존 프로그램의 엑셀 백업 파일을 업로드하여 일괄 등록 및 퇴원/탈퇴 회원을 관리합니다.
           </p>
         </div>
         
-        <div className="flex flex-wrap gap-2.5">
-          {/* Template Download Button */}
-          <button 
-            onClick={downloadTemplate}
+        {viewTab === 'active' && (
+          <div className="flex flex-wrap gap-2.5">
+            {/* Template Download Button */}
+            <button 
+              onClick={downloadTemplate}
+              className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs"
+            >
+              <Download size={16} />
+              엑셀 양식 다운로드
+            </button>
+
+            {/* Excel Upload Input */}
+            <label className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs cursor-pointer">
+              <Upload size={16} />
+              {excelLoading ? '업로드 처리 중...' : '엑셀 일괄 등록'}
+              <input 
+                type="file" 
+                accept=".xlsx"
+                onChange={handleExcelUpload}
+                disabled={excelLoading}
+                className="hidden"
+              />
+            </label>
+
+            <button 
+              onClick={() => openModal()}
+              className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm"
+            >
+              <Plus size={16} />
+              학생 직접 등록
+            </button>
+          </div>
+        )}
+
+        {viewTab === 'withdrawn' && (
+          <button
+            onClick={loadWithdrawals}
+            disabled={withdrawalLoading}
             className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs"
           >
-            <Download size={16} />
-            엑셀 양식 다운로드
+            <RefreshCw size={15} className={withdrawalLoading ? 'animate-spin' : ''} />
+            탈퇴 목록 새로고침
           </button>
+        )}
+      </div>
 
-          {/* Excel Upload Input */}
-          <label className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs cursor-pointer">
-            <Upload size={16} />
-            {excelLoading ? '업로드 처리 중...' : '엑셀 일괄 등록'}
-            <input 
-              type="file" 
-              accept=".xlsx"
-              onChange={handleExcelUpload}
-              disabled={excelLoading}
-              className="hidden"
-            />
-          </label>
+      {/* 🚀 상단 탭 전환: [ 🟢 재원생 명부 ] vs [ 🔴 퇴원 · 탈퇴 회원 ] */}
+      <div className="flex items-center gap-2 border-b border-slate-200/80 pb-3">
+        <button
+          onClick={() => setViewTab('active')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
+            viewTab === 'active'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
+          <span>재원생 명부</span>
+          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+            viewTab === 'active' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {students.length}명
+          </span>
+        </button>
 
-          <button 
-            onClick={() => openModal()}
-            className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm"
-          >
-            <Plus size={16} />
-            학생 직접 등록
-          </button>
-        </div>
+        <button
+          onClick={() => { setViewTab('withdrawn'); loadWithdrawals(); }}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
+            viewTab === 'withdrawn'
+              ? 'bg-rose-600 text-white shadow-sm'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          <span className="h-2 w-2 rounded-full bg-rose-400"></span>
+          <span>퇴원 · 탈퇴 회원 관리</span>
+          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+            viewTab === 'withdrawn' ? 'bg-rose-700 text-white' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {withdrawals.length}명
+          </span>
+        </button>
       </div>
 
       {/* Toolbar Search */}
@@ -786,147 +1031,398 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
         <input 
           type="text"
-          placeholder="학생·보호자 이름, 연락처, 소속반, 학교명으로 검색..."
+          placeholder={viewTab === 'active' ? "학생·보호자 이름, 연락처, 소속반, 학교명으로 검색..." : "퇴원/탈퇴 원생·학부모 이름, 연락처, 사유로 검색..."}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-full rounded-2xl bg-slate-100 py-3.5 pl-11 pr-4 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
 
-      {/* Student List View */}
-      <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-left text-sm text-slate-500">
-            <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
-              <tr className="whitespace-nowrap">
-                <th scope="col" className="px-6 py-4">학생이름</th>
-                <th scope="col" className="px-6 py-4">보호자 성함</th>
-                <th scope="col" className="px-6 py-4">수강 수업반</th>
-                <th scope="col" className="px-6 py-4">연락처 (부모/학생)</th>
-                <th scope="col" className="px-6 py-4">학교 / 학년</th>
-                <th scope="col" className="px-6 py-4">입회일</th>
-                <th scope="col" className="px-6 py-4">어플 연동 여부</th>
-                <th scope="col" className="px-6 py-4 text-right">관리</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 border-t border-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-16">
-                    <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
-                    <span className="text-xs font-bold text-slate-400 block mt-2">원생 명부 불러오는 중...</span>
-                  </td>
+      {/* 🟢 VIEW 1: 재원생 명부 테이블 */}
+      {viewTab === 'active' && (
+        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm text-slate-500">
+              <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
+                <tr className="whitespace-nowrap">
+                  <th scope="col" className="px-6 py-4">학생이름</th>
+                  <th scope="col" className="px-6 py-4">보호자 성함</th>
+                  <th scope="col" className="px-6 py-4">수강 수업반</th>
+                  <th scope="col" className="px-6 py-4">연락처 (부모/학생)</th>
+                  <th scope="col" className="px-6 py-4">학교 / 학년</th>
+                  <th scope="col" className="px-6 py-4">입회일</th>
+                  <th scope="col" className="px-6 py-4">어플 연동 여부</th>
+                  <th scope="col" className="px-6 py-4 text-right">관리</th>
                 </tr>
-              ) : filteredStudents.length > 0 ? (
-                filteredStudents.map((student) => {
-                  const hasAppLinked = student.parent_user_id !== null;
-                  const assignments = student.child_id
-                    ? (student.app_schedule_classes || []).map((schedule) => ({
-                        class_schedule_id: schedule.id,
-                        package_option_id: null,
-                        class_schedules: schedule,
-                      }))
-                    : student.academy_student_classes || [];
-                  const displayParentName = student.parent_name || student.parent_user?.name || '미기입';
-                  
-                  return (
-                    <tr key={student.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col">
-                          <span className="font-extrabold text-slate-900 text-sm">{student.student_name}</span>
-                          <span className="text-[11px] text-slate-400 font-mono">출결번호: {student.attendance_code}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-xs font-extrabold text-slate-900">
-                        {displayParentName}
-                        {student.parent_user?.name && <span className="ml-1 text-[10px] font-bold text-blue-500">(App)</span>}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex max-w-xs flex-wrap gap-1.5">
-                          {assignments.length > 0 ? assignments.map((assignment, index) => (
-                            <span key={`${assignment.class_schedule_id || 'package'}-${assignment.package_option_id || index}`} className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${assignment.class_schedule_id ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
-                              {assignment.class_schedules?.target_class || '🎫 이용권 단독 수강'}
+              </thead>
+              <tbody className="divide-y divide-slate-100 border-t border-slate-100">
+                {loading ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-16">
+                      <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
+                      <span className="text-xs font-bold text-slate-400 block mt-2">원생 명부 불러오는 중...</span>
+                    </td>
+                  </tr>
+                ) : filteredStudents.length > 0 ? (
+                  filteredStudents.map((student) => {
+                    const hasAppLinked = student.parent_user_id !== null;
+                    const assignments = student.child_id
+                      ? (student.app_schedule_classes || []).map((schedule) => ({
+                          class_schedule_id: schedule.id,
+                          package_option_id: null,
+                          class_schedules: schedule,
+                        }))
+                      : student.academy_student_classes || [];
+                    const displayParentName = student.parent_name || student.parent_user?.name || '미기입';
+                    
+                    return (
+                      <tr key={student.id} className="hover:bg-slate-50">
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col">
+                            <span className="font-extrabold text-slate-900 text-sm">{student.student_name}</span>
+                            <span className="text-[11px] text-slate-400 font-mono">출결번호: {student.attendance_code}</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-xs font-extrabold text-slate-900">
+                          {displayParentName}
+                          {student.parent_user?.name && <span className="ml-1 text-[10px] font-bold text-blue-500">(App)</span>}
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex max-w-xs flex-wrap gap-1.5">
+                            {assignments.length > 0 ? assignments.map((assignment, index) => (
+                              <span key={`${assignment.class_schedule_id || 'package'}-${assignment.package_option_id || index}`} className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${assignment.class_schedule_id ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                                {assignment.class_schedules?.target_class || '🎫 이용권 단독 수강'}
+                              </span>
+                            )) : <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">미배정</span>}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-xs text-slate-700 whitespace-nowrap">
+                          <div className="flex flex-col gap-1">
+                            {student.mother_phone && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">어머니</span>
+                                <span className="font-mono text-slate-800 font-bold">{student.mother_phone}</span>
+                              </div>
+                            )}
+                            {student.father_phone && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">아버지</span>
+                                <span className="font-mono text-slate-800 font-bold">{student.father_phone}</span>
+                              </div>
+                            )}
+                            {student.student_phone && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200/60">학생</span>
+                                <span className="font-mono text-slate-800 font-bold">{student.student_phone}</span>
+                              </div>
+                            )}
+                            {!student.mother_phone && !student.father_phone && !student.student_phone && (
+                              <span className="text-slate-400 font-medium text-xs">미등록</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-xs whitespace-nowrap">
+                          <div className="flex flex-col font-bold">
+                            <span>{student.school_name || '-'}</span>
+                            <span className="text-slate-400 mt-0.5">{student.grade_level || '-'}</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-xs font-semibold text-slate-700 whitespace-nowrap">
+                          {student.admission_date ? student.admission_date.slice(0, 10).replace(/-/g, '.') : '-'}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {hasAppLinked ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full border border-emerald-100">
+                              <Link2 size={12} />
+                              연동 완료 (@{student.parent_user?.name})
                             </span>
-                          )) : <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">미배정</span>}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-xs text-slate-700 whitespace-nowrap">
-                        <div className="flex flex-col gap-1">
-                          {student.mother_phone && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">어머니</span>
-                              <span className="font-mono text-slate-800 font-bold">{student.mother_phone}</span>
-                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-400 font-bold px-2.5 py-1 rounded-full border border-slate-200/50">
+                              <Link2Off size={12} />
+                              앱 미가입
+                            </span>
                           )}
-                          {student.father_phone && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">아버지</span>
-                              <span className="font-mono text-slate-800 font-bold">{student.father_phone}</span>
-                            </div>
-                          )}
-                          {student.student_phone && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200/60">학생</span>
-                              <span className="font-mono text-slate-800 font-bold">{student.student_phone}</span>
-                            </div>
-                          )}
-                          {!student.mother_phone && !student.father_phone && !student.student_phone && (
-                            <span className="text-slate-400 font-medium text-xs">미등록</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-xs whitespace-nowrap">
-                        <div className="flex flex-col font-bold">
-                          <span>{student.school_name || '-'}</span>
-                          <span className="text-slate-400 mt-0.5">{student.grade_level || '-'}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-xs font-semibold text-slate-700 whitespace-nowrap">
-                        {student.admission_date ? student.admission_date.slice(0, 10).replace(/-/g, '.') : '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {hasAppLinked ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full border border-emerald-100">
-                            <Link2 size={12} />
-                            연동 완료 (@{student.parent_user?.name})
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-400 font-bold px-2.5 py-1 rounded-full border border-slate-200/50">
-                            <Link2Off size={12} />
-                            앱 미가입
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex justify-end gap-1.5">
-                          <button
-                            onClick={() => openModal(student)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-bold"
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(student.id, student.student_name)}
-                            className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg text-xs font-bold"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              ) : (
-                <tr>
-                  <td colSpan={8} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
-                    일치하는 학생 정보가 없습니다. 첫 원생을 등록해 보세요!
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                        </td>
+                        <td className="px-6 py-4 text-right whitespace-nowrap">
+                          <div className="flex justify-end items-center gap-1.5">
+                            <button
+                              onClick={() => openModal(student)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-blue-600 bg-blue-50/80 hover:bg-blue-100/90 border border-blue-200/60 rounded-lg transition shadow-2xs"
+                              title="원생 정보 수정"
+                            >
+                              <Pencil size={12} />
+                              <span>수정</span>
+                            </button>
+                            <button
+                              onClick={() => handleDelete(student.id, student.student_name)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-rose-600 bg-rose-50/80 hover:bg-rose-100/90 border border-rose-200/60 rounded-lg transition shadow-2xs"
+                              title="원생 삭제"
+                            >
+                              <Trash2 size={12} />
+                              <span>삭제</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={8} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
+                      일치하는 학생 정보가 없습니다. 첫 원생을 등록해 보세요!
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* 🔴 VIEW 2: 퇴원 · 탈퇴 회원 관리 테이블 */}
+      {viewTab === 'withdrawn' && (
+        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm text-slate-500">
+              <thead className="bg-rose-50/60 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
+                <tr className="whitespace-nowrap">
+                  <th scope="col" className="px-6 py-4">원생 / 출결번호</th>
+                  <th scope="col" className="px-6 py-4">보호자 / 연락처</th>
+                  <th scope="col" className="px-6 py-4">퇴원·탈퇴일시 / 경로</th>
+                  <th scope="col" className="px-6 py-4">퇴원·탈퇴 사유</th>
+                  <th scope="col" className="px-6 py-4">당시 이용권 & 결제내역</th>
+                  <th scope="col" className="px-6 py-4">환불 정산 상태</th>
+                  <th scope="col" className="px-6 py-4 text-right">정산 관리</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 border-t border-slate-100">
+                {withdrawalLoading ? (
+                  <tr>
+                    <td colSpan={7} className="text-center py-16">
+                      <Loader2 className="animate-spin text-rose-500 mx-auto" size={24} />
+                      <span className="text-xs font-bold text-slate-400 block mt-2">퇴원·탈퇴 회원 명부 불러오는 중...</span>
+                    </td>
+                  </tr>
+                ) : filteredWithdrawals.length > 0 ? (
+                  filteredWithdrawals.map((item) => {
+                    const formattedDate = item.created_at ? item.created_at.slice(0, 16).replace('T', ' ') : '-';
+                    const isAppWithdrawal = item.source === 'app';
+                    
+                    return (
+                      <tr key={item.id} className="hover:bg-rose-50/20 transition">
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col">
+                            <span className="font-extrabold text-slate-900 text-sm">{item.child_name || '원생 미지정'}</span>
+                            <span className="text-[11px] text-slate-400 font-mono">출결코드: #{item.attendance_code || '-'}</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col">
+                            <span className="font-bold text-slate-900 text-xs">{item.user_name || '학부모'}</span>
+                            <span className="text-[11px] text-slate-600 font-mono font-bold mt-0.5">{item.phone || '-'}</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold text-slate-700 font-mono">{formattedDate}</span>
+                            {isAppWithdrawal ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100 w-fit">
+                                📱 앱 직접 탈퇴
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-full border border-slate-200 w-fit">
+                                🏫 학원 퇴원 처리
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col max-w-xs">
+                            <span className="font-bold text-slate-900 text-xs text-rose-700 bg-rose-50 px-2 py-0.5 rounded w-fit">
+                              {item.reason}
+                            </span>
+                            {item.reason_detail && (
+                              <span className="text-[11px] text-slate-500 mt-1 truncate" title={item.reason_detail}>
+                                {item.reason_detail}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          {item.package_name ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="font-extrabold text-slate-900 text-xs">🎫 {item.package_name}</span>
+                              <span className="text-[11px] text-slate-600">
+                                실결제액: <b className="text-slate-900">{item.paid_amount ? item.paid_amount.toLocaleString() : 0}원</b>
+                              </span>
+                              <span className="text-[11px] text-slate-500 font-medium">
+                                총 {item.total_count || 0}회 중 {item.used_count || 0}회 출석 (잔여 <b className="text-rose-600">{item.remaining_count || 0}회</b>)
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400 font-medium">보유 이용권 없음</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {item.refund_status === 'completed' ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 font-black px-2.5 py-1 rounded-full border border-emerald-200 w-fit">
+                                <CheckCircle size={12} />
+                                환불 완료 ({item.refund_amount ? item.refund_amount.toLocaleString() : 0}원)
+                              </span>
+                              {item.refund_memo && (
+                                <span className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[150px]" title={item.refund_memo}>
+                                  {item.refund_memo}
+                                </span>
+                              )}
+                            </div>
+                          ) : item.refund_status === 'pending' ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] bg-amber-50 text-amber-700 font-black px-2.5 py-1 rounded-full border border-amber-200 w-fit">
+                              <Clock size={12} />
+                              환불 대기
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-500 font-bold px-2.5 py-1 rounded-full border border-slate-200 w-fit">
+                              환불 없음
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-right whitespace-nowrap">
+                          <button
+                            onClick={() => openRefundModal(item)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl transition shadow-2xs"
+                          >
+                            <CreditCard size={13} />
+                            <span>환불 처리</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
+                      퇴원 및 탈퇴 처리된 회원이 없습니다.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 💳 REFUND PROCESS MODAL (환불 정산 입력 팝업) */}
+      {refundModalOpen && selectedWithdrawal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                  <CreditCard size={18} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">퇴원 회원 환불 정산</h3>
+                  <p className="text-xs text-slate-500">{selectedWithdrawal.child_name} ({selectedWithdrawal.user_name} 학부모)</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setRefundModalOpen(false)}
+                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* 결제 및 출석 참고 카드 */}
+            <div className="rounded-2xl bg-slate-50 border border-slate-200/70 p-4 mb-5 space-y-1.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-bold">당시 보유 이용권:</span>
+                <span className="font-extrabold text-slate-900">{selectedWithdrawal.package_name || '이용권 없음'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-bold">과거 실결제액:</span>
+                <span className="font-extrabold text-blue-600 font-mono">{selectedWithdrawal.paid_amount ? selectedWithdrawal.paid_amount.toLocaleString() : 0}원</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-bold">수업 출석 현황:</span>
+                <span className="font-extrabold text-slate-800">
+                  총 {selectedWithdrawal.total_count || 0}회 중 {selectedWithdrawal.used_count || 0}회 등원 (잔여 <b className="text-rose-600">{selectedWithdrawal.remaining_count || 0}회</b>)
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">환불 정산 상태 *</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'pending', label: '🟡 환불 대기' },
+                    { id: 'completed', label: '🟢 환불 완료' },
+                    { id: 'none', label: '⚪ 해당 없음' },
+                  ].map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => setRefundStatus(st.id as any)}
+                      className={`py-2 rounded-xl text-xs font-extrabold border transition ${
+                        refundStatus === st.id
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {refundStatus === 'completed' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">실제 환불 금액 (원) *</label>
+                  <input
+                    type="number"
+                    value={refundAmount || ''}
+                    onChange={(e) => setRefundAmount(Number(e.target.value))}
+                    placeholder="예: 50000"
+                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">환불 처리 메모</label>
+                <textarea
+                  value={refundMemo}
+                  onChange={(e) => setRefundMemo(e.target.value)}
+                  placeholder="예: 위약금 10% 및 교재비 공제 후 학부모 계좌로 환불 송금 완료"
+                  rows={2}
+                  className="w-full rounded-xl bg-slate-100 px-4 py-2.5 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setRefundModalOpen(false)}
+                  className="w-1/3 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition"
+                >
+                  닫기
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveRefund}
+                  disabled={refundSaving}
+                  className="w-2/3 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black transition flex items-center justify-center gap-1.5 shadow-sm"
+                >
+                  {refundSaving ? <Loader2 size={15} className="animate-spin" /> : null}
+                  환불 정산 저장하기
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Dialog */}
       {isModalOpen && (
@@ -1199,14 +1695,28 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 />
               </div>
 
-              <button 
-                type="submit" 
-                disabled={saveLoading}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300 shadow-sm mt-6"
-              >
-                {saveLoading ? <Loader2 size={16} className="animate-spin" /> : null}
-                {editingId ? '학생 정보 수정 완료하기' : '학생 정보 등록하기'}
-              </button>
+              <div className="flex gap-2.5 mt-6">
+                {editingId && modalStudent && (
+                  <button
+                    type="button"
+                    onClick={() => handleDepartStudent(modalStudent)}
+                    disabled={saveLoading}
+                    className="flex w-1/3 items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 py-3.5 text-xs font-black text-rose-700 transition"
+                    title="해당 원생을 퇴원·탈퇴 회원으로 이동 처리"
+                  >
+                    <LogOut size={15} />
+                    퇴원(탈퇴) 처리
+                  </button>
+                )}
+                <button 
+                  type="submit" 
+                  disabled={saveLoading}
+                  className={`flex ${editingId ? 'w-2/3' : 'w-full'} items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300 shadow-sm`}
+                >
+                  {saveLoading ? <Loader2 size={16} className="animate-spin" /> : null}
+                  {editingId ? '학생 정보 수정 완료하기' : '학생 정보 등록하기'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
