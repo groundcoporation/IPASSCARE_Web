@@ -488,7 +488,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       
       await supabase.from('user_withdrawals').insert([{
         user_id: student.parent_user_id || null,
-        user_name: student.parent_name || student.parent_user?.name || null,
+        user_name: student.parent_user?.name || student.parent_name || null,
         phone: student.mother_phone || student.father_phone || student.student_phone || null,
         child_id: student.child_id || null,
         child_name: student.student_name,
@@ -527,7 +527,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setEditingId(student.id);
       setSelectedBranchId(student.branch_id);
       setStudentName(student.student_name);
-      setParentName(student.parent_name || student.parent_user?.name || '');
+      setParentName(student.parent_user?.name || student.parent_name || '');
       setAttendanceCode(student.attendance_code);
       setMotherPhone(student.mother_phone || '');
       setFatherPhone(student.father_phone || '');
@@ -996,7 +996,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       : (student.academy_student_classes || []).map((assignment) => assignment.class_schedules))
       .map((schedule) => schedule?.target_class || '이용권 단독')
       .join(' ');
-    const displayParentName = student.parent_name || student.parent_user?.name || '';
+    const displayParentName = student.parent_user?.name || student.parent_name || '';
     
     return (
       student.student_name.toLowerCase().includes(query) ||
@@ -1177,7 +1177,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                           class_schedules: schedule,
                         }))
                       : student.academy_student_classes || [];
-                    const displayParentName = student.parent_name || student.parent_user?.name || '미기입';
+                    const displayParentName = student.parent_user?.name || student.parent_name || '미기입';
                     
                     return (
                       <tr key={student.id} className="hover:bg-slate-50">
