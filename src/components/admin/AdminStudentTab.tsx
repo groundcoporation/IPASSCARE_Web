@@ -233,11 +233,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       );
       setPackageOptions(flattenedOptions);
 
-      // 3. Load students
+      // 3. Load students from academy_students, children, and users
       let studentsQuery = supabase.from('academy_students').select(`
         *,
-        parent_user:users(name, email, status),
-        child:children(deleted_at),
+        parent_user:users(name, email, status, phone, branch_id),
+        child:children(deleted_at, back_number, branch_id),
         academy_student_classes(
           class_schedule_id,
           package_option_id,
@@ -250,13 +250,117 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       if (activeBranchId && activeBranchId !== 'all') {
         studentsQuery = studentsQuery.eq('branch_id', activeBranchId);
       }
-      const { data: studentsData, error } = await studentsQuery;
-      if (error) throw error;
 
-      const activeStudents = (studentsData || []).filter((student: any) => (
-        (!student.child_id || student.child?.deleted_at == null)
-        && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
-      ));
+      let childrenQuery = supabase.from('children').select(`
+        id, child_name, back_number, parent_id, branch_id, deleted_at, created_at,
+        parent:users(id, name, phone, email, status, branch_id)
+      `).is('deleted_at', null);
+      if (activeBranchId && activeBranchId !== 'all') {
+        childrenQuery = childrenQuery.eq('branch_id', activeBranchId);
+      }
+
+      let usersQuery = supabase.from('users').select('id, name, phone, email, status, role, branch_id, created_at').neq('status', 'deleted');
+      if (activeBranchId && activeBranchId !== 'all') {
+        usersQuery = usersQuery.eq('branch_id', activeBranchId);
+      }
+
+      const [studentsResult, childrenResult, usersResult] = await Promise.all([
+        studentsQuery,
+        childrenQuery,
+        usersQuery,
+      ]);
+
+      const rawAcademyStudents = (studentsResult.data || []) as any[];
+      const rawChildren = (childrenResult.data || []) as any[];
+      const rawUsers = (usersResult.data || []) as any[];
+
+      // Clean attendance code helper (clean 4 digits or back number, NO APP-UUID!)
+      const formatCleanAttendanceCode = (code: string | null | undefined, phone: string | null | undefined, backNum: string | null | undefined) => {
+        if (code && !code.startsWith('APP-') && !code.startsWith('app-') && code.length <= 8) return code;
+        if (backNum && backNum.trim()) return backNum.trim();
+        const digits = (phone || '').replace(/[^0-9]/g, '');
+        if (digits.length >= 4) return digits.slice(-4);
+        return code && code.startsWith('APP-') ? code.slice(4, 8) : '-';
+      };
+
+      const existingChildIds = new Set<string>();
+      const existingParentUserIds = new Set<string>();
+
+      // 1. Existing academy_students
+      const activeStudents: any[] = rawAcademyStudents
+        .filter((student: any) => (
+          (!student.child_id || student.child?.deleted_at == null)
+          && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
+        ))
+        .map((student: any) => {
+          if (student.child_id) existingChildIds.add(student.child_id);
+          if (student.parent_user_id) existingParentUserIds.add(student.parent_user_id);
+          const cleanPhone = student.mother_phone || student.father_phone || student.student_phone || student.parent_user?.phone;
+          return {
+            ...student,
+            attendance_code: formatCleanAttendanceCode(student.attendance_code, cleanPhone, student.child?.back_number),
+          };
+        });
+
+      // 2. Add all children registered from mobile app
+      rawChildren.forEach((child: any) => {
+        if (existingChildIds.has(child.id)) return;
+        if (child.parent && child.parent.status === 'deleted') return;
+        existingChildIds.add(child.id);
+        if (child.parent_id) existingParentUserIds.add(child.parent_id);
+
+        const parentPhone = child.parent?.phone || '';
+        activeStudents.push({
+          id: `child-${child.id}`,
+          student_name: child.child_name || '원생',
+          attendance_code: formatCleanAttendanceCode(child.back_number, parentPhone, child.back_number),
+          mother_phone: parentPhone || '',
+          father_phone: '',
+          student_phone: '',
+          school_name: '',
+          grade_level: '',
+          admission_date: child.created_at?.slice(0, 10) || '',
+          notes: '',
+          parent_name: child.parent?.name || '',
+          parent_user_id: child.parent_id || null,
+          child_id: child.id,
+          branch_id: child.branch_id || child.parent?.branch_id || activeBranchId || 'branch_1',
+          created_at: child.created_at || new Date().toISOString(),
+          parent_user: child.parent ? { name: child.parent.name, email: child.parent.email, status: child.parent.status } : null,
+          child: { deleted_at: null },
+          academy_student_classes: [],
+        });
+      });
+
+      // 3. Add any registered parents without children yet
+      rawUsers.forEach((user: any) => {
+        if (['admin', 'teacher', 'coach', 'driver'].includes(user.role)) return;
+        if (existingParentUserIds.has(user.id)) return;
+        existingParentUserIds.add(user.id);
+
+        const cleanPhone = user.phone || '';
+        activeStudents.push({
+          id: `user-${user.id}`,
+          student_name: `${user.name || '회원'} (자녀 미등록)`,
+          attendance_code: formatCleanAttendanceCode(null, cleanPhone, null),
+          mother_phone: cleanPhone,
+          father_phone: '',
+          student_phone: '',
+          school_name: '',
+          grade_level: '',
+          admission_date: user.created_at?.slice(0, 10) || '',
+          notes: '앱 가입 (자녀 정보 미등록)',
+          parent_name: user.name || '',
+          parent_user_id: user.id,
+          child_id: null,
+          branch_id: user.branch_id || activeBranchId || 'branch_1',
+          created_at: user.created_at || new Date().toISOString(),
+          parent_user: { name: user.name, email: user.email, status: user.status },
+          child: null,
+          academy_student_classes: [],
+        });
+      });
+
       const childIds = activeStudents.map((student: any) => student.child_id).filter(Boolean);
       
       const [schedulesByChild, pkgsResult] = await Promise.all([
@@ -1211,9 +1315,16 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                     return (
                       <tr key={item.id} className="hover:bg-rose-50/20 transition">
                         <td className="px-6 py-4">
-                          <div className="flex flex-col">
+                          <div className="flex flex-col gap-0.5">
                             <span className="font-extrabold text-slate-900 text-sm">{item.child_name || '원생 미지정'}</span>
-                            <span className="text-[11px] text-slate-400 font-mono">출결코드: #{item.attendance_code || '-'}</span>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              {branches.find(b => b.id === item.branch_id)?.name && (
+                                <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                                  {branches.find(b => b.id === item.branch_id)?.name}
+                                </span>
+                              )}
+                              <span className="text-[11px] text-slate-400 font-mono">출결코드: #{item.attendance_code || '-'}</span>
+                            </div>
                           </div>
                         </td>
                         <td className="px-6 py-4">
