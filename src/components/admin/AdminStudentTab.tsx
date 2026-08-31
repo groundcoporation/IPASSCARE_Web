@@ -1559,14 +1559,20 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       <tr key={item.id} className="hover:bg-rose-50/20 transition">
                         <td className="px-6 py-4">
                           <div className="flex flex-col gap-0.5">
-                            <span className="font-extrabold text-slate-900 text-sm">{item.child_name || '원생 미지정'}</span>
+                            <span className="font-extrabold text-slate-900 text-sm">
+                              {isAccountWithdrawal ? '회원 계정 전체 탈퇴' : (item.child_name || '원생 미지정')}
+                            </span>
                             <div className="flex items-center gap-1.5 mt-0.5">
                               {branches.find(b => b.id === item.branch_id)?.name && (
                                 <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
                                   {branches.find(b => b.id === item.branch_id)?.name}
                                 </span>
                               )}
-                              <span className="text-[11px] text-slate-400 font-mono">출결코드: #{item.attendance_code || '-'}</span>
+                              {isAccountWithdrawal ? (
+                                <span className="text-[11px] text-slate-400 font-semibold">자녀 전체 포함 · 계정 단위 처리</span>
+                              ) : (
+                                <span className="text-[11px] text-slate-400 font-mono">출결코드: #{item.attendance_code || '-'}</span>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -1683,7 +1689,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 </div>
                 <div>
                   <h3 className="text-base font-black text-slate-900">퇴원 회원 환불 정산</h3>
-                  <p className="text-xs text-slate-500">{selectedWithdrawal.child_name} ({selectedWithdrawal.user_name} 학부모)</p>
+                  <p className="text-xs text-slate-500">
+                    {selectedWithdrawal.event_type === 'account_withdrawal'
+                      ? `${selectedWithdrawal.user_name || '탈퇴 회원'} · 회원 계정 전체 탈퇴`
+                      : `${selectedWithdrawal.child_name || '원생 미지정'} (${selectedWithdrawal.user_name || '학부모'} 학부모)`}
+                  </p>
                 </div>
               </div>
               <button 

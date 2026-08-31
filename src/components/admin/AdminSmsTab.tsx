@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { KSPayWebService } from '../../services/payment/KSPayWebService';
+import { SmsGatewayService } from '../../services/sms/SmsGatewayService';
 import { 
   Send, Search, Smartphone, Clock, History, BookmarkPlus, 
   Trash2, X, RefreshCw, ChevronLeft, ChevronRight, 
@@ -753,6 +754,16 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
       return;
     }
 
+    if (isReserved) {
+      alert('예약 발송은 중계 서버 예약 작업이 연결된 후 사용할 수 있습니다. 현재는 즉시 발송만 가능합니다.');
+      return;
+    }
+
+    if (attachedImage) {
+      alert('이미지 MMS는 비즈고 이미지 업로드 연동 후 사용할 수 있습니다. 첨부 이미지를 제거하고 SMS/LMS로 발송해 주세요.');
+      return;
+    }
+
     if (pointBalance < totalCost) {
       alert(`보유 i-Point가 부족합니다.\n- 필요 포인트: ${totalCost.toLocaleString()} P\n- 현재 잔액: ${pointBalance.toLocaleString()} P\n상단의 [i-Point 충전] 버튼을 눌러 충전해 주세요!`);
       setShowChargeModal(true);
@@ -768,33 +779,60 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
     setSending(true);
 
     try {
-      // 1. Batch insert into academy_sms_logs in DB
-      const logRows = recipients.map(r => ({
-        branch_id: targetBranchId,
-        type: attachedImage ? 'MMS' : isLms ? 'LMS' : 'SMS',
-        sender_phone: '02-1234-5678',
-        receiver_name: `${r.studentName} (${r.relation})`,
-        receiver_phone: r.phone,
-        content: messageContent,
-        cost: costPerMsg,
-        status: isReserved ? 'reserved' : 'success',
-        sent_at: isReserved ? null : new Date().toISOString(),
-        reserved_at: isReserved ? `${reserveDate}T${reserveHour}:${reserveMinute}:00` : null
-      }));
+      if (!targetBranchId) {
+        throw new Error('소속 지점 정보가 확인되지 않습니다.');
+      }
+
+      const gatewayResponse = await SmsGatewayService.send({
+        branchId: targetBranchId,
+        type: isLms ? 'LMS' : 'SMS',
+        content: messageContent.trim(),
+        recipients: recipients.map((recipient) => ({
+          id: recipient.id,
+          phone: recipient.phone,
+        })),
+      });
+
+      const resultsByRecipientId = new Map(
+        gatewayResponse.results.map((result) => [result.recipientId, result]),
+      );
+
+      // 비즈고의 수신자별 접수 결과를 발송 원장에 기록한다.
+      const logRows = recipients.map((recipient) => {
+        const gatewayResult = resultsByRecipientId.get(recipient.id);
+
+        return {
+          branch_id: targetBranchId,
+          type: isLms ? 'LMS' : 'SMS',
+          sender_phone: gatewayResponse.senderPhone,
+          receiver_name: `${recipient.studentName} (${recipient.relation})`,
+          receiver_phone: recipient.phone,
+          content: messageContent,
+          cost: costPerMsg,
+          status: gatewayResult?.success ? 'success' : 'failed',
+          sent_at: gatewayResult?.success ? new Date().toISOString() : null,
+          reserved_at: null,
+        };
+      });
 
       const { error: logError } = await supabase
         .from('academy_sms_logs')
         .insert(logRows);
 
-      if (logError) console.warn('Sms log insert warning', logError);
+      if (logError) {
+        throw new Error(`문자는 접수됐지만 발송 원장 저장에 실패했습니다. 관리자 확인이 필요합니다: ${logError.message}`);
+      }
 
       await loadBalance();
       await loadLogs();
       await loadPointTransactions();
 
-      alert(isReserved 
-        ? `✅ 총 ${recipients.length}명의 수신 대상에게 ${reserveDate} ${reserveHour}:${reserveMinute} 예약 발송이 성공적으로 등록되었습니다!` 
-        : `✅ 총 ${recipients.length}명에게 성공적으로 문자(알림톡) 발송을 완료했습니다! (${totalCost.toLocaleString()} P 차감)`
+      const acceptedCost = gatewayResponse.acceptedCount * costPerMsg;
+      alert(
+        `문자 발송 접수가 완료되었습니다.\n` +
+        `- 성공: ${gatewayResponse.acceptedCount}명\n` +
+        `- 실패: ${gatewayResponse.failedCount}명\n` +
+        `- 차감 i-Point: ${acceptedCost.toLocaleString()} P`,
       );
 
       // Reset

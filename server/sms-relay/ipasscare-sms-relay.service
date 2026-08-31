@@ -1,0 +1,20 @@
+[Unit]
+Description=IPASSCARE Bizgo SMS Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/ipasscare-sms-relay
+EnvironmentFile=/etc/ipasscare-sms-relay.env
+ExecStart=/usr/bin/node /opt/ipasscare-sms-relay/src/server.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
