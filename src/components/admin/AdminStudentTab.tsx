@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, RefreshCw, X, CreditCard, LogOut } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, AlertTriangle, RefreshCw, X, CreditCard, LogOut } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
 
@@ -183,6 +183,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [assignedClassOnly, setAssignedClassOnly] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [excelLoading, setExcelLoading] = useState(false);
+
+  // 삭제 이중확인 모달 State
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [targetStudentForDelete, setTargetStudentForDelete] = useState<{ id: string; name: string; child_id?: string | null } | null>(null);
+  const [confirmInputName, setConfirmInputName] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1093,20 +1099,86 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
   };
 
-  // Delete Student
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`정말 '${name}' 학생 정보를 삭제하시겠습니까?\n이 학생의 출결 기록 및 요금 청구 내역도 연계되어 삭제될 수 있습니다.`)) return;
+  // Delete Student (모달 오픈)
+  const openDeleteModal = (student: Student) => {
+    setTargetStudentForDelete({
+      id: student.id,
+      name: student.student_name,
+      child_id: student.child_id
+    });
+    setConfirmInputName('');
+    setDeleteModalOpen(true);
+  };
 
+  // Delete Confirm Action (실제 삭제 실행)
+  const handleConfirmDelete = async () => {
+    if (!targetStudentForDelete) return;
+    if (confirmInputName.trim() !== targetStudentForDelete.name.trim()) {
+      alert('입력하신 학생 이름이 일치하지 않습니다.');
+      return;
+    }
+
+    setDeleteLoading(true);
     try {
-      const { error } = await supabase
-        .from('academy_students')
-        .delete()
-        .eq('id', id);
+      const rawId = targetStudentForDelete.id;
 
-      if (error) throw error;
+      // 1. 앱 가입 자녀 (id가 'child-' 로 시작하는 가상 ID인 경우)
+      if (rawId.startsWith('child-')) {
+        const realChildId = rawId.replace('child-', '');
+
+        // 잔여 이용권 상태를 'expired' 처리
+        await supabase
+          .from('user_packages')
+          .update({ status: 'expired' })
+          .eq('child_id', realChildId)
+          .eq('status', 'active');
+
+        // 미래 예약 소프트 삭제/취소 처리
+        await supabase
+          .from('reservations')
+          .update({ status: 'canceled', deleted_at: new Date().toISOString() })
+          .eq('child_id', realChildId)
+          .is('deleted_at', null);
+
+        // children 테이블 소프트 삭제
+        const { error } = await supabase
+          .from('children')
+          .update({ deleted_at: new Date().toISOString() })
+          .eq('id', realChildId);
+
+        if (error) throw error;
+      } else {
+        // 2. 학원 등록 원생 (academy_students 테이블)
+        // 연관된 child_id가 있으면 함께 소프트 삭제 및 이용권 정리 처리
+        if (targetStudentForDelete.child_id) {
+          await supabase
+            .from('children')
+            .update({ deleted_at: new Date().toISOString() })
+            .eq('id', targetStudentForDelete.child_id);
+
+          await supabase
+            .from('user_packages')
+            .update({ status: 'expired' })
+            .eq('child_id', targetStudentForDelete.child_id)
+            .eq('status', 'active');
+        }
+
+        const { error } = await supabase
+          .from('academy_students')
+          .delete()
+          .eq('id', rawId);
+
+        if (error) throw error;
+      }
+
+      alert(`'${targetStudentForDelete.name}' 원생이 정상적으로 삭제 처리되었습니다.`);
+      setDeleteModalOpen(false);
+      setTargetStudentForDelete(null);
       loadData();
     } catch (err: any) {
-      alert(`삭제에 실패했습니다: ${err.message}`);
+      alert(`삭제 처리에 실패했습니다: ${err.message || err}`);
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -1670,7 +1742,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                               <span>수정</span>
                             </button>
                             <button
-                              onClick={() => handleDelete(student.id, student.student_name)}
+                              onClick={() => openDeleteModal(student)}
                               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-rose-600 bg-rose-50/80 hover:bg-rose-100/90 border border-rose-200/60 rounded-lg transition shadow-2xs"
                               title="원생 삭제"
                             >
@@ -2359,6 +2431,78 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ⚠️ 원생 삭제 이중 확인 모달 */}
+      {deleteModalOpen && targetStudentForDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
+            {/* Header */}
+            <div className="bg-rose-50 px-6 py-4 border-b border-rose-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center font-bold">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-rose-950">원생 정보 삭제</h3>
+                  <p className="text-xs text-rose-700 font-medium">실수 방지를 위한 이중 안전 확인</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setDeleteModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 transition"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/70 text-sm space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">삭제 대상 원생:</span>
+                  <span className="font-bold text-slate-900">{targetStudentForDelete.name}</span>
+                </div>
+                <div className="text-xs text-rose-600 pt-1.5 border-t border-slate-200/60 font-medium leading-relaxed">
+                  ⚠️ 삭제 시 해당 원생의 남은 이용권 및 예약도 함께 정리되며 목록에서 지워집니다.
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">
+                  삭제를 진행하려면 아래에 <span className="text-rose-600 underline font-black">[{targetStudentForDelete.name}]</span> 을(를) 똑같이 입력해 주세요.
+                </label>
+                <input
+                  type="text"
+                  value={confirmInputName}
+                  onChange={(e) => setConfirmInputName(e.target.value)}
+                  placeholder={targetStudentForDelete.name}
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm font-bold focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none transition"
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="bg-slate-50 px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteModalOpen(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-xl transition"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={confirmInputName.trim() !== targetStudentForDelete.name.trim() || deleteLoading}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-xl transition shadow-sm"
+              >
+                {deleteLoading ? '삭제 중...' : '원생 삭제 실행'}
+              </button>
+            </div>
           </div>
         </div>
       )}

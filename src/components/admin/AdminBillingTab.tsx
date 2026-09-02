@@ -1576,16 +1576,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     <th scope="col" className="px-4 py-3.5 min-w-[180px] text-center">청구월 / 이용기간</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-right">청구액</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-right">실 수납액</th>
+                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">청구일</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">수납 수단</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">최종 처리일</th>
+                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">최종 수납일</th>
                     <th scope="col" className="px-4 py-3.5 min-w-[90px] text-center">상태</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[100px] text-center">앱 청구서</th>
+                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">청구 출처</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 border-t border-slate-100">
                   {loading ? (
                     <tr>
-                      <td colSpan={9} className="text-center py-16">
+                      <td colSpan={10} className="text-center py-16">
                         <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
                         <span className="text-xs font-bold text-slate-400 block mt-2">고지 정보 및 수납 목록 조회 중...</span>
                       </td>
@@ -1594,7 +1595,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     filteredBillStudents.map((student) => (
                       <React.Fragment key={student.studentId}>
                         <tr className="border-t border-slate-200 bg-blue-50/60">
-                          <td colSpan={9} className="px-4 py-2.5">
+                          <td colSpan={10} className="px-4 py-2.5">
                             <div className="flex items-center justify-between">
                               <div>
                                 <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
@@ -1622,6 +1623,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           const isExpired = bill.status === 'expired';
                           const canDeleteBill = bill.amount_paid === 0 && ['unpaid', 'declined', 'expired'].includes(bill.status);
                           const methodText: Record<string, string> = { app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
+                          const billDateText = bill.app_sent_at
+                            ? new Date(bill.app_sent_at).toLocaleDateString('ko-KR')
+                            : bill.billing_date
+                            ? new Date(bill.billing_date).toLocaleDateString('ko-KR')
+                            : '-';
                           return (
                             <tr key={bill.id} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
                               <td className="px-4 py-3 text-center">
@@ -1646,6 +1652,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               </td>
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{bill.amount_due.toLocaleString()}원</td>
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{isPaid ? `${bill.amount_paid.toLocaleString()}원` : '-'}</td>
+                              <td className="px-4 py-3 text-xs font-medium text-slate-600 text-center">{billDateText}</td>
                               <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-500 text-center">{bill.payment_date ? new Date(bill.payment_date).toLocaleDateString('ko-KR') : '-'}</td>
                               <td className="px-4 py-3 text-center">
@@ -1659,15 +1666,19 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               </td>
                               <td className="px-4 py-3 text-center">
                                 <div className="flex flex-col items-center gap-1.5">
-                                  {isDeclined
-                                    ? <span className="inline-flex rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700">거절됨</span>
-                                    : isExpired
-                                      ? <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600">만료됨</span>
-                                      : bill.payment_request_id
-                                    ? <span className="inline-flex rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-black text-indigo-700">발송 완료</span>
-                                    : canSendToApp
-                                      ? <span className="text-[10px] font-bold text-slate-400">발송 가능</span>
-                                      : <span className="text-[10px] font-bold text-slate-300">발송 불가</span>}
+                                  {isDeclined ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700">📱 어플 거절됨</span>
+                                  ) : isExpired ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600">⌛ 기한 만료</span>
+                                  ) : bill.payment_request_id ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-black text-indigo-700 shadow-2xs">
+                                      📱 어플 청구서 전송
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50/80 px-2.5 py-0.5 text-[10px] font-black text-blue-700 shadow-2xs">
+                                      💻 웹 관리자 청구
+                                    </span>
+                                  )}
                                   {canDeleteBill && <button type="button" onClick={() => void handleDeleteBill(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}
                                 </div>
                               </td>
