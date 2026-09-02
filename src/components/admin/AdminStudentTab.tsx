@@ -129,6 +129,14 @@ const nextMonthStart = () => {
     .toISOString().slice(0, 10);
 };
 
+const billMonthByOffset = (offset: number) => {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const currentBillMonth = () => billMonthByOffset(0);
+
 const monthLabel = (offset: number) => {
   const now = new Date();
   const date = new Date(now.getFullYear(), now.getMonth() + offset, 1);
@@ -198,6 +206,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [nextMonthClassIds, setNextMonthClassIds] = useState<string[]>([]);
   const [nextMonthClassDay, setNextMonthClassDay] = useState('전체');
   const [nextMonthPackages, setNextMonthPackages] = useState<ClassAssignment[]>([]);
+  const [currentMonthPackages, setCurrentMonthPackages] = useState<ClassAssignment[]>([]);
+  const [currentMonthPackageSource, setCurrentMonthPackageSource] = useState<'current_plan' | 'current_bill' | 'previous_plan' | 'previous_bill' | 'active_owned' | 'none'>('none');
+  const [currentMonthClassIds, setCurrentMonthClassIds] = useState<string[]>([]);
+  const [currentMonthClassDay, setCurrentMonthClassDay] = useState('전체');
+  const [currentMonthBillSaving, setCurrentMonthBillSaving] = useState(false);
   const [currentPackageLabels, setCurrentPackageLabels] = useState<string[]>([]);
   const [currentEditingStudent, setCurrentEditingStudent] = useState<Student | null>(null);
 
@@ -293,13 +306,24 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       // A broken/ambiguous nested relationship must not make the entire student list disappear.
       const academyStudentIds = rawAcademyStudents.map((student) => student.id).filter(Boolean);
       const studentClassesByStudent = new Map<string, Student['academy_student_classes']>();
+      const currentPlanClassesByStudent = new Map<string, ActiveAppSchedule[]>();
       if (academyStudentIds.length > 0) {
-        const { data: studentClassesData, error: studentClassesError } = await supabase
-          .from('academy_student_classes')
-          .select('student_id, class_schedule_id, package_option_id, billing_cycle, payment_day, status')
-          .in('student_id', academyStudentIds);
+        const [{ data: studentClassesData, error: studentClassesError }, { data: currentPlanClasses, error: currentPlanError }] = await Promise.all([
+          supabase
+            .from('academy_student_classes')
+            .select('student_id, class_schedule_id, package_option_id, billing_cycle, payment_day, status')
+            .in('student_id', academyStudentIds),
+          supabase
+            .from('academy_student_monthly_plans')
+            .select('student_id, class_schedule_id')
+            .in('student_id', academyStudentIds)
+            .eq('effective_month', `${currentBillMonth()}-01`)
+            .eq('item_type', 'class')
+            .in('status', ['planned', 'applied']),
+        ]);
 
         if (studentClassesError) throw studentClassesError;
+        if (currentPlanError) throw currentPlanError;
 
         const classesById = new Map((classesData || []).map((schedule: any) => [schedule.id, schedule]));
         ((studentClassesData || []) as any[]).forEach((assignment) => {
@@ -318,6 +342,13 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               : null,
           });
           studentClassesByStudent.set(assignment.student_id, current);
+        });
+        ((currentPlanClasses || []) as any[]).forEach((plan) => {
+          const schedule = classesById.get(plan.class_schedule_id) as ClassSchedule | undefined;
+          if (!schedule) return;
+          const current = currentPlanClassesByStudent.get(plan.student_id) || [];
+          current.push(schedule as ActiveAppSchedule);
+          currentPlanClassesByStudent.set(plan.student_id, current);
         });
       }
 
@@ -402,12 +433,15 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       const [schedulesByChild, pkgsResult] = await Promise.all([
         loadActiveAppSchedulesByChild(childIds),
         childIds.length > 0 
-          ? supabase.from('user_packages').select('child_id, package_name, total_count, remaining_count, price').in('child_id', childIds).order('created_at', { ascending: false })
+          ? supabase.from('user_packages').select('child_id, package_name, total_count, remaining_count, price, valid_until, expiry_date, status').in('child_id', childIds).eq('status', 'active').order('created_at', { ascending: false })
           : Promise.resolve({ data: [] }),
       ]);
 
       const pkgsMap = new Map<string, any>();
+      const today = new Date().toISOString().slice(0, 10);
       ((pkgsResult.data || []) as any[]).forEach((pkg: any) => {
+        const expiresOn = pkg.valid_until || pkg.expiry_date || null;
+        if (expiresOn && expiresOn < today) return;
         if (!pkgsMap.has(pkg.child_id)) {
           pkgsMap.set(pkg.child_id, pkg);
         }
@@ -415,7 +449,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
       setStudents(activeStudents.map((student: any) => ({
         ...student,
-        app_schedule_classes: student.child_id ? schedulesByChild.get(student.child_id) || [] : undefined,
+        app_schedule_classes: student.child_id
+          ? currentPlanClassesByStudent.get(student.id) || schedulesByChild.get(student.child_id) || []
+          : undefined,
         active_package: student.child_id ? pkgsMap.get(student.child_id) || null : null,
       })) as Student[]);
     } catch (err) {
@@ -668,6 +704,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setMemo(student.memo || '');
       setIsSmsEnabled(student.is_sms_enabled);
       setCourseTab('current');
+      setCurrentMonthClassDay('전체');
       setNextMonthClassDay('전체');
 
       // Get first assigned class details if exists
@@ -683,21 +720,109 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         : [emptyAssignment()]);
 
       if (student.child_id) {
-        const [{ data: owned }, { data: plans }] = await Promise.all([
+        const [
+          { data: owned },
+          { data: plans },
+          { data: currentBills },
+          { data: currentPlans },
+          { data: previousPlans },
+          { data: previousBills },
+        ] = await Promise.all([
           supabase
             .from('user_packages')
-            .select('option_id, package_name, status')
+            .select('option_id, package_name, status, remaining_count, valid_until, expiry_date')
             .eq('child_id', student.child_id)
-            .in('status', ['active', 'expired', 'exhausted']),
+            .eq('status', 'active'),
           supabase
             .from('academy_student_monthly_plans')
             .select('item_type, class_schedule_id, package_option_id, billing_cycle, payment_day')
             .eq('student_id', student.id)
             .eq('effective_month', nextMonthStart())
             .eq('status', 'planned'),
+          supabase
+            .from('academy_bills')
+            .select('id, package_option_id, amount_paid, status, payment_request_id')
+            .eq('student_id', student.id)
+            .eq('bill_month', currentBillMonth()),
+          supabase
+            .from('academy_student_monthly_plans')
+            .select('item_type, class_schedule_id, package_option_id, billing_cycle, payment_day')
+            .eq('student_id', student.id)
+            .eq('effective_month', `${currentBillMonth()}-01`)
+            .in('status', ['planned', 'applied']),
+          supabase
+            .from('academy_student_monthly_plans')
+            .select('package_option_id')
+            .eq('student_id', student.id)
+            .eq('effective_month', `${billMonthByOffset(-1)}-01`)
+            .eq('item_type', 'package')
+            .in('status', ['planned', 'applied']),
+          supabase
+            .from('academy_bills')
+            .select('package_option_id')
+            .eq('student_id', student.id)
+            .eq('bill_month', billMonthByOffset(-1)),
         ]);
-        const ownedRows = (owned || []) as Array<{ option_id: string | null; package_name: string | null }>;
+        const today = new Date().toISOString().slice(0, 10);
+        const ownedRows = ((owned || []) as Array<{
+          option_id: string | null;
+          package_name: string | null;
+          remaining_count: number | null;
+          valid_until: string | null;
+          expiry_date: string | null;
+        }>).filter((row) => {
+          const expiresOn = row.valid_until || row.expiry_date || null;
+          if (expiresOn && expiresOn < today) return false;
+          return true;
+        });
         setCurrentPackageLabels(Array.from(new Set(ownedRows.map((row) => row.package_name).filter(Boolean) as string[])));
+        const currentBillRows = (currentBills || []) as Array<{
+          package_option_id: string | null;
+          amount_paid: number | null;
+          status: string | null;
+        }>;
+        const currentPlanRows = (currentPlans || []) as any[];
+        const currentPlanPackageIds = currentPlanRows
+          .filter((plan) => plan.item_type === 'package')
+          .map((plan) => plan.package_option_id)
+          .filter(Boolean) as string[];
+        const currentBillPackageIds = currentBillRows
+          .map((bill) => bill.package_option_id)
+          .filter(Boolean) as string[];
+        const previousPlanPackageIds = (previousPlans || [])
+          .map((plan: any) => plan.package_option_id)
+          .filter(Boolean) as string[];
+        const previousBillPackageIds = (previousBills || [])
+          .map((bill: any) => bill.package_option_id)
+          .filter(Boolean) as string[];
+        const currentPackageOptionIds = currentPlanPackageIds.length > 0
+          ? currentPlanPackageIds
+          : currentBillPackageIds.length > 0
+            ? currentBillPackageIds
+            : previousPlanPackageIds.length > 0
+              ? previousPlanPackageIds
+              : previousBillPackageIds;
+        const fallbackOwnedOptionIds = ownedRows.map((row) => row.option_id).filter(Boolean) as string[];
+        setCurrentMonthPackageSource(
+          currentPlanPackageIds.length > 0 ? 'current_plan'
+            : currentBillPackageIds.length > 0 ? 'current_bill'
+              : previousPlanPackageIds.length > 0 ? 'previous_plan'
+                : previousBillPackageIds.length > 0 ? 'previous_bill'
+                  : fallbackOwnedOptionIds.length > 0 ? 'active_owned'
+                    : 'none',
+        );
+        setCurrentMonthPackages(Array.from(new Set(currentPackageOptionIds.length > 0 ? currentPackageOptionIds : fallbackOwnedOptionIds))
+          .map((optionId) => ({
+            ...emptyAssignment(),
+            package_option_id: optionId,
+          })));
+        const plannedCurrentClassIds = currentPlanRows
+          .filter((plan) => plan.item_type === 'class')
+          .map((plan) => plan.class_schedule_id)
+          .filter(Boolean);
+        setCurrentMonthClassIds(plannedCurrentClassIds.length > 0
+          ? plannedCurrentClassIds
+          : (student.app_schedule_classes || []).map((schedule) => schedule.id));
         const firstOptionId = ownedRows.find((row) => row.option_id)?.option_id || '';
         const planRows = (plans || []) as any[];
         setNextMonthClassIds(planRows.length > 0
@@ -716,6 +841,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             }] : []));
       } else {
         setCurrentPackageLabels([]);
+        setCurrentMonthPackages([]);
+        setCurrentMonthPackageSource('none');
+        setCurrentMonthClassIds([]);
         setNextMonthClassIds([]);
         setNextMonthPackages([]);
       }
@@ -736,8 +864,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setMemo('');
       setIsSmsEnabled(true);
       setCourseTab('current');
+      setCurrentMonthClassDay('전체');
       setNextMonthClassDay('전체');
       setCurrentPackageLabels([]);
+      setCurrentMonthPackages([]);
+      setCurrentMonthPackageSource('none');
+      setCurrentMonthClassIds([]);
       setNextMonthClassIds([]);
       setNextMonthPackages([]);
       setClassAssignments([emptyAssignment()]);
@@ -761,6 +893,78 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       .limit(1);
 
     return data && data.length > 0 ? data[0].id : null;
+  };
+
+  const handleSaveCurrentMonthBill = async () => {
+    if (!editingId) return;
+    if (currentMonthPackages.some((assignment) => !assignment.package_option_id)) {
+      alert('추가한 청구 항목의 이용권을 모두 선택해 주세요.');
+      return;
+    }
+
+    const optionIds = currentMonthPackages.map((assignment) => assignment.package_option_id);
+    if (new Set(optionIds).size !== optionIds.length) {
+      alert('동일한 이용권을 중복으로 청구할 수 없습니다.');
+      return;
+    }
+
+    const selectedOptions = packageOptions.filter((option) => optionIds.includes(option.id));
+    const totalAmount = selectedOptions.reduce((sum, option) => sum + option.price, 0);
+    const description = selectedOptions.length > 0
+      ? selectedOptions.map((option) => `${option.packages?.name || '이용권'} (${option.label})`).join(', ')
+      : '청구 없음';
+    if (!confirm(`${studentName} 원생의 ${monthLabel(0)} 수업·청구 예정 구성을 저장할까요?\n${description}\n예상 청구액 ${totalAmount.toLocaleString()}원\n저장 후 수납 관리의 청구대상 관리에 반영됩니다.`)) return;
+
+    setCurrentMonthBillSaving(true);
+    try {
+      const currentMonthStart = `${currentBillMonth()}-01`;
+      const { error: deletePlanError } = await supabase
+        .from('academy_student_monthly_plans')
+        .delete()
+        .eq('student_id', editingId)
+        .eq('effective_month', currentMonthStart)
+        .in('status', ['planned', 'applied']);
+      if (deletePlanError) throw deletePlanError;
+
+      const currentPlanRows = [
+        ...currentMonthClassIds.map((classScheduleId) => ({
+          student_id: editingId,
+          branch_id: selectedBranchId,
+          effective_month: currentMonthStart,
+          item_type: 'class',
+          class_schedule_id: classScheduleId,
+          package_option_id: null,
+          billing_cycle: '월 기간제',
+          payment_day: '매월 1일',
+          status: 'planned',
+        })),
+        ...optionIds.map((packageOptionId) => ({
+          student_id: editingId,
+          branch_id: selectedBranchId,
+          effective_month: currentMonthStart,
+          item_type: 'package',
+          class_schedule_id: null,
+          package_option_id: packageOptionId,
+          billing_cycle: '월 기간제',
+          payment_day: '매월 1일',
+          status: 'planned',
+        })),
+      ];
+      if (currentPlanRows.length > 0) {
+        const { error: insertPlanError } = await supabase
+          .from('academy_student_monthly_plans')
+          .insert(currentPlanRows);
+        if (insertPlanError) throw insertPlanError;
+      }
+
+      alert(optionIds.length > 0
+        ? '이번 달 수업·관리용 이용권을 청구 예정 대상으로 저장했습니다. 수납 관리의 청구대상 관리에서 확인할 수 있습니다.'
+        : '이번 달 수업 설정을 저장하고 청구 예정 이용권을 모두 제거했습니다.');
+    } catch (error: any) {
+      alert(`이번 달 청구 처리 실패: ${error?.message || '알 수 없는 오류'}`);
+    } finally {
+      setCurrentMonthBillSaving(false);
+    }
   };
 
   // Save or Update Student
@@ -1186,6 +1390,17 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const visibleModalClasses = nextMonthClassDay === '전체'
     ? sortedModalClasses
     : sortedModalClasses.filter((item) => normalizedWeekday(item.day_of_week) === nextMonthClassDay);
+  const visibleCurrentMonthClasses = currentMonthClassDay === '전체'
+    ? sortedModalClasses
+    : sortedModalClasses.filter((item) => normalizedWeekday(item.day_of_week) === currentMonthClassDay);
+  const currentMonthPackageGuide = {
+    current_plan: { tone: 'border-blue-200 bg-blue-50 text-blue-700', text: '이번 달에 저장해 둔 청구 예정 이용권을 불러왔습니다. 변경 후 다시 저장할 수 있습니다.' },
+    current_bill: { tone: 'border-indigo-200 bg-indigo-50 text-indigo-700', text: '이번 달에 이미 생성된 청구내역을 기준으로 불러왔습니다. 저장하면 새 청구서가 아니라 청구대상 관리의 예정 구성으로 반영됩니다.' },
+    previous_plan: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-700', text: '지난달에 설정한 관리용 이용권을 이번 달 기본값으로 가져왔습니다. 내용이 맞는지 확인한 후 저장해 주세요.' },
+    previous_bill: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-700', text: '지난달에 청구했던 이용권을 이번 달 기본값으로 가져왔습니다. 이용권이 달라졌다면 추가·삭제 후 저장해 주세요.' },
+    active_owned: { tone: 'border-amber-200 bg-amber-50 text-amber-700', text: '지난달 이용권 기록이 없어 현재 활성 지급 이용권을 참고해 기본값을 구성했습니다. 청구 대상이 맞는지 확인해 주세요.' },
+    none: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: '지난달 이용권과 현재 활성 이용권이 없습니다. 이번 달에 청구할 이용권을 직접 추가해 주세요.' },
+  }[currentMonthPackageSource];
 
   return (
     <div className="space-y-6">
@@ -1873,9 +2088,65 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 )}
                 {isModalAppLinked && courseTab === 'current' ? (
                   <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
-                    <div><div className="text-xs font-black text-slate-800">이번 달 수업·이용권</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">앱의 실제 예약 및 보유 이용권 기준이며 여기서는 수정할 수 없습니다.</div></div>
-                    <div><div className="mb-1.5 text-[11px] font-black text-slate-500">수업</div><div className="flex flex-wrap gap-1.5">{(modalStudent?.app_schedule_classes || []).length > 0 ? modalStudent?.app_schedule_classes?.map((schedule) => <span key={schedule.id} className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-700">{scheduleLabel(schedule)}</span>) : <span className="text-xs font-bold text-slate-400">배정된 수업 없음</span>}</div></div>
-                    <div><div className="mb-1.5 text-[11px] font-black text-slate-500">이용권</div><div className="flex flex-wrap gap-1.5">{currentPackageLabels.length > 0 ? currentPackageLabels.map((label) => <span key={label} className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">{label}</span>) : <span className="text-xs font-bold text-slate-400">보유 이용권 없음</span>}</div></div>
+                    <div><div className="text-xs font-black text-slate-800">이번 달 수업·청구 이용권</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">수업과 보유 이용권은 그대로 유지하고, 이번 달에 청구할 이용권만 편집합니다.</div></div>
+                    <div className="space-y-3 rounded-2xl border border-blue-100 bg-white p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div><div className="text-[11px] font-black text-blue-700">이번 달 수업 선택</div><div className="text-[10px] font-medium text-slate-500">선택 {currentMonthClassIds.length}개</div></div>
+                        {currentMonthClassIds.length > 0 && <button type="button" disabled={currentMonthBillSaving} onClick={() => setCurrentMonthClassIds([])} className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 disabled:opacity-50">전체 해제</button>}
+                      </div>
+
+                      {currentMonthClassIds.length > 0 && (
+                        <div className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto rounded-xl bg-blue-50 p-2">
+                          {currentMonthClassIds.map((id) => {
+                            const selected = classes.find((item) => item.id === id);
+                            return selected ? <button key={id} type="button" disabled={currentMonthBillSaving} onClick={() => setCurrentMonthClassIds((current) => current.filter((itemId) => itemId !== id))} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-blue-700 shadow-xs disabled:opacity-50">{normalizedWeekday(selected.day_of_week)} {selected.start_time?.slice(0, 5)} · {selected.target_class} ×</button> : null;
+                          })}
+                        </div>
+                      )}
+
+                      <div className="flex gap-1.5 overflow-x-auto pb-1">
+                        {['전체', ...availableClassDays].map((day) => <button key={day} type="button" onClick={() => setCurrentMonthClassDay(day)} className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-black ${currentMonthClassDay === day ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{day}{day !== '전체' ? '요일' : ''}</button>)}
+                      </div>
+
+                      <div className="grid max-h-72 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+                        {visibleCurrentMonthClasses.map((schedule) => {
+                          const checked = currentMonthClassIds.includes(schedule.id);
+                          return <label key={schedule.id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition ${checked ? 'border-blue-300 bg-blue-50' : 'border-transparent bg-slate-50 hover:border-slate-200'}`}>
+                            <input type="checkbox" checked={checked} disabled={currentMonthBillSaving} onChange={(event) => setCurrentMonthClassIds((current) => event.target.checked ? Array.from(new Set([...current, schedule.id])) : current.filter((id) => id !== schedule.id))} className="h-4 w-4 shrink-0 accent-blue-600"/>
+                            <span className="min-w-0"><span className="block truncate text-xs font-black text-slate-800">{schedule.target_class}</span><span className="mt-0.5 block text-[10px] font-bold text-slate-500">{normalizedWeekday(schedule.day_of_week)}요일 · {schedule.start_time?.slice(0, 5) || '--:--'}~{schedule.end_time?.slice(0, 5) || '--:--'}</span></span>
+                          </label>;
+                        })}
+                        {visibleCurrentMonthClasses.length === 0 && <div className="col-span-full rounded-xl bg-slate-50 py-6 text-center text-xs font-bold text-slate-400">해당 요일의 수업이 없습니다.</div>}
+                      </div>
+                    </div>
+                    <div><div className="mb-1.5 text-[11px] font-black text-slate-500">실제 지급 이용권(참고)</div><div className="flex flex-wrap gap-1.5">{currentPackageLabels.length > 0 ? currentPackageLabels.map((label) => <span key={label} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">{label}</span>) : <span className="text-xs font-bold text-slate-400">지급된 이용권 없음</span>}</div><div className="mt-1 text-[10px] font-bold text-rose-500">아래 관리용 이용권을 수정해도 실제 지급 이용권은 생성·변경되지 않습니다.</div></div>
+                    <div className="border-t border-slate-100 pt-3">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <div><div className="text-[11px] font-black text-emerald-700">현재 관리용 이용권 · 이번 달 청구 예정</div><div className="text-[10px] text-slate-500">이번 달 저장값이 없으면 지난달 구성을 기본으로 불러옵니다. 저장 시 청구대상 관리에 반영됩니다.</div></div>
+                        <button type="button" disabled={currentMonthBillSaving} onClick={() => setCurrentMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"><Plus size={12}/> 이용권 추가</button>
+                      </div>
+                      <div className={`mb-3 rounded-xl border px-3 py-2.5 text-[10px] font-bold leading-5 ${currentMonthPackageGuide.tone}`}>
+                        <span className="mr-1">안내:</span>{currentMonthPackageGuide.text}
+                      </div>
+                      <div className="space-y-2">
+                        {currentMonthPackages.map((assignment, index) => {
+                          const selected = packageOptions.find((option) => option.id === assignment.package_option_id);
+                          return <div key={index} className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/40 p-2">
+                            <select value={assignment.package_option_id} disabled={currentMonthBillSaving} onChange={(event) => setCurrentMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, package_option_id: event.target.value } : item))} className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none disabled:bg-slate-100">
+                              <option value="">이용권을 선택해 주세요</option>
+                              {packageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}
+                            </select>
+                            {selected && <span className="hidden shrink-0 text-[10px] font-black text-emerald-700 sm:block">{selected.price.toLocaleString()}원</span>}
+                            <button type="button" disabled={currentMonthBillSaving} aria-label="이번 달 청구 이용권 삭제" onClick={() => setCurrentMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={14}/></button>
+                          </div>;
+                        })}
+                        {currentMonthPackages.length === 0 && <div className="rounded-xl bg-slate-50 py-4 text-center text-[11px] font-bold text-slate-400">이번 달 청구 이용권이 없습니다.</div>}
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3">
+                        <span className="text-xs font-black text-slate-600">총 청구액 {packageOptions.filter((option) => currentMonthPackages.some((item) => item.package_option_id === option.id)).reduce((sum, option) => sum + option.price, 0).toLocaleString()}원</span>
+                        <button type="button" onClick={() => void handleSaveCurrentMonthBill()} disabled={currentMonthBillSaving} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{currentMonthBillSaving ? <Loader2 size={13} className="animate-spin"/> : <CheckCircle size={13}/>} 청구 예정 저장</button>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                 <>

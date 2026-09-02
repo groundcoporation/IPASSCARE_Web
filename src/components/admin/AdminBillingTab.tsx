@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight, Search } from 'lucide-react';
+import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight, Search, Trash2 } from 'lucide-react';
 
 interface Bill {
   id: string;
@@ -215,7 +215,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const isStudentAlreadyBilled = (student: (typeof billingTargetStudents)[number]) =>
     student.packages.length > 0
     && student.packages.every((target) =>
-      target.hasTargetMonthPackage || Boolean(targetBillStatuses[billStatusKey(target)])
+      target.hasTargetMonthPackage || (
+        target.userPackageId.startsWith('plan:')
+          ? Boolean(targetBillStatuses[billStatusKey(target)]?.status !== 'paid'
+            && targetBillStatuses[billStatusKey(target)])
+          : Boolean(targetBillStatuses[billStatusKey(target)])
+      )
     );
 
   const selectableBillingStudents = visibleBillingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
@@ -697,7 +702,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
       const nextBillStatuses: Record<string, TargetBillStatus> = {};
       (issuedBills as any[] || []).forEach((bill) => {
-        nextBillStatuses[`${bill.student_id}:${bill.package_option_id || 'none'}:${bill.bill_month}`] = {
+        const key = `${bill.student_id}:${bill.package_option_id || 'none'}:${bill.bill_month}`;
+        const current = nextBillStatuses[key];
+        if (current && current.status !== 'paid') return;
+        nextBillStatuses[key] = {
           status: bill.status,
           paymentRequestId: bill.payment_request_id || null,
         };
@@ -815,7 +823,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       for (const target of selectedTargets) {
         let existingQuery = supabase
           .from('academy_bills')
-          .select('id')
+          .select('id, status')
           .eq('student_id', target.studentId)
           .eq('bill_month', targetMonth);
 
@@ -828,9 +836,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         const { data: existing, error: existingError } = await existingQuery.limit(1);
         if (existingError) throw existingError;
 
-        if (existing && existing.length > 0) {
+        if (existing?.some((bill) => bill.status !== 'paid')) {
           alreadyCount++;
-          continue; // Already exists
+          if (target.userPackageId.startsWith('plan:')) {
+            await supabase.from('academy_student_monthly_plans').update({ status: 'applied' }).eq('id', target.userPackageId.slice(5));
+          }
+          continue;
         }
 
         // Create bill
@@ -859,6 +870,13 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           lastErrMsg = insErr.message;
         } else {
           createdCount++;
+          if (target.userPackageId.startsWith('plan:')) {
+            const { error: planStatusError } = await supabase
+              .from('academy_student_monthly_plans')
+              .update({ status: 'applied' })
+              .eq('id', target.userPackageId.slice(5));
+            if (planStatusError) throw planStatusError;
+          }
         }
       }
 
@@ -887,6 +905,37 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     setPaymentTiming('now');
     setScheduledAt(new Date().toISOString().slice(0, 10));
     setIsPayModalOpen(true);
+  };
+
+  const handleDeleteBill = async (bill: Bill) => {
+    if (bill.amount_paid > 0 || !['unpaid', 'declined', 'expired'].includes(bill.status)) {
+      alert('결제 또는 수납이 시작된 청구서는 삭제할 수 없습니다.');
+      return;
+    }
+    const label = bill.package_options
+      ? `${bill.package_options.packages?.name || '이용권'} (${bill.package_options.label})`
+      : bill.memo || '청구 항목';
+    if (!confirm(`${bill.academy_students?.student_name || '원생'}의 ${bill.bill_month}월 ${label} 청구서를 삭제할까요?\n이미 앱으로 발송된 미결제 청구서는 만료 처리됩니다.`)) return;
+
+    setActionLoading(true);
+    try {
+      const { error } = await supabase.rpc('delete_unpaid_academy_bill', {
+        p_bill_id: bill.id,
+        p_reason: '수납 관리에서 청구서 삭제',
+      });
+      if (error) throw error;
+      setSelectedAppBillIds((current) => {
+        const next = new Set(current);
+        next.delete(bill.id);
+        return next;
+      });
+      await Promise.all([loadBills(), loadBillingTargets()]);
+      alert('미결제 청구서를 삭제했습니다.');
+    } catch (error: any) {
+      alert(`청구서 삭제 실패: ${error?.message || '알 수 없는 오류'}`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   // Process manual payment
@@ -1307,9 +1356,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                   이용권 {student.packages.length}개
                                 </span>
                               </div>
-                              <span className="text-xs font-black text-slate-800">
-                                예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-black text-slate-800">
+                                  예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원
+                                </span>
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -1551,9 +1602,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                   청구 이용권 {student.bills.length}개
                                 </span>
                               </div>
-                              <span className="text-xs font-black text-slate-800">
-                                총 청구액 <b className="text-blue-600">{student.bills.reduce((sum, bill) => sum + bill.amount_due, 0).toLocaleString()}</b>원
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-black text-slate-800">
+                                  총 청구액 <b className="text-blue-600">{student.bills.reduce((sum, bill) => sum + bill.amount_due, 0).toLocaleString()}</b>원
+                                </span>
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -1567,6 +1620,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           const canSendToApp = bill.status === 'unpaid' && !bill.payment_request_id && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
                           const isDeclined = bill.status === 'declined';
                           const isExpired = bill.status === 'expired';
+                          const canDeleteBill = bill.amount_paid === 0 && ['unpaid', 'declined', 'expired'].includes(bill.status);
                           const methodText: Record<string, string> = { app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
                           return (
                             <tr key={bill.id} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
@@ -1604,15 +1658,18 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                       : <span className="inline-flex items-center gap-1 rounded-full border border-amber-100 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700"><AlertCircle size={11} /> 미납</span>}
                               </td>
                               <td className="px-4 py-3 text-center">
-                                {isDeclined
-                                  ? <span className="inline-flex rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700">거절됨</span>
-                                  : isExpired
-                                    ? <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600">만료됨</span>
-                                    : bill.payment_request_id
-                                  ? <span className="inline-flex rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-black text-indigo-700">발송 완료</span>
-                                  : canSendToApp
-                                    ? <span className="text-[10px] font-bold text-slate-400">발송 가능</span>
-                                    : <span className="text-[10px] font-bold text-slate-300">발송 불가</span>}
+                                <div className="flex flex-col items-center gap-1.5">
+                                  {isDeclined
+                                    ? <span className="inline-flex rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700">거절됨</span>
+                                    : isExpired
+                                      ? <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600">만료됨</span>
+                                      : bill.payment_request_id
+                                    ? <span className="inline-flex rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-black text-indigo-700">발송 완료</span>
+                                    : canSendToApp
+                                      ? <span className="text-[10px] font-bold text-slate-400">발송 가능</span>
+                                      : <span className="text-[10px] font-bold text-slate-300">발송 불가</span>}
+                                  {canDeleteBill && <button type="button" onClick={() => void handleDeleteBill(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}
+                                </div>
                               </td>
                             </tr>
                           );
