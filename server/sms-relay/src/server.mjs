@@ -19,6 +19,7 @@ const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
 const supabaseUrl = process.env.SUPABASE_URL.replace(/\/$/, '');
 const bizgoUrl = process.env.BIZGO_API_URL || 'https://mars.ibapi.kr/api/comm/v1/send/omni';
+const bizgoEnvironment = bizgoUrl.includes('sandbox-mars.ibapi.kr') ? 'sandbox' : 'production';
 const senderPhone = normalizePhone(process.env.BIZGO_SENDER_PHONE);
 const allowedOrigins = new Set(
   (process.env.ALLOWED_ORIGINS || '')
@@ -176,7 +177,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && req.url === '/health') {
-    return jsonResponse(res, 200, { ok: true, service: 'ipasscare-sms-relay' }, origin);
+    return jsonResponse(res, 200, {
+      ok: true,
+      service: 'ipasscare-sms-relay',
+      environment: bizgoEnvironment,
+    }, origin);
   }
 
   if (req.method !== 'POST' || req.url !== '/v1/messages/send') {
@@ -242,6 +247,7 @@ const server = http.createServer(async (req, res) => {
     console.info('SMS accepted', { requestId, userId: authUser.id, branchId: request.branchId, acceptedCount });
     return jsonResponse(res, 200, {
       requestId,
+      environment: bizgoEnvironment,
       senderPhone,
       acceptedCount,
       failedCount: results.length - acceptedCount,

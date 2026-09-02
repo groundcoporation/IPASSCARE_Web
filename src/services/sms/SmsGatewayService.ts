@@ -25,6 +25,7 @@ interface SendSmsRequest {
 
 interface SendSmsResponse {
   requestId: string;
+  environment: 'sandbox' | 'production';
   senderPhone: string;
   acceptedCount: number;
   failedCount: number;
@@ -34,12 +35,12 @@ interface SendSmsResponse {
 const relayUrl = (import.meta.env.VITE_SMS_RELAY_URL as string | undefined)?.replace(/\/$/, '');
 
 export class SmsGatewayError extends Error {
-  constructor(
-    message: string,
-    public readonly status?: number,
-  ) {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = 'SmsGatewayError';
+    this.status = status;
   }
 }
 

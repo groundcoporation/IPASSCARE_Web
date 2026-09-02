@@ -352,12 +352,16 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
       let query = supabase.from('academy_students').select(`
         id,
         child_id,
+        parent_user_id,
         student_name,
         mother_phone,
         father_phone,
         student_phone,
         attendance_code,
         branch_id,
+        is_sms_enabled,
+        parent_user:users(status),
+        child:children(deleted_at),
         academy_student_classes(
           class_schedules(target_class)
         )
@@ -369,10 +373,15 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
 
       const { data, error } = await query;
       if (!error && data) {
+        const activeStudents = data.filter((item: any) => (
+          item.is_sms_enabled !== false
+          && (!item.child_id || item.child?.deleted_at == null)
+          && (!item.parent_user_id || item.parent_user?.status !== 'deleted')
+        ));
         const schedulesByChild = await loadActiveAppSchedulesByChild(
-          data.map((item: any) => item.child_id).filter(Boolean),
+          activeStudents.map((item: any) => item.child_id).filter(Boolean),
         );
-        const mappedStudents: Student[] = data.map((item: any) => {
+        const mappedStudents: Student[] = activeStudents.map((item: any) => {
           const classNames = item.child_id
             ? (schedulesByChild.get(item.child_id) || []).map((schedule) => schedule.target_class)
             : (item.academy_student_classes || [])
@@ -797,35 +806,49 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
         gatewayResponse.results.map((result) => [result.recipientId, result]),
       );
 
-      // 비즈고의 수신자별 접수 결과를 발송 원장에 기록한다.
-      const logRows = recipients.map((recipient) => {
-        const gatewayResult = resultsByRecipientId.get(recipient.id);
+      const isSandbox = gatewayResponse.environment === 'sandbox';
 
-        return {
-          branch_id: targetBranchId,
-          type: isLms ? 'LMS' : 'SMS',
-          sender_phone: gatewayResponse.senderPhone,
-          receiver_name: `${recipient.studentName} (${recipient.relation})`,
-          receiver_phone: recipient.phone,
-          content: messageContent,
-          cost: costPerMsg,
-          status: gatewayResult?.success ? 'success' : 'failed',
-          sent_at: gatewayResult?.success ? new Date().toISOString() : null,
-          reserved_at: null,
-        };
-      });
+      if (!isSandbox) {
+        // 운영 발송만 원장에 기록하고 i-Point 차감 대상으로 반영한다.
+        const logRows = recipients.map((recipient) => {
+          const gatewayResult = resultsByRecipientId.get(recipient.id);
 
-      const { error: logError } = await supabase
-        .from('academy_sms_logs')
-        .insert(logRows);
+          return {
+            branch_id: targetBranchId,
+            type: isLms ? 'LMS' : 'SMS',
+            sender_phone: gatewayResponse.senderPhone,
+            receiver_name: `${recipient.studentName} (${recipient.relation})`,
+            receiver_phone: recipient.phone,
+            content: messageContent,
+            cost: costPerMsg,
+            status: gatewayResult?.success ? 'success' : 'failed',
+            sent_at: gatewayResult?.success ? new Date().toISOString() : null,
+            reserved_at: null,
+          };
+        });
 
-      if (logError) {
-        throw new Error(`문자는 접수됐지만 발송 원장 저장에 실패했습니다. 관리자 확인이 필요합니다: ${logError.message}`);
+        const { error: logError } = await supabase
+          .from('academy_sms_logs')
+          .insert(logRows);
+
+        if (logError) {
+          throw new Error(`문자는 접수됐지만 발송 원장 저장에 실패했습니다. 관리자 확인이 필요합니다: ${logError.message}`);
+        }
+
+        await loadBalance();
+        await loadLogs();
+        await loadPointTransactions();
       }
 
-      await loadBalance();
-      await loadLogs();
-      await loadPointTransactions();
+      if (isSandbox) {
+        alert(
+          `[Sandbox 테스트 완료]\n` +
+          `- API 접수 성공: ${gatewayResponse.acceptedCount}명\n` +
+          `- 실패: ${gatewayResponse.failedCount}명\n` +
+          `- 실제 문자 발송 및 i-Point 차감 없음`,
+        );
+        return;
+      }
 
       const acceptedCost = gatewayResponse.acceptedCount * costPerMsg;
       alert(
