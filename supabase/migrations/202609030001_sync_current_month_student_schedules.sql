@@ -18,13 +18,11 @@ declare
   v_month_end date := (date_trunc('month', (now() at time zone 'Asia/Seoul')) + interval '1 month - 1 day')::date;
   v_effective_date date;
   v_previous_day date;
+  v_next_snapshot_start date;
+  v_new_assignment_ends_on date;
   v_schedule_id uuid;
   v_generated integer := 0;
 begin
-  if auth.uid() is null then
-    raise exception '로그인이 필요합니다.';
-  end if;
-
   select * into v_student
   from public.academy_students
   where id = p_student_id
@@ -34,7 +32,9 @@ begin
   if v_student.parent_user_id is null or v_student.child_id is null then
     raise exception '앱 회원과 연결된 자녀만 이번 달 수업을 변경할 수 있습니다.';
   end if;
-  if not public.can_manage_branch(v_student.branch_id) then
+  -- SQL Editor runs without a JWT. Browser/API calls still require the
+  -- authenticated role (see the execute grant below) and branch permission.
+  if auth.uid() is not null and not public.can_manage_branch(v_student.branch_id) then
     raise exception '해당 지점의 수업을 변경할 권한이 없습니다.';
   end if;
   if exists (
@@ -88,6 +88,19 @@ begin
   if v_effective_date <= v_month_end then
     v_previous_day := v_effective_date - 1;
 
+    -- A next-month snapshot may already exist. Cap the replacement rows at
+    -- its boundary so the app never sees both month snapshots as active.
+    select min(assignment.starts_on) into v_next_snapshot_start
+    from public.student_schedule_assignments assignment
+    where assignment.user_id = v_student.parent_user_id
+      and assignment.child_id = v_student.child_id
+      and assignment.is_active is true
+      and assignment.starts_on > v_effective_date;
+    v_new_assignment_ends_on := case
+      when v_next_snapshot_start is null then null
+      else v_next_snapshot_start - 1
+    end;
+
     -- Do not touch attendance that has already been recorded. All remaining
     -- reservations are recreated from the selected timetable below.
     delete from public.reservations reservation
@@ -124,7 +137,7 @@ begin
         starts_on, ends_on, is_active, created_by
       ) values (
         v_student.parent_user_id, v_student.child_id, v_student.branch_id,
-        v_schedule_id, v_effective_date, null, true, auth.uid()
+        v_schedule_id, v_effective_date, v_new_assignment_ends_on, true, auth.uid()
       );
     end loop;
 

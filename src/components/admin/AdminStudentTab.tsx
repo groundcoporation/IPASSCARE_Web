@@ -217,6 +217,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [currentMonthClassIds, setCurrentMonthClassIds] = useState<string[]>([]);
   const [currentMonthClassDay, setCurrentMonthClassDay] = useState('전체');
   const [currentMonthBillSaving, setCurrentMonthBillSaving] = useState(false);
+  const [applyCurrentClassesToNextMonth, setApplyCurrentClassesToNextMonth] = useState(true);
   const [currentPackageLabels, setCurrentPackageLabels] = useState<string[]>([]);
   const [currentEditingStudent, setCurrentEditingStudent] = useState<Student | null>(null);
 
@@ -712,6 +713,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setCourseTab('current');
       setCurrentMonthClassDay('전체');
       setNextMonthClassDay('전체');
+      setApplyCurrentClassesToNextMonth(true);
 
       // Get first assigned class details if exists
       const assignments = (student.academy_student_classes || [])
@@ -872,6 +874,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setCourseTab('current');
       setCurrentMonthClassDay('전체');
       setNextMonthClassDay('전체');
+      setApplyCurrentClassesToNextMonth(true);
       setCurrentPackageLabels([]);
       setCurrentMonthPackages([]);
       setCurrentMonthPackageSource('none');
@@ -919,15 +922,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     const description = selectedOptions.length > 0
       ? selectedOptions.map((option) => `${option.packages?.name || '이용권'} (${option.label})`).join(', ')
       : '청구 없음';
-    if (!confirm(`${studentName} 원생의 ${monthLabel(0)} 수업·청구 예정 구성을 저장할까요?\n${description}\n예상 청구액 ${totalAmount.toLocaleString()}원\n저장 후 실제 앱의 남은 수업 일정과 수납 관리 청구대상에 반영됩니다.`)) return;
+    const nextMonthNotice = applyCurrentClassesToNextMonth
+      ? `\n다음 달 수업 일정도 현재 선택으로 교체됩니다.`
+      : `\n다음 달에 저장된 별도 수업 일정은 유지됩니다.`;
+    if (!confirm(`${studentName} 원생의 ${monthLabel(0)} 수업·청구 예정 구성을 저장할까요?\n${description}\n예상 청구액 ${totalAmount.toLocaleString()}원\n저장 후 실제 앱의 남은 수업 일정과 수납 관리 청구대상에 반영됩니다.${nextMonthNotice}`)) return;
 
     setCurrentMonthBillSaving(true);
     try {
       const { data: scheduleResult, error: scheduleError } = await supabase.rpc(
-        'sync_current_month_student_schedules',
+        'sync_current_and_next_month_student_schedules',
         {
           p_student_id: editingId,
           p_schedule_ids: currentMonthClassIds,
+          p_apply_next_month: applyCurrentClassesToNextMonth,
         },
       );
       if (scheduleError) throw scheduleError;
@@ -959,13 +966,16 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         if (insertPackagePlanError) throw insertPackagePlanError;
       }
 
-      const effectiveFrom = scheduleResult?.effective_from
-        ? new Date(`${scheduleResult.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
+      const effectiveFrom = scheduleResult?.current?.effective_from
+        ? new Date(`${scheduleResult.current.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
         : '오늘';
+      if (applyCurrentClassesToNextMonth) {
+        setNextMonthClassIds(currentMonthClassIds);
+      }
       await loadData();
       alert(optionIds.length > 0
-        ? `이번 달 수업과 청구 예정 이용권을 저장했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.`
-        : `이번 달 수업 설정을 저장하고 청구 예정 이용권을 모두 제거했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.`);
+        ? `이번 달 수업과 청구 예정 이용권을 저장했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`
+        : `이번 달 수업 설정을 저장하고 청구 예정 이용권을 모두 제거했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`);
     } catch (error: any) {
       alert(`이번 달 청구 처리 실패: ${error?.message || '알 수 없는 오류'}`);
     } finally {
@@ -1452,7 +1462,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
   const modalStudent = editingId ? students.find((student) => student.id === editingId) || null : null;
   const isModalAppLinked = Boolean(modalStudent?.child_id);
-  const sortedModalClasses = [...classes].sort((left, right) => {
+  // The global admin view loads every branch's timetable, but a student's
+  // enrollment must only ever be edited against that student's selected branch.
+  const modalBranchClasses = classes.filter((item) => item.branch_id === selectedBranchId);
+  const sortedModalClasses = [...modalBranchClasses].sort((left, right) => {
     const dayDiff = WEEKDAYS.indexOf(normalizedWeekday(left.day_of_week))
       - WEEKDAYS.indexOf(normalizedWeekday(right.day_of_week));
     if (dayDiff !== 0) return dayDiff;
@@ -2190,6 +2203,10 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         })}
                         {visibleCurrentMonthClasses.length === 0 && <div className="col-span-full rounded-xl bg-slate-50 py-6 text-center text-xs font-bold text-slate-400">해당 요일의 수업이 없습니다.</div>}
                       </div>
+                      <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2.5 text-xs text-violet-900">
+                        <input type="checkbox" checked={applyCurrentClassesToNextMonth} onChange={(event) => setApplyCurrentClassesToNextMonth(event.target.checked)} className="mt-0.5 h-4 w-4 accent-violet-600"/>
+                        <span><span className="block font-black">다음 달에도 같은 수업 시간표 적용</span><span className="mt-0.5 block text-[10px] font-medium text-violet-700">체크하면 다음 달에 저장된 수업 일정은 현재 선택으로 교체됩니다. 이용권·청구는 변경되지 않습니다.</span></span>
+                      </label>
                     </div>
                     <div><div className="mb-1.5 text-[11px] font-black text-slate-500">실제 지급 이용권(참고)</div><div className="flex flex-wrap gap-1.5">{currentPackageLabels.length > 0 ? currentPackageLabels.map((label) => <span key={label} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">{label}</span>) : <span className="text-xs font-bold text-slate-400">지급된 이용권 없음</span>}</div><div className="mt-1 text-[10px] font-bold text-rose-500">아래 관리용 이용권을 수정해도 실제 지급 이용권은 생성·변경되지 않습니다.</div></div>
                     <div className="border-t border-slate-100 pt-3">
@@ -2287,7 +2304,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         {(isModalAppLinked || itemCount > 1) && <button type="button" aria-label="이용권 삭제" onClick={() => isModalAppLinked ? setNextMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index)) : setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-400 transition hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>}
                       </div>
                       <div className={`grid grid-cols-1 gap-3 ${isModalAppLinked ? '' : 'sm:grid-cols-2'}`}>
-                        {!isModalAppLinked && <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{classes.map((item) => <option key={item.id} value={item.id}>{scheduleLabel(item)}</option>)}</select></div>}
+                        {!isModalAppLinked && <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{modalBranchClasses.map((item) => <option key={item.id} value={item.id}>{scheduleLabel(item)}</option>)}</select></div>}
                         <div><label className="mb-1.5 block text-[11px] font-bold text-slate-500">{isModalAppLinked ? '이용권 변경' : '이용권 요금제 지정 *'}</label><select value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" required><option value="">이용권을 선택해 주세요</option>{selectablePackageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}</select></div>
                       </div>
                     </div>
