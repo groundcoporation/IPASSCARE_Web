@@ -57,6 +57,22 @@ interface OfflinePayment {
   username?: string;
 }
 
+interface AppPaymentRequest {
+  id: string;
+  parent_id: string;
+  parent_name: string | null;
+  branch_id: string | null;
+  final_amount: number;
+  total_amount: number;
+  status: string;
+  request_title: string | null;
+  request_type: string | null;
+  issued_source: string | null;
+  beneficiary_name: string | null;
+  created_at: string;
+  closed_at: string | null;
+}
+
 interface StudentClassRow {
   id: string;
   student_id: string;
@@ -149,6 +165,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Tab 2: Invoices data
   const [bills, setBills] = useState<Bill[]>([]);
+  const [appPaymentRequests, setAppPaymentRequests] = useState<AppPaymentRequest[]>([]);
   const [selectedAppBillIds, setSelectedAppBillIds] = useState<Set<string>>(new Set());
   const [directOnsitePayments, setDirectOnsitePayments] = useState<OfflinePayment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
@@ -763,9 +780,29 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         console.error('Error loading bills query:', error);
         setBills([]);
       }
+
+      const period = billingMonthPeriod(selectedMonth);
+      let appRequestQuery = supabase
+        .from('payment_requests')
+        .select('id, parent_id, parent_name, branch_id, final_amount, total_amount, status, request_title, request_type, issued_source, beneficiary_name, created_at, closed_at')
+        .eq('issued_source', 'admin_app')
+        .gte('created_at', `${period.start}T00:00:00+09:00`)
+        .lte('created_at', `${period.end}T23:59:59+09:00`)
+        .order('created_at', { ascending: false });
+      if (activeBranchId && activeBranchId !== 'all') {
+        appRequestQuery = appRequestQuery.eq('branch_id', activeBranchId);
+      }
+      const { data: appRequests, error: appRequestError } = await appRequestQuery;
+      if (appRequestError) throw appRequestError;
+      const linkedRequestIds = new Set((data || [])
+        .map((bill: any) => bill.payment_request_id)
+        .filter(Boolean));
+      setAppPaymentRequests(((appRequests || []) as AppPaymentRequest[])
+        .filter((request) => !linkedRequestIds.has(request.id)));
     } catch (err) {
       console.error('Error loading bills:', err);
       setBills([]);
+      setAppPaymentRequests([]);
     } finally {
       setLoading(false);
     }
@@ -1029,6 +1066,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       || (b.class_schedules?.target_class || '').toLowerCase().includes(query)
       || (b.memo || '').toLowerCase().includes(query);
   });
+  const filteredAppPaymentRequests = appPaymentRequests.filter((request) => {
+    if (statusFilter === 'paid' && request.status !== 'paid') return false;
+    if (statusFilter === 'unpaid' && request.status === 'paid') return false;
+    const query = invoiceSearch.trim().toLowerCase();
+    if (!query) return true;
+    return (request.parent_name || '').toLowerCase().includes(query)
+      || (request.beneficiary_name || '').toLowerCase().includes(query)
+      || (request.request_title || '').toLowerCase().includes(query);
+  });
 
   const appSendableBills = filteredBills.filter((bill) =>
     bill.status === 'unpaid'
@@ -1119,13 +1165,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Calculate sums
   const stats = React.useMemo(() => {
-    const totalDue = bills.reduce((sum, b) => sum + b.amount_due, 0);
-    const totalPaid = bills.reduce((sum, b) => sum + (b.status === 'paid' ? b.amount_paid : 0), 0);
+    const totalDue = bills.reduce((sum, b) => sum + b.amount_due, 0)
+      + appPaymentRequests.reduce((sum, request) => sum + Number(request.final_amount || request.total_amount || 0), 0);
+    const totalPaid = bills.reduce((sum, b) => sum + (b.status === 'paid' ? b.amount_paid : 0), 0)
+      + appPaymentRequests.reduce((sum, request) => request.status === 'paid' ? sum + Number(request.final_amount || request.total_amount || 0) : sum, 0);
     const totalUnpaid = totalDue - totalPaid;
     const rate = totalDue > 0 ? Math.round((totalPaid / totalDue) * 100) : 0;
     
     return { totalDue, totalPaid, totalUnpaid, rate };
-  }, [bills]);
+  }, [bills, appPaymentRequests]);
 
   return (
     <div className="space-y-6">
@@ -1694,6 +1742,32 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       </td>
                     </tr>
                   )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-3xl border border-violet-200 bg-white shadow-xs">
+            <div className="flex items-center justify-between border-b border-violet-100 bg-violet-50/70 px-5 py-4">
+              <div><h3 className="text-sm font-black text-slate-900">📱 어플 관리자 직접 청구</h3><p className="mt-0.5 text-[10px] font-medium text-slate-500">어플에서 학부모에게 직접 보낸 청구서이며 웹 청구와 중복된 건은 제외됩니다.</p></div>
+              <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-black text-violet-700">{filteredAppPaymentRequests.length}건</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-xs text-slate-600">
+                <thead className="border-b border-slate-200 bg-slate-100/80 text-[11px] font-black text-slate-700"><tr className="whitespace-nowrap"><th className="px-4 py-3">학부모 / 대상</th><th className="px-4 py-3">청구 이용권</th><th className="px-4 py-3 text-center">발행 경로</th><th className="px-4 py-3 text-center">발행일</th><th className="px-4 py-3 text-right">청구액</th><th className="px-4 py-3 text-center">상태</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredAppPaymentRequests.length > 0 ? filteredAppPaymentRequests.map((request) => {
+                    const statusMeta = request.status === 'paid'
+                      ? { label: '완납', style: 'bg-emerald-50 text-emerald-700' }
+                      : request.status === 'declined'
+                        ? { label: '거절', style: 'bg-rose-50 text-rose-700' }
+                        : request.status === 'expired'
+                          ? { label: '만료', style: 'bg-slate-100 text-slate-600' }
+                          : request.status === 'cancelled'
+                            ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
+                            : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
+                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount || request.total_amount || 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td></tr>;
+                  }) : <tr><td colSpan={6} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
                 </tbody>
               </table>
             </div>
