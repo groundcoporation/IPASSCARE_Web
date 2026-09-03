@@ -124,7 +124,16 @@ interface OwnedPackageTarget {
   billingCycle: string;
   paymentDay: string;
   classNames: string[];
+  parentUserId?: string;
   isShared?: boolean;
+  isAdditional?: boolean;
+}
+
+interface BillingTargetStudent {
+  studentId: string;
+  studentName: string;
+  isSmsEnabled: boolean;
+  packages: OwnedPackageTarget[];
 }
 
 interface AdminBillingTabProps {
@@ -159,6 +168,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   
   // Tab 1: Billing Targets data
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
+  const [billingRosterStudents, setBillingRosterStudents] = useState<BillingTargetStudent[]>([]);
   const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
   const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
   const [billingSearch, setBillingSearch] = useState('');
@@ -189,12 +199,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   // The ledger must show passes actually owned by each child. Class mappings
   // are used only for the connected-class labels.
   const billingTargetStudents = useMemo(() => {
-    const students = new Map<string, {
-      studentId: string;
-      studentName: string;
-      isSmsEnabled: boolean;
-      packages: OwnedPackageTarget[];
-    }>();
+    // Start with the active student roster, rather than only students who
+    // already have a pass or billing plan. This makes missing billing setup
+    // visible instead of silently omitting the student from this screen.
+    const students = new Map<string, BillingTargetStudent>(
+      billingRosterStudents.map((student) => [student.studentId, { ...student, packages: [] }]),
+    );
 
     billingTargets.forEach((row) => {
       const studentId = row.studentId;
@@ -211,7 +221,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     return Array.from(students.values()).sort((left, right) =>
       left.studentName.localeCompare(right.studentName, 'ko-KR')
     );
-  }, [billingTargets]);
+  }, [billingTargets, billingRosterStudents]);
 
   const visibleBillingTargetStudents = useMemo(() => {
     const query = billingSearch.trim().toLowerCase();
@@ -229,9 +239,27 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const billStatusKey = (target: OwnedPackageTarget, month = selectedMonth) =>
     `${target.studentId}:${target.optionId || 'none'}:${month}`;
 
-  const isStudentAlreadyBilled = (student: (typeof billingTargetStudents)[number]) =>
-    student.packages.length > 0
-    && student.packages.every((target) =>
+  const getStudentBillingState = (student: BillingTargetStudent) => {
+    if (student.packages.length === 0) return 'none' as const;
+    const studentStates = student.packages.map((target) => {
+      if (target.hasTargetMonthPackage) return 'renewed';
+      const bill = targetBillStatuses[billStatusKey(target)];
+      if (!bill) return 'pending';
+      if (bill.status === 'paid') return 'paid';
+      if (bill.status === 'partial') return 'partial';
+      return bill.paymentRequestId ? 'sent' : 'issued';
+    });
+    if (studentStates.every((state) => state === 'renewed')) return 'renewed' as const;
+    if (studentStates.every((state) => state === 'paid')) return 'paid' as const;
+    if (studentStates.some((state) => state === 'pending')) return 'pending' as const;
+    if (studentStates.some((state) => state === 'partial')) return 'partial' as const;
+    if (studentStates.some((state) => state === 'sent')) return 'sent' as const;
+    return 'issued' as const;
+  };
+
+  const isStudentAlreadyBilled = (student: BillingTargetStudent) =>
+    student.packages.length === 0
+    || student.packages.every((target) =>
       target.hasTargetMonthPackage || (
         target.userPackageId.startsWith('plan:')
           ? Boolean(targetBillStatuses[billStatusKey(target)]?.status !== 'paid'
@@ -239,6 +267,18 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           : Boolean(targetBillStatuses[billStatusKey(target)])
       )
     );
+
+  const billingSummary = useMemo(() => {
+    const counts = { total: billingTargetStudents.length, noTarget: 0, pending: 0, renewed: 0, billed: 0 };
+    billingTargetStudents.forEach((student) => {
+      const state = getStudentBillingState(student);
+      if (state === 'none') counts.noTarget += 1;
+      else if (state === 'pending') counts.pending += 1;
+      else if (state === 'renewed') counts.renewed += 1;
+      else counts.billed += 1;
+    });
+    return counts;
+  }, [billingTargetStudents, targetBillStatuses, selectedMonth]);
 
   const selectableBillingStudents = visibleBillingTargetStudents.filter((student) => !isStudentAlreadyBilled(student));
 
@@ -411,9 +451,18 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         && (!student.parent_user_id || student.parent?.status !== 'deleted')
         && (!activeBranchId || activeBranchId === 'all' || student.branch_id === activeBranchId)
       );
+      setBillingRosterStudents(activeStudents.map((student) => ({
+        studentId: student.id,
+        studentName: student.student_name || '원생',
+        isSmsEnabled: student.is_sms_enabled !== false,
+        packages: [],
+      })));
       const appStudents = activeStudents.filter((student) => Boolean(student.child_id));
       const webOnlyStudents = activeStudents.filter((student) => !student.child_id);
       const studentByChildId = new Map(appStudents.map((student) => [student.child_id, student]));
+      const parentUserIdByStudentId = new Map(
+        activeStudents.map((student) => [student.id, student.parent_user_id || null]),
+      );
       const studentsByParentId = new Map<string, any[]>();
       activeStudents.forEach((student) => {
         if (!student.parent_user_id) return;
@@ -429,17 +478,19 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             .select(`
               id,
               item_type,
+              status,
               student_id,
               branch_id,
               class_schedule_id,
               package_option_id,
               billing_cycle,
               payment_day,
+              billing_source,
               class_schedules(target_class),
               package_options(id, label, price, packages(id, name, voucher_type))
             `)
             .eq('effective_month', selectedPeriod.start)
-            .eq('status', 'planned')
+            .in('status', ['planned', 'applied'])
             .in('student_id', appStudents.map((student) => student.id))
         : { data: [], error: null };
       if (monthlyPlanError) throw monthlyPlanError;
@@ -480,7 +531,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const previousPeriod = billingMonthPeriod(previousMonth);
       const { data: ownedPackages, error: packageError } = await supabase
         .from('user_packages')
-        .select('id, child_id, package_id, option_id, package_name, price, voucher_type, status, valid_from, valid_until, expiry_date, created_at')
+        .select('id, child_id, package_id, option_id, package_name, price, voucher_type, total_count, remaining_count, status, valid_from, valid_until, expiry_date, created_at')
         .in('status', ['active', 'expired', 'exhausted'])
         .not('child_id', 'is', null)
         .in('child_id', childIds)
@@ -531,6 +582,20 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       });
 
       const packageEnd = (owned: any) => owned.valid_until || owned.expiry_date || null;
+      // Legacy app-issued packages can be genuinely active without a validity
+      // window. They are already usable in the app, so billing must show them
+      // as renewed instead of incorrectly offering another invoice.
+      const isUndatedActivePackage = (owned: any) =>
+        owned.status === 'active' && !owned.valid_from && !packageEnd(owned);
+      // One-off purchases remain as payment/package history, but must never
+      // become a recurring tuition candidate in a later month.
+      const isOneTimePackage = (owned: any) => {
+        const name = String(owned.package_name || '');
+        return Number(owned.total_count) === 1
+          || /등록비|단품/.test(name)
+          || /키\s*성장\s*프로그램\s*집중\s*케어.*1\s*회/.test(name);
+      };
+      const canAutoRenew = (owned: any) => !isOneTimePackage(owned);
       const overlaps = (owned: any, period: { start: string; end: string }) => {
         const start = owned.valid_from || null;
         const end = packageEnd(owned);
@@ -547,11 +612,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const appTargets: OwnedPackageTarget[] = Array.from(packagesByChildAndProduct.values())
         .map((ownedGroup) => {
           const targetMonthPackage = ownedGroup
-            .filter((owned) => overlaps(owned, selectedPeriod))
+            .filter((owned) => overlaps(owned, selectedPeriod) || isUndatedActivePackage(owned))
             .sort(newestFirst)[0];
           const renewalSourcePackage = ownedGroup
-            .filter((owned) => overlaps(owned, previousPeriod)
+            .filter((owned) => canAutoRenew(owned) && (overlaps(owned, previousPeriod)
               || (!owned.valid_from && !packageEnd(owned) && owned.status === 'active'))
+            )
             .sort(newestFirst)[0];
           const owned = targetMonthPackage || renewalSourcePackage;
           if (!owned) return null;
@@ -584,9 +650,28 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         })
         .filter((target): target is OwnedPackageTarget => target !== null);
 
-      const plannedRows = monthlyPlans as any[] || [];
+      // For an app-linked student, the current-month plan saved in Student
+      // Management is the sole billing instruction. App passes only tell us
+      // whether that exact instruction has already been renewed; they must
+      // never add a second billing row by themselves.
+      const currentMonthPlanRows = monthlyPlans as any[] || [];
+      // Both draft and applied plans are billing instructions. Applied plans
+      // often mean that an academy_bills row was already created, while the
+      // app pass is intentionally not issued until payment/renewal. Omitting
+      // them makes a billed student appear as "청구 대상 없음".
+      const plannedRows = currentMonthPlanRows.filter((plan) =>
+        plan.status === 'planned' || plan.status === 'applied',
+      );
+      const currentPlanOptionsByStudent = new Map<string, Set<string>>();
+      currentMonthPlanRows
+        .filter((plan) => plan.item_type === 'package' && plan.package_option_id)
+        .forEach((plan) => {
+          const optionIds = currentPlanOptionsByStudent.get(plan.student_id) || new Set<string>();
+          optionIds.add(plan.package_option_id);
+          currentPlanOptionsByStudent.set(plan.student_id, optionIds);
+        });
       const plannedClassNamesByStudent = new Map<string, string[]>();
-      plannedRows.filter((plan) => plan.item_type === 'class').forEach((plan) => {
+      currentMonthPlanRows.filter((plan) => plan.item_type === 'class').forEach((plan) => {
         const className = plan.class_schedules?.target_class;
         if (!className) return;
         const names = plannedClassNamesByStudent.get(plan.student_id) || [];
@@ -599,7 +684,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         const student = activeStudents.find((item) => item.id === plan.student_id);
         const option = plan.package_options;
         if (!student || !option) return;
-        const key = `${plan.student_id}:${plan.package_option_id}`;
+        const isAdditional = plan.billing_source === 'additional';
+        const key = isAdditional
+          ? `${plan.student_id}:${plan.package_option_id}:additional:${plan.id}`
+          : `${plan.student_id}:${plan.package_option_id}`;
         const existing = plannedTargetsByStudentAndOption.get(key);
         if (existing) return;
         plannedTargetsByStudentAndOption.set(key, {
@@ -614,15 +702,23 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           isSmsEnabled: student.is_sms_enabled !== false,
           optionId: plan.package_option_id,
           packageName: option.packages?.name || '수강료',
-          optionLabel: option.label || '요금제 정보 없음',
+          optionLabel: isAdditional
+            ? `추가 청구 · ${option.label || '요금제 정보 없음'}`
+            : option.label || '요금제 정보 없음',
           price: Number(option.price || 0),
           billingCycle: plan.billing_cycle || '월 기간제',
           paymentDay: plan.payment_day || '매월 1일',
           classNames: plannedClassNamesByStudent.get(plan.student_id) || [],
+          isAdditional,
         });
       });
       const plannedTargets = Array.from(plannedTargetsByStudentAndOption.values());
-      const plannedStudentIds = new Set(plannedTargets.map((target) => target.studentId));
+      // A monthly plan is a billing instruction, not proof that an issued app
+      // package is missing. Match plans to issued packages by option first so
+      // an already-issued September package stays visible as "갱신 완료".
+      const billingTargetKey = (target: OwnedPackageTarget) => target.isAdditional
+        ? `additional:${target.userPackageId}`
+        : `${target.studentId}:${target.optionId || target.packageId || target.packageName}`;
 
       // Shared vehicle passes are shown once per parent. academy_bills still
       // requires a student_id, so use a stable representative student only as
@@ -639,7 +735,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const sharedShuttleTargets: OwnedPackageTarget[] = Array.from(sharedPackagesByParentAndProduct.values())
         .map((ownedGroup) => {
           const targetMonthPackage = ownedGroup
-            .filter((owned) => overlaps(owned, selectedPeriod))
+            .filter((owned) => overlaps(owned, selectedPeriod) || isUndatedActivePackage(owned))
             .sort(newestFirst)[0];
           const renewalSourcePackage = ownedGroup
             .filter((owned) => overlaps(owned, previousPeriod)
@@ -669,6 +765,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             billingCycle: '월 기간제',
             paymentDay: '매월 1일',
             classNames: [],
+            parentUserId: owned.user_id,
             isShared: true,
           } satisfies OwnedPackageTarget;
         })
@@ -699,10 +796,73 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           } satisfies OwnedPackageTarget)),
       );
 
+      const appTargetsCoveredByCurrentPlan = appTargets.filter((target) => {
+        const optionIds = currentPlanOptionsByStudent.get(target.studentId);
+        return !optionIds || optionIds.has(target.optionId || '');
+      });
+      const childCurrentShuttleKeys = new Set(
+        appTargets
+          .filter((target) => target.voucherType === 'shuttle' && target.hasTargetMonthPackage)
+          .map((target) => {
+            const parentUserId = parentUserIdByStudentId.get(target.studentId);
+            const productKey = target.optionId || target.packageId || target.packageName;
+            return parentUserId ? `${parentUserId}:${productKey}` : null;
+          })
+          .filter((key): key is string => Boolean(key)),
+      );
+      const sharedShuttleTargetsCoveredByCurrentPlan = sharedShuttleTargets.filter((target) => {
+        // A child-specific shuttle pass for this month supersedes an older
+        // parent-shared shuttle pass for the same product. The shared pass is
+        // only a renewal source in that case, so exposing it would create a
+        // duplicate 10,000-won billing row.
+        const productKey = target.optionId || target.packageId || target.packageName;
+        if (
+          !target.hasTargetMonthPackage
+          && target.parentUserId
+          && childCurrentShuttleKeys.has(`${target.parentUserId}:${productKey}`)
+        ) {
+          return false;
+        }
+        const optionIds = currentPlanOptionsByStudent.get(target.studentId);
+        return !optionIds || optionIds.has(target.optionId || '');
+      });
+      const issuedCurrentMonthKeys = new Set(
+        [...appTargetsCoveredByCurrentPlan, ...sharedShuttleTargetsCoveredByCurrentPlan]
+          .filter((target) => target.hasTargetMonthPackage)
+          .map(billingTargetKey),
+      );
+      const plannedTargetsByKey = new Map(
+        plannedTargets.map((target) => [billingTargetKey(target), target]),
+      );
+      // A pass from the previous month is the renewal source; a monthly plan
+      // is the operator's current billing instruction. They describe one
+      // target, not two. Keep the app pass metadata but use the plan identity
+      // so bill creation marks that plan as applied.
+      const mergedAppTargets = appTargetsCoveredByCurrentPlan.map((target) => {
+        const planned = plannedTargetsByKey.get(billingTargetKey(target));
+        if (!planned || target.hasTargetMonthPackage) return target;
+        return {
+          ...target,
+          userPackageId: planned.userPackageId,
+          packageId: planned.packageId,
+          optionId: planned.optionId,
+          packageName: planned.packageName,
+          optionLabel: planned.optionLabel,
+          price: planned.price,
+          billingCycle: planned.billingCycle,
+          paymentDay: planned.paymentDay,
+          classNames: planned.classNames.length > 0 ? planned.classNames : target.classNames,
+        };
+      });
+      const appTargetKeys = new Set(appTargetsCoveredByCurrentPlan.map(billingTargetKey));
+      const unresolvedPlannedTargets = plannedTargets.filter(
+        (target) => !issuedCurrentMonthKeys.has(billingTargetKey(target))
+          && !appTargetKeys.has(billingTargetKey(target)),
+      );
       const targets = [
-        ...appTargets.filter((target) => !plannedStudentIds.has(target.studentId)),
-        ...plannedTargets,
-        ...sharedShuttleTargets.filter((target) => !plannedStudentIds.has(target.studentId)),
+        ...mergedAppTargets,
+        ...unresolvedPlannedTargets,
+        ...sharedShuttleTargetsCoveredByCurrentPlan,
         ...webTargets,
       ];
       setBillingTargets(targets);
@@ -731,6 +891,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     } catch (err) {
       console.error('Error loading billing targets:', err);
       setBillingTargets([]);
+      setBillingRosterStudents([]);
       setTargetBillStatuses({});
     } finally {
       setLoading(false);
@@ -1288,6 +1449,21 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             />
           </div>
 
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {[
+              ['전체 재원생', billingSummary.total, 'border-slate-200 bg-white text-slate-700'],
+              ['청구 대상 없음', billingSummary.noTarget, 'border-amber-200 bg-amber-50 text-amber-700'],
+              ['청구 예정', billingSummary.pending, 'border-blue-200 bg-blue-50 text-blue-700'],
+              ['갱신 완료', billingSummary.renewed, 'border-emerald-200 bg-emerald-50 text-emerald-700'],
+              ['청구 처리됨', billingSummary.billed, 'border-violet-200 bg-violet-50 text-violet-700'],
+            ].map(([label, count, style]) => (
+              <div key={String(label)} className={`rounded-xl border px-3 py-2 ${style}`}>
+                <div className="text-[10px] font-bold">{label}</div>
+                <div className="mt-0.5 text-lg font-black">{count}명</div>
+              </div>
+            ))}
+          </div>
+
           {/* Always render table structure so column headers show even when empty */}
           <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
             <div className="overflow-x-auto">
@@ -1343,26 +1519,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   ) : visibleBillingTargetStudents.length > 0 ? (
                     visibleBillingTargetStudents.map((student) => {
                       const alreadyBilled = isStudentAlreadyBilled(student);
-                      const studentStates = student.packages.map((target) => {
-                        if (target.hasTargetMonthPackage) return 'renewed';
-                        const bill = targetBillStatuses[billStatusKey(target)];
-                        if (!bill) return 'pending';
-                        if (bill.status === 'paid') return 'paid';
-                        if (bill.status === 'partial') return 'partial';
-                        return bill.paymentRequestId ? 'sent' : 'issued';
-                      });
-                      const studentState = studentStates.every((state) => state === 'renewed')
-                        ? 'renewed'
-                        : studentStates.every((state) => state === 'paid')
-                          ? 'paid'
-                          : studentStates.some((state) => state === 'pending')
-                            ? 'pending'
-                            : studentStates.some((state) => state === 'partial')
-                              ? 'partial'
-                              : studentStates.some((state) => state === 'sent')
-                                ? 'sent'
-                                : 'issued';
+                      const studentState = getStudentBillingState(student);
                       const studentStateMeta = {
+                        none: { label: '청구 대상 없음', row: 'bg-amber-50/50', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
                         renewed: { label: '갱신 완료', row: 'bg-violet-50/80', badge: 'border-violet-200 bg-violet-100 text-violet-700' },
                         paid: { label: '완납', row: 'bg-emerald-50/80', badge: 'border-emerald-200 bg-emerald-100 text-emerald-700' },
                         partial: { label: '일부 수납', row: 'bg-amber-50/80', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
@@ -1412,6 +1571,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             </div>
                           </td>
                         </tr>
+                        {student.packages.length === 0 && (
+                          <tr className="border-l-4 border-l-amber-300 bg-amber-50/30">
+                            <td className="px-4 py-3" aria-hidden="true" />
+                            <td className="px-3 py-3" aria-hidden="true" />
+                            <td colSpan={10} className="px-4 py-3 text-xs font-bold text-amber-700">
+                              이번 달에 저장된 청구 예정 이용권·발행된 이용권·청구서가 없습니다. 학생관리에서 이번 달 청구 이용권을 등록하면 여기에 표시됩니다.
+                            </td>
+                          </tr>
+                        )}
                         {student.packages.map((ownedPackage) => {
                           const packageName = ownedPackage.packageName;
                           const packageLabel = ownedPackage.optionLabel;

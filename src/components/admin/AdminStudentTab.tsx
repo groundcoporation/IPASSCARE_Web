@@ -214,6 +214,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [nextMonthPackages, setNextMonthPackages] = useState<ClassAssignment[]>([]);
   const [currentMonthPackages, setCurrentMonthPackages] = useState<ClassAssignment[]>([]);
   const [currentMonthPackageSource, setCurrentMonthPackageSource] = useState<'current_plan' | 'current_bill' | 'previous_plan' | 'previous_bill' | 'active_owned' | 'none'>('none');
+  const [currentMonthBillingLocked, setCurrentMonthBillingLocked] = useState(false);
+  const [additionalPackageOptionId, setAdditionalPackageOptionId] = useState('');
+  const [additionalBillSaving, setAdditionalBillSaving] = useState(false);
   const [currentMonthClassIds, setCurrentMonthClassIds] = useState<string[]>([]);
   const [currentMonthClassDay, setCurrentMonthClassDay] = useState('전체');
   const [currentMonthBillSaving, setCurrentMonthBillSaving] = useState(false);
@@ -738,12 +741,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         ] = await Promise.all([
           supabase
             .from('user_packages')
-            .select('option_id, package_name, status, remaining_count, valid_until, expiry_date')
+            .select('option_id, package_name, status, remaining_count, valid_from, valid_until, expiry_date')
             .eq('child_id', student.child_id)
             .eq('status', 'active'),
           supabase
             .from('academy_student_monthly_plans')
-            .select('item_type, class_schedule_id, package_option_id, billing_cycle, payment_day')
+            .select('id, item_type, class_schedule_id, package_option_id, billing_cycle, payment_day, status, billing_source')
             .eq('student_id', student.id)
             .eq('effective_month', nextMonthStart())
             .eq('status', 'planned'),
@@ -754,7 +757,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             .eq('bill_month', currentBillMonth()),
           supabase
             .from('academy_student_monthly_plans')
-            .select('item_type, class_schedule_id, package_option_id, billing_cycle, payment_day')
+            .select('id, item_type, class_schedule_id, package_option_id, billing_cycle, payment_day, status, billing_source')
             .eq('student_id', student.id)
             .eq('effective_month', `${currentBillMonth()}-01`)
             .in('status', ['planned', 'applied']),
@@ -778,6 +781,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           remaining_count: number | null;
           valid_until: string | null;
           expiry_date: string | null;
+          valid_from: string | null;
         }>).filter((row) => {
           const expiresOn = row.valid_until || row.expiry_date || null;
           if (expiresOn && expiresOn < today) return false;
@@ -790,6 +794,17 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           status: string | null;
         }>;
         const currentPlanRows = (currentPlans || []) as any[];
+        const currentMonthEnd = `${currentBillMonth()}-31`;
+        const hasCurrentMonthIssuedPackage = ownedRows.some((row) => (
+          (!row.valid_from || row.valid_from.slice(0, 10) <= currentMonthEnd)
+          && (!row.valid_until && !row.expiry_date || (row.valid_until || row.expiry_date)!.slice(0, 10) >= `${currentBillMonth()}-01`)
+        ));
+        setCurrentMonthBillingLocked(
+          currentBillRows.length > 0
+          || currentPlanRows.some((plan) => plan.item_type === 'package' && plan.status === 'applied')
+          || hasCurrentMonthIssuedPackage,
+        );
+        setAdditionalPackageOptionId('');
         const currentPlanPackageIds = currentPlanRows
           .filter((plan) => plan.item_type === 'package')
           .map((plan) => plan.package_option_id)
@@ -851,6 +866,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         setCurrentPackageLabels([]);
         setCurrentMonthPackages([]);
         setCurrentMonthPackageSource('none');
+        setCurrentMonthBillingLocked(false);
+        setAdditionalPackageOptionId('');
         setCurrentMonthClassIds([]);
         setNextMonthClassIds([]);
         setNextMonthPackages([]);
@@ -939,32 +956,13 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       );
       if (scheduleError) throw scheduleError;
 
-      const currentMonthStart = `${currentBillMonth()}-01`;
-      const { error: deletePackagePlanError } = await supabase
-        .from('academy_student_monthly_plans')
-        .delete()
-        .eq('student_id', editingId)
-        .eq('effective_month', currentMonthStart)
-        .eq('item_type', 'package')
-        .in('status', ['planned', 'applied']);
-      if (deletePackagePlanError) throw deletePackagePlanError;
-
-      if (optionIds.length > 0) {
-        const { error: insertPackagePlanError } = await supabase
-          .from('academy_student_monthly_plans')
-          .insert(optionIds.map((packageOptionId) => ({
-            student_id: editingId,
-            branch_id: selectedBranchId,
-            effective_month: currentMonthStart,
-            item_type: 'package',
-            class_schedule_id: null,
-            package_option_id: packageOptionId,
-            billing_cycle: '월 기간제',
-            payment_day: '매월 1일',
-            status: 'planned',
-          })));
-        if (insertPackagePlanError) throw insertPackagePlanError;
-      }
+      // The database RPC changes draft rows only. It promotes an already-issued
+      // app pass to applied and rejects attempts to replace a locked bill.
+      const { error: billingPlanError } = await supabase.rpc(
+        'save_current_month_student_billing_draft',
+        { p_student_id: editingId, p_package_option_ids: optionIds },
+      );
+      if (billingPlanError) throw billingPlanError;
 
       const effectiveFrom = scheduleResult?.current?.effective_from
         ? new Date(`${scheduleResult.current.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
@@ -980,6 +978,33 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       alert(`이번 달 청구 처리 실패: ${error?.message || '알 수 없는 오류'}`);
     } finally {
       setCurrentMonthBillSaving(false);
+    }
+  };
+
+  const handleAddCurrentMonthAdditionalBill = async () => {
+    if (!editingId || !additionalPackageOptionId) {
+      alert('추가 청구할 이용권을 선택해 주세요.');
+      return;
+    }
+    const option = packageOptions.find((item) => item.id === additionalPackageOptionId);
+    if (!option) return;
+    if (!confirm(`${studentName} 원생에게 ${option.packages?.name || '이용권'} · ${option.label} ${option.price.toLocaleString()}원을 추가 청구로 등록할까요? 기존 청구·갱신 완료 항목은 변경되지 않습니다.`)) return;
+
+    setAdditionalBillSaving(true);
+    try {
+      const { error } = await supabase.rpc(
+        'add_current_month_student_additional_billing_plan',
+        { p_student_id: editingId, p_package_option_id: additionalPackageOptionId },
+      );
+      if (error) throw error;
+      await loadData();
+      const student = students.find((item) => item.id === editingId);
+      if (student) await openModal(student);
+      alert('추가 청구 항목을 등록했습니다. 수납 관리에서 별도 청구 대상으로 표시됩니다.');
+    } catch (error: any) {
+      alert(`추가 청구 등록 실패: ${error?.message || '알 수 없는 오류'}`);
+    } finally {
+      setAdditionalBillSaving(false);
     }
   };
 
@@ -1479,11 +1504,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     ? sortedModalClasses
     : sortedModalClasses.filter((item) => normalizedWeekday(item.day_of_week) === currentMonthClassDay);
   const currentMonthPackageGuide = {
-    current_plan: { tone: 'border-blue-200 bg-blue-50 text-blue-700', text: '이번 달에 저장해 둔 청구 예정 이용권을 불러왔습니다. 변경 후 다시 저장할 수 있습니다.' },
-    current_bill: { tone: 'border-indigo-200 bg-indigo-50 text-indigo-700', text: '이번 달에 이미 생성된 청구내역을 기준으로 불러왔습니다. 저장하면 새 청구서가 아니라 청구대상 관리의 예정 구성으로 반영됩니다.' },
+    current_plan: { tone: 'border-blue-200 bg-blue-50 text-blue-700', text: currentMonthBillingLocked ? '이번 달 이용권이 이미 갱신 또는 청구 처리되어 잠겨 있습니다. 기존 항목은 변경할 수 없고, 금액 추가가 필요하면 아래 추가 청구를 사용해 주세요.' : '이번 달에 저장해 둔 청구 예정 이용권을 불러왔습니다. 청구 전 초안만 변경할 수 있습니다.' },
+    current_bill: { tone: 'border-indigo-200 bg-indigo-50 text-indigo-700', text: '이번 달 청구가 이미 생성되어 기존 이용권은 잠겨 있습니다. 변경분은 추가 청구로만 등록할 수 있습니다.' },
     previous_plan: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-700', text: '지난달에 설정한 관리용 이용권을 이번 달 기본값으로 가져왔습니다. 내용이 맞는지 확인한 후 저장해 주세요.' },
     previous_bill: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-700', text: '지난달에 청구했던 이용권을 이번 달 기본값으로 가져왔습니다. 이용권이 달라졌다면 추가·삭제 후 저장해 주세요.' },
-    active_owned: { tone: 'border-amber-200 bg-amber-50 text-amber-700', text: '지난달 이용권 기록이 없어 현재 활성 지급 이용권을 참고해 기본값을 구성했습니다. 청구 대상이 맞는지 확인해 주세요.' },
+    active_owned: { tone: 'border-amber-200 bg-amber-50 text-amber-700', text: '이번 달 활성 이용권이 있어 기존 청구 구성은 잠겨 있습니다. 새 비용은 추가 청구로 등록해 주세요.' },
     none: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: '지난달 이용권과 현재 활성 이용권이 없습니다. 이번 달에 청구할 이용권을 직접 추가해 주세요.' },
   }[currentMonthPackageSource];
 
@@ -2212,7 +2237,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                     <div className="border-t border-slate-100 pt-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div><div className="text-[11px] font-black text-emerald-700">현재 관리용 이용권 · 이번 달 청구 예정</div><div className="text-[10px] text-slate-500">이번 달 저장값이 없으면 지난달 구성을 기본으로 불러옵니다. 저장 시 청구대상 관리에 반영됩니다.</div></div>
-                        <button type="button" disabled={currentMonthBillSaving} onClick={() => setCurrentMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"><Plus size={12}/> 이용권 추가</button>
+                        <button type="button" disabled={currentMonthBillSaving || currentMonthBillingLocked} onClick={() => setCurrentMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"><Plus size={12}/> 이용권 추가</button>
                       </div>
                       <div className={`mb-3 rounded-xl border px-3 py-2.5 text-[10px] font-bold leading-5 ${currentMonthPackageGuide.tone}`}>
                         <span className="mr-1">안내:</span>{currentMonthPackageGuide.text}
@@ -2221,19 +2246,29 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         {currentMonthPackages.map((assignment, index) => {
                           const selected = packageOptions.find((option) => option.id === assignment.package_option_id);
                           return <div key={index} className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/40 p-2">
-                            <select value={assignment.package_option_id} disabled={currentMonthBillSaving} onChange={(event) => setCurrentMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, package_option_id: event.target.value } : item))} className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none disabled:bg-slate-100">
+                            <select value={assignment.package_option_id} disabled={currentMonthBillSaving || currentMonthBillingLocked} onChange={(event) => setCurrentMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, package_option_id: event.target.value } : item))} className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none disabled:bg-slate-100">
                               <option value="">이용권을 선택해 주세요</option>
                               {packageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}
                             </select>
                             {selected && <span className="hidden shrink-0 text-[10px] font-black text-emerald-700 sm:block">{selected.price.toLocaleString()}원</span>}
-                            <button type="button" disabled={currentMonthBillSaving} aria-label="이번 달 청구 이용권 삭제" onClick={() => setCurrentMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={14}/></button>
+                            <button type="button" disabled={currentMonthBillSaving || currentMonthBillingLocked} aria-label="이번 달 청구 이용권 삭제" onClick={() => setCurrentMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={14}/></button>
                           </div>;
                         })}
                         {currentMonthPackages.length === 0 && <div className="rounded-xl bg-slate-50 py-4 text-center text-[11px] font-bold text-slate-400">이번 달 청구 이용권이 없습니다.</div>}
                       </div>
+                      {currentMonthBillingLocked && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                        <div className="mb-2 text-[11px] font-black text-amber-800">기존 청구와 별도로 추가 청구</div>
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <select value={additionalPackageOptionId} disabled={additionalBillSaving} onChange={(event) => setAdditionalPackageOptionId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-amber-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none disabled:bg-slate-100">
+                            <option value="">추가 청구할 이용권을 선택해 주세요</option>
+                            {packageOptions.filter((option) => !currentMonthPackages.some((item) => item.package_option_id === option.id)).map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}
+                          </select>
+                          <button type="button" disabled={additionalBillSaving || !additionalPackageOptionId} onClick={() => void handleAddCurrentMonthAdditionalBill()} className="flex items-center justify-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-[11px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"><Plus size={13}/> 추가 청구 등록</button>
+                        </div>
+                      </div>}
                       <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3">
                         <span className="text-xs font-black text-slate-600">총 청구액 {packageOptions.filter((option) => currentMonthPackages.some((item) => item.package_option_id === option.id)).reduce((sum, option) => sum + option.price, 0).toLocaleString()}원</span>
-                        <button type="button" onClick={() => void handleSaveCurrentMonthBill()} disabled={currentMonthBillSaving} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{currentMonthBillSaving ? <Loader2 size={13} className="animate-spin"/> : <CheckCircle size={13}/>} 수업·청구 저장</button>
+                        <button type="button" onClick={() => void handleSaveCurrentMonthBill()} disabled={currentMonthBillSaving} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{currentMonthBillSaving ? <Loader2 size={13} className="animate-spin"/> : <CheckCircle size={13}/>} {currentMonthBillingLocked ? '수업 저장' : '수업·청구 저장'}</button>
                       </div>
                     </div>
                   </div>
