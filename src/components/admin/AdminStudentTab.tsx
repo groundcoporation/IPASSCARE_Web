@@ -919,53 +919,53 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     const description = selectedOptions.length > 0
       ? selectedOptions.map((option) => `${option.packages?.name || '이용권'} (${option.label})`).join(', ')
       : '청구 없음';
-    if (!confirm(`${studentName} 원생의 ${monthLabel(0)} 수업·청구 예정 구성을 저장할까요?\n${description}\n예상 청구액 ${totalAmount.toLocaleString()}원\n저장 후 수납 관리의 청구대상 관리에 반영됩니다.`)) return;
+    if (!confirm(`${studentName} 원생의 ${monthLabel(0)} 수업·청구 예정 구성을 저장할까요?\n${description}\n예상 청구액 ${totalAmount.toLocaleString()}원\n저장 후 실제 앱의 남은 수업 일정과 수납 관리 청구대상에 반영됩니다.`)) return;
 
     setCurrentMonthBillSaving(true);
     try {
+      const { data: scheduleResult, error: scheduleError } = await supabase.rpc(
+        'sync_current_month_student_schedules',
+        {
+          p_student_id: editingId,
+          p_schedule_ids: currentMonthClassIds,
+        },
+      );
+      if (scheduleError) throw scheduleError;
+
       const currentMonthStart = `${currentBillMonth()}-01`;
-      const { error: deletePlanError } = await supabase
+      const { error: deletePackagePlanError } = await supabase
         .from('academy_student_monthly_plans')
         .delete()
         .eq('student_id', editingId)
         .eq('effective_month', currentMonthStart)
+        .eq('item_type', 'package')
         .in('status', ['planned', 'applied']);
-      if (deletePlanError) throw deletePlanError;
+      if (deletePackagePlanError) throw deletePackagePlanError;
 
-      const currentPlanRows = [
-        ...currentMonthClassIds.map((classScheduleId) => ({
-          student_id: editingId,
-          branch_id: selectedBranchId,
-          effective_month: currentMonthStart,
-          item_type: 'class',
-          class_schedule_id: classScheduleId,
-          package_option_id: null,
-          billing_cycle: '월 기간제',
-          payment_day: '매월 1일',
-          status: 'planned',
-        })),
-        ...optionIds.map((packageOptionId) => ({
-          student_id: editingId,
-          branch_id: selectedBranchId,
-          effective_month: currentMonthStart,
-          item_type: 'package',
-          class_schedule_id: null,
-          package_option_id: packageOptionId,
-          billing_cycle: '월 기간제',
-          payment_day: '매월 1일',
-          status: 'planned',
-        })),
-      ];
-      if (currentPlanRows.length > 0) {
-        const { error: insertPlanError } = await supabase
+      if (optionIds.length > 0) {
+        const { error: insertPackagePlanError } = await supabase
           .from('academy_student_monthly_plans')
-          .insert(currentPlanRows);
-        if (insertPlanError) throw insertPlanError;
+          .insert(optionIds.map((packageOptionId) => ({
+            student_id: editingId,
+            branch_id: selectedBranchId,
+            effective_month: currentMonthStart,
+            item_type: 'package',
+            class_schedule_id: null,
+            package_option_id: packageOptionId,
+            billing_cycle: '월 기간제',
+            payment_day: '매월 1일',
+            status: 'planned',
+          })));
+        if (insertPackagePlanError) throw insertPackagePlanError;
       }
 
+      const effectiveFrom = scheduleResult?.effective_from
+        ? new Date(`${scheduleResult.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
+        : '오늘';
+      await loadData();
       alert(optionIds.length > 0
-        ? '이번 달 수업·관리용 이용권을 청구 예정 대상으로 저장했습니다. 수납 관리의 청구대상 관리에서 확인할 수 있습니다.'
-        : '이번 달 수업 설정을 저장하고 청구 예정 이용권을 모두 제거했습니다.');
+        ? `이번 달 수업과 청구 예정 이용권을 저장했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.`
+        : `이번 달 수업 설정을 저장하고 청구 예정 이용권을 모두 제거했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.`);
     } catch (error: any) {
       alert(`이번 달 청구 처리 실패: ${error?.message || '알 수 없는 오류'}`);
     } finally {
@@ -2160,7 +2160,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 )}
                 {isModalAppLinked && courseTab === 'current' ? (
                   <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
-                    <div><div className="text-xs font-black text-slate-800">이번 달 수업·청구 이용권</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">수업과 보유 이용권은 그대로 유지하고, 이번 달에 청구할 이용권만 편집합니다.</div></div>
+                    <div><div className="text-xs font-black text-slate-800">이번 달 수업·청구 이용권</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">저장하면 처리된 수업은 보존하고, 남은 이번 달 수업은 실제 앱 일정에도 반영됩니다.</div></div>
                     <div className="space-y-3 rounded-2xl border border-blue-100 bg-white p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div><div className="text-[11px] font-black text-blue-700">이번 달 수업 선택</div><div className="text-[10px] font-medium text-slate-500">선택 {currentMonthClassIds.length}개</div></div>
@@ -2216,7 +2216,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       </div>
                       <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3">
                         <span className="text-xs font-black text-slate-600">총 청구액 {packageOptions.filter((option) => currentMonthPackages.some((item) => item.package_option_id === option.id)).reduce((sum, option) => sum + option.price, 0).toLocaleString()}원</span>
-                        <button type="button" onClick={() => void handleSaveCurrentMonthBill()} disabled={currentMonthBillSaving} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{currentMonthBillSaving ? <Loader2 size={13} className="animate-spin"/> : <CheckCircle size={13}/>} 청구 예정 저장</button>
+                        <button type="button" onClick={() => void handleSaveCurrentMonthBill()} disabled={currentMonthBillSaving} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{currentMonthBillSaving ? <Loader2 size={13} className="animate-spin"/> : <CheckCircle size={13}/>} 수업·청구 저장</button>
                       </div>
                     </div>
                   </div>
