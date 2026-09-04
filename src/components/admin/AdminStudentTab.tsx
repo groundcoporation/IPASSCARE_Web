@@ -376,7 +376,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       // 1. Existing academy_students
       const activeStudents: any[] = rawAcademyStudents
         .filter((student: any) => (
-          (!student.child_id || student.child?.deleted_at == null)
+          (student.child_id ? student.child?.deleted_at == null : true)
           && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
         ))
         .map((student: any) => {
@@ -391,6 +391,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
       // 2. Add all children registered from mobile app
       rawChildren.forEach((child: any) => {
+        if (child.deleted_at != null) return;
         if (existingChildIds.has(child.id)) return;
         if (child.parent && child.parent.status === 'deleted') return;
         existingChildIds.add(child.id);
@@ -426,7 +427,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         if (child.parent_id) usersWithStudents.add(child.parent_id);
       });
       setUnregisteredMembers(rawUsers
-        .filter((user: any) => user.role === 'user' && !usersWithStudents.has(user.id))
+        .filter((user: any) => user.role === 'user' && user.status !== 'deleted' && !usersWithStudents.has(user.id))
         .map((user: any) => ({
           id: user.id,
           name: user.name || '이름 미등록',

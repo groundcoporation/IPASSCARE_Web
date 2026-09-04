@@ -311,7 +311,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
       const { data: studentsData } = await query;
       const rawStudentsWithHistory = (studentsData || []).filter((student: any) => (
-        !student.parent_user_id || student.parent_user?.status !== 'deleted'
+        (!student.parent_user_id || student.parent_user?.status !== 'deleted')
+        && (!student.child_id || student.child?.deleted_at == null)
       ));
       const schedulesByChild = await loadActiveAppSchedulesByChild(
         rawStudentsWithHistory.map((student: any) => student.child_id).filter(Boolean),
@@ -321,7 +322,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         app_schedule_classes: student.child_id ? schedulesByChild.get(student.child_id) || [] : undefined,
       }));
       const studentsList = studentsWithHistory.filter((student: any) => (
-        !student.child_id || isBeforeChildDeletion(selectedAttendanceDate, student.child?.deleted_at)
+        (!student.child_id || student.child?.deleted_at == null)
+        && (!student.parent_user_id || student.parent_user?.status !== 'deleted')
       ));
       setAttendanceStudentsWithHistory(studentsWithHistory);
       setTodayAttendanceStudents(studentsList);
@@ -613,7 +615,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     setLoading(true); setError("");
     const period = rangeOf(month);
     try {
-      let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id,deleted_at").order("child_name");
+      let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id,deleted_at").is("deleted_at", null).order("child_name");
       let packagesQuery = supabase.from("user_packages").select("id,user_id,child_id,child_name,package_name,total_count,remaining_count,status,voucher_type,branch_id").or("voucher_type.is.null,voucher_type.neq.shuttle").order("created_at", { ascending: false });
       let logsQuery = supabase.from("attendance_logs").select("child_id,date,status,check_in").gte("date", period.from).lte("date", period.to).not("check_in", "is", null);
       let withdrawalsQuery = supabase.from("user_withdrawals").select("id,child_id,user_id,child_name,user_name,refund_status");
@@ -643,7 +645,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const parentIds = [...new Set(children.map((child: any) => child.parent_id).filter(Boolean))];
       const packageIds = packages.map((item: any) => item.id);
       const [parentResult, usageResult] = await Promise.all([
-        parentIds.length ? supabase.from("users").select("id,name,status").in("id", parentIds) : Promise.resolve({ data: [], error: null }),
+        parentIds.length ? supabase.from("users").select("id,name,status").in("id", parentIds).neq("status", "deleted") : Promise.resolve({ data: [], error: null }),
         packageIds.length ? supabase.from("package_usage_logs").select("user_package_id,child_id,quantity,consumed_at,reservations(class_date,attendance_status,deleted_at)").in("user_package_id", packageIds).eq("status", "consumed") : Promise.resolve({ data: [], error: null }),
       ]);
       if (parentResult.error) throw parentResult.error;
@@ -652,6 +654,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const parentStatuses = new Map((parentResult.data ?? []).map((item: any) => [item.id, item.status]));
 
       const visibleChildren = children.filter((child: any) => {
+        if (child.deleted_at != null) return false;
+        const parentStatus = child.parent_id ? parentStatuses.get(child.parent_id) : null;
+        if (parentStatus === 'deleted') return false;
+
         const wInfo = withdrawalByChild.get(child.id) || (child.parent_id ? withdrawalByUser.get(child.parent_id) : null);
         if (wInfo) {
           // 🎯 환불완료되었거나 환불없음이면 출결조회에서 깔끔하게 제외!
@@ -662,9 +668,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           return true;
         }
 
-        const parentStatus = child.parent_id ? parentStatuses.get(child.parent_id) : null;
-        if (parentStatus === 'deleted') return false;
-        return isBeforeChildDeletion(period.from, child.deleted_at);
+        return true;
       });
 
       const packageMap = new Map<string, any[]>();

@@ -1136,6 +1136,36 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     }
   };
 
+  const handleDeleteAppPaymentRequest = async (request: AppPaymentRequest) => {
+    if (request.status === 'paid') {
+      alert('결제 또는 수납이 완료된 어플 청구서는 삭제할 수 없습니다.');
+      return;
+    }
+    const title = request.request_title || '이용권 청구서';
+    const parentName = request.parent_name || '학부모';
+    if (!confirm(`${parentName}님에게 직접 발행한 '${title}' 어플 청구서를 삭제할까요?\n삭제 시 학부모 앱의 청구 내역에서도 삭제 처리됩니다.`)) return;
+
+    setActionLoading(true);
+    try {
+      let { error } = await supabase.rpc('delete_unpaid_app_payment_request', {
+        p_request_id: request.id,
+        p_reason: '수납 관리에서 어플 관리자 직접 청구 삭제',
+      });
+      if (error && (error.message.includes('function') || error.code === 'PGRST202')) {
+        const res = await supabase.from('payment_requests').delete().eq('id', request.id);
+        error = res.error;
+      }
+      if (error) throw error;
+      await loadBills();
+      alert('어플 직접 청구가 삭제되었습니다.');
+    } catch (error: any) {
+      alert(`어플 청구 삭제 실패: ${error?.message || '알 수 없는 오류'}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+
   // Process manual payment
   const handleProcessPayment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1922,7 +1952,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             </div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-left text-xs text-slate-600">
-                <thead className="border-b border-slate-200 bg-slate-100/80 text-[11px] font-black text-slate-700"><tr className="whitespace-nowrap"><th className="px-4 py-3">학부모 / 대상</th><th className="px-4 py-3">청구 이용권</th><th className="px-4 py-3 text-center">발행 경로</th><th className="px-4 py-3 text-center">발행일</th><th className="px-4 py-3 text-right">청구액</th><th className="px-4 py-3 text-center">상태</th></tr></thead>
+                <thead className="border-b border-slate-200 bg-slate-100/80 text-[11px] font-black text-slate-700"><tr className="whitespace-nowrap"><th className="px-4 py-3">학부모 / 대상</th><th className="px-4 py-3">청구 이용권</th><th className="px-4 py-3 text-center">발행 경로</th><th className="px-4 py-3 text-center">발행일</th><th className="px-4 py-3 text-right">청구액</th><th className="px-4 py-3 text-center">상태</th><th className="px-4 py-3 text-center">관리</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredAppPaymentRequests.length > 0 ? filteredAppPaymentRequests.map((request) => {
                     const statusMeta = request.status === 'paid'
@@ -1934,8 +1964,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           : request.status === 'cancelled'
                             ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
                             : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
-                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount || request.total_amount || 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td></tr>;
-                  }) : <tr><td colSpan={6} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
+                    const canDeleteRequest = request.status !== 'paid';
+                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount || request.total_amount || 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center">{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</td></tr>;
+                  }) : <tr><td colSpan={7} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
                 </tbody>
               </table>
             </div>
