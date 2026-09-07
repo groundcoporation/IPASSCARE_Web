@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, FileText, Loader2, ListFilter, Users, ArrowRight, Search, Trash2 } from 'lucide-react';
+import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, BellRing, FileText, Loader2, ListFilter, Users, ArrowRight, Search, Trash2 } from 'lucide-react';
 
 interface Bill {
   id: string;
@@ -1266,6 +1266,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       || (request.beneficiary_name || '').toLowerCase().includes(query)
       || (request.request_title || '').toLowerCase().includes(query);
   });
+  const remindablePaymentRequestIds = Array.from(new Set([
+    ...filteredBills.filter((bill) => bill.status === 'unpaid' && bill.payment_request_id).map((bill) => bill.payment_request_id as string),
+    ...filteredAppPaymentRequests.filter((request) => request.status === 'pending').map((request) => request.id),
+  ]));
 
   const appSendableBills = filteredBills.filter((bill) =>
     bill.status === 'unpaid'
@@ -1333,6 +1337,29 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       await loadBills();
     } catch (err: any) {
       alert(`앱 청구서 발송에 실패했습니다: ${err?.message || '알 수 없는 오류'}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleSendPaymentReminders = async (paymentRequestIds: string[]) => {
+    if (!paymentRequestIds.length) return alert('재알림할 미납 청구서가 없습니다.');
+    if (!confirm(`미납 청구서 ${paymentRequestIds.length}건의 납부 알림을 다시 보내시겠습니까?`)) return;
+    setActionLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('send-payment-reminders', {
+        body: { payment_request_ids: paymentRequestIds },
+      });
+      if (error) throw error;
+      const sent = Number(data?.sent ?? 0);
+      const failed = Number(data?.failed ?? 0);
+      const failedMessages = Array.isArray(data?.results)
+        ? data.results.filter((result: any) => !result.success).map((result: any) => result.error).filter(Boolean)
+        : [];
+      alert([`미납 알림 재발송 결과`, `- 발송: ${sent}건`, `- 실패/제외: ${failed}건`, failedMessages.length ? `\n${failedMessages.slice(0, 3).join('\n')}` : ''].filter(Boolean).join('\n'));
+      await loadBills();
+    } catch (err: any) {
+      alert(`미납 알림 재발송에 실패했습니다: ${err?.message || '알 수 없는 오류'}`);
     } finally {
       setActionLoading(false);
     }
@@ -1800,6 +1827,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 {actionLoading ? <Loader2 size={12} className="animate-spin" /> : <FileText size={13} />}
                 선택 {selectedAppBillIds.size}건 앱으로 발송
               </button>
+              <button
+                type="button"
+                onClick={() => void handleSendPaymentReminders(remindablePaymentRequestIds)}
+                disabled={actionLoading || remindablePaymentRequestIds.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {actionLoading ? <Loader2 size={12} className="animate-spin" /> : <BellRing size={13} />}
+                조회된 미납 {remindablePaymentRequestIds.length}건 재알림
+              </button>
             </div>
           </div>
 
@@ -1926,6 +1962,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                     </span>
                                   )}
                                   {canDeleteBill && <button type="button" onClick={() => void handleDeleteBill(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}
+                                  {bill.status === 'unpaid' && bill.payment_request_id && <button type="button" onClick={() => void handleSendPaymentReminders([bill.payment_request_id as string])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}
                                 </div>
                               </td>
                             </tr>
@@ -1965,7 +2002,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
                             : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
                     const canDeleteRequest = request.status !== 'paid';
-                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount || request.total_amount || 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center">{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</td></tr>;
+                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount || request.total_amount || 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
                   }) : <tr><td colSpan={7} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
                 </tbody>
               </table>

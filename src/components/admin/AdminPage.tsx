@@ -20,6 +20,7 @@ import { AdminSmsTab } from "./AdminSmsTab";
 import { AdminDashboardTab } from "./AdminDashboardTab";
 import { AdminNoticeTab } from "./AdminNoticeTab";
 import { AdminHqNoticeTab } from "./AdminHqNoticeTab";
+import { AdminShuttleTab } from "./AdminShuttleTab";
 
 const MAX_SLOTS = 20;
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
@@ -111,7 +112,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [loginError, setLoginError] = useState("");
 
   // Re-designed 2-Tier Layout Navigation States
-  const [mainTab, setMainTab] = useState<'dashboard' | 'student_mgmt' | 'attendance_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'referral_mgmt' | 'basic_settings'>('dashboard');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'student_mgmt' | 'attendance_mgmt' | 'shuttle_mgmt' | 'billing_mgmt' | 'sms_mgmt' | 'role_mgmt' | 'referral_mgmt' | 'basic_settings'>('dashboard');
   const [subTab, setSubTab] = useState<string>('dashboard_home');
   const [loading, setLoading] = useState(false);
   const [, setError] = useState("");
@@ -1820,6 +1821,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             { id: 'dashboard', label: '대시보드', subDefault: 'dashboard_home' },
             { id: 'student_mgmt', label: '학생관리', subDefault: 'students' },
             { id: 'attendance_mgmt', label: '출결관리', subDefault: 'admin_attendance' },
+            { id: 'shuttle_mgmt', label: '셔틀관리', subDefault: 'shuttle' },
             { id: 'billing_mgmt', label: '수납관리', subDefault: 'billing' },
             { id: 'sms_mgmt', label: '문자관리', subDefault: 'sms_send' },
             ...(['admin', 'director'].includes(profile?.role ?? '') ? [{ id: 'role_mgmt', label: '권한 부여', subDefault: 'role_management' }] : []),
@@ -1902,6 +1904,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 {mainTab === 'dashboard' && 'DASHBOARD'}
                 {mainTab === 'student_mgmt' && 'STUDENT MGMT'}
                 {mainTab === 'attendance_mgmt' && 'ATTENDANCE MGMT'}
+                {mainTab === 'shuttle_mgmt' && 'SHUTTLE MGMT'}
                 {mainTab === 'billing_mgmt' && 'BILLING MGMT'}
                 {mainTab === 'sms_mgmt' && 'MESSAGING MGMT'}
                 {mainTab === 'role_mgmt' && 'ROLE MANAGEMENT'}
@@ -1913,6 +1916,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 {mainTab === 'dashboard' && '통합 대시보드'}
                 {mainTab === 'student_mgmt' && '학생관리'}
                 {mainTab === 'attendance_mgmt' && '출결관리'}
+                {mainTab === 'shuttle_mgmt' && '셔틀관리'}
                 {mainTab === 'billing_mgmt' && '수납관리'}
                 {mainTab === 'sms_mgmt' && '문자관리'}
                 {mainTab === 'role_mgmt' && '권한 부여'}
@@ -1993,6 +1997,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                     {item.label}
                   </button>
                 );
+              })}
+
+              {mainTab === 'shuttle_mgmt' && [
+                { id: 'shuttle', label: '셔틀 통합 관리', icon: Bus },
+              ].map((item) => {
+                const isActive = subTab === item.id;
+                return <button key={item.id} onClick={() => { setSubTab(item.id); setSearch(""); }} className={`w-full flex items-center gap-2.5 px-3 py-3 text-xs font-bold rounded-xl text-left transition ${isActive ? 'bg-blue-600 text-white font-extrabold shadow-sm' : 'hover:bg-slate-800 hover:text-white'}`}><item.icon size={15} />{item.label}</button>;
               })}
 
               {/* BILLING SUBMENU */}
@@ -2116,6 +2127,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             {/* STUDENTS LIST TAB (100% Original Complete Component) */}
             {subTab === "students" && (
               <AdminStudentTab activeBranchId={activeBranchId} branches={branches} />
+            )}
+
+            {subTab === "shuttle" && (
+              <AdminShuttleTab activeBranchId={activeBranchId} profile={profile} />
             )}
 
             {/* TEACHERS TAB (100% Original) */}

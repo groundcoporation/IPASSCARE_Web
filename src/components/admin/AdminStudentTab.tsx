@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, AlertTriangle, RefreshCw, X, CreditCard, LogOut } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, AlertTriangle, RefreshCw, X, CreditCard, LogOut, Bus, MapPin } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
 
@@ -77,6 +77,12 @@ interface Student {
     remaining_count: number;
     price?: number;
   } | null;
+}
+
+interface PickupSpotOption {
+  id: string;
+  name: string;
+  address: string | null;
 }
 
 interface UnregisteredMember {
@@ -206,6 +212,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [admissionDate, setAdmissionDate] = useState('');
   const [memo, setMemo] = useState('');
   const [isSmsEnabled, setIsSmsEnabled] = useState(true);
+  const [pickupSpots, setPickupSpots] = useState<PickupSpotOption[]>([]);
+  const [pickupSpotId, setPickupSpotId] = useState('');
+  const [dropoffSpotId, setDropoffSpotId] = useState('');
+  const [pickupDetailLocation, setPickupDetailLocation] = useState('');
+  const [dropoffDetailLocation, setDropoffDetailLocation] = useState('');
+  const [pickupSettingsLoading, setPickupSettingsLoading] = useState(false);
   const [classAssignments, setClassAssignments] = useState<ClassAssignment[]>([emptyAssignment()]);
   const [saveLoading, setSaveLoading] = useState(false);
   const [courseTab, setCourseTab] = useState<'current' | 'next'>('current');
@@ -698,6 +710,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
   // Open modal for registration/edit
   const openModal = async (student?: Student) => {
+    setPickupSpots([]);
+    setPickupSpotId('');
+    setDropoffSpotId('');
+    setPickupDetailLocation('');
+    setDropoffDetailLocation('');
     if (student) {
       setEditingId(student.id);
       setSelectedBranchId(student.branch_id);
@@ -732,6 +749,30 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         : [emptyAssignment()]);
 
       if (student.child_id) {
+        setPickupSettingsLoading(true);
+        const [{ data: spotRows, error: spotError }, { data: pickupSetting, error: pickupSettingError }] = await Promise.all([
+          supabase
+            .from('pickup_spots')
+            .select('id, name, address')
+            .eq('branch_id', student.branch_id)
+            .eq('is_active', true)
+            .is('deleted_at', null)
+            .order('name'),
+          supabase
+            .from('pickup_settings')
+            .select('pickup_spot_id, dropoff_spot_id, detail_location, dropoff_detail_location')
+            .eq('child_id', student.child_id)
+            .maybeSingle(),
+        ]);
+        setPickupSettingsLoading(false);
+        if (spotError) alert(`정류장 목록을 불러오지 못했습니다: ${spotError.message}`);
+        if (pickupSettingError) alert(`학생 정류장 설정을 불러오지 못했습니다: ${pickupSettingError.message}`);
+        setPickupSpots((spotRows || []) as PickupSpotOption[]);
+        setPickupSpotId(pickupSetting?.pickup_spot_id || '');
+        setDropoffSpotId(pickupSetting?.dropoff_spot_id || '');
+        setPickupDetailLocation(pickupSetting?.detail_location || '');
+        setDropoffDetailLocation(pickupSetting?.dropoff_detail_location || '');
+
         const [
           { data: owned },
           { data: plans },
@@ -1017,6 +1058,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
     const editingStudent = editingId ? students.find((student) => student.id === editingId) : null;
     const isAppLinked = Boolean(editingStudent?.child_id);
+    if (isAppLinked && !pickupSpotId && !dropoffSpotId && (pickupDetailLocation.trim() || dropoffDetailLocation.trim())) {
+      return alert('상세 승·하차 위치를 입력하려면 먼저 정류장을 선택해 주세요.');
+    }
     const assignmentsToValidate = isAppLinked ? nextMonthPackages : classAssignments;
     if (!isAppLinked && assignmentsToValidate.length === 0) return alert('수업 또는 이용권을 한 개 이상 추가해 주세요.');
     if (assignmentsToValidate.some((assignment) => !assignment.package_option_id)) return alert('모든 수강 항목에 이용권 요금제를 지정해 주세요.');
@@ -1046,7 +1090,39 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       };
 
       let studentId = editingId;
-      if (editingId) {
+      const isVirtualAppStudent = Boolean(
+        editingStudent?.child_id && editingId?.startsWith('child-'),
+      );
+      if (editingId && isVirtualAppStudent) {
+        // 앱 children에는 존재하지만 academy_students 행이 아직 없는 학생은
+        // 가상 목록 ID를 UPDATE하지 않고 실제 관리 행을 먼저 생성합니다.
+        const { data: existingLinkedStudent, error: linkedLookupError } = await supabase
+          .from('academy_students')
+          .select('id')
+          .eq('child_id', editingStudent!.child_id)
+          .maybeSingle();
+        if (linkedLookupError) throw linkedLookupError;
+
+        if (existingLinkedStudent?.id) {
+          const { error } = await supabase
+            .from('academy_students')
+            .update(studentPayload)
+            .eq('id', existingLinkedStudent.id);
+          if (error) throw error;
+          studentId = existingLinkedStudent.id;
+        } else {
+          const { data, error } = await supabase
+            .from('academy_students')
+            .insert([{
+              ...studentPayload,
+              child_id: editingStudent!.child_id,
+            }])
+            .select('id')
+            .single();
+          if (error) throw error;
+          studentId = data.id;
+        }
+      } else if (editingId) {
         const { error } = await supabase
           .from('academy_students')
           .update(studentPayload)
@@ -1087,6 +1163,24 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       }
 
       if (studentId && isAppLinked) {
+        const boardingSpotName = pickupSpots.find((spot) => spot.id === pickupSpotId)?.name || '';
+        const dropoffSpotName = pickupSpots.find((spot) => spot.id === dropoffSpotId)?.name || '';
+        const { error: pickupSettingError } = await supabase
+          .from('pickup_settings')
+          .upsert({
+            child_id: editingStudent!.child_id,
+            branch_id: selectedBranchId,
+            area: pickupSpotId ? '픽업' : '',
+            apartment: boardingSpotName || dropoffSpotName || '',
+            pickup_spot_id: pickupSpotId || null,
+            detail_location: pickupDetailLocation.trim(),
+            dropoff_spot_id: dropoffSpotId || null,
+            dropoff_detail_location: dropoffDetailLocation.trim(),
+            is_active: Boolean(pickupSpotId || dropoffSpotId),
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'child_id' });
+        if (pickupSettingError) throw pickupSettingError;
+
         // Class plans are synchronized through a transactional RPC that also
         // creates the future-dated app assignments and target-month bookings.
         const { error: futureScheduleError } = await supabase.rpc(
@@ -2450,6 +2544,61 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 />
               </div>
 
+              <section className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+                <div className="mb-3 flex items-start gap-2.5">
+                  <span className="rounded-xl bg-blue-600 p-2 text-white"><Bus size={16} /></span>
+                  <div>
+                    <div className="text-xs font-black text-slate-800">기본 승·하차 정류장</div>
+                    <div className="mt-0.5 text-[10px] font-medium leading-4 text-slate-500">기사 앱의 노선 배치와 길안내에서 사용할 기본 위치입니다.</div>
+                  </div>
+                </div>
+
+                {!modalStudent?.child_id ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] font-bold leading-5 text-amber-800">
+                    앱 자녀 계정과 연결된 학생만 정류장을 지정할 수 있습니다. 먼저 학부모 앱 계정과 학생을 연결해 주세요.
+                  </div>
+                ) : pickupSettingsLoading ? (
+                  <div className="flex items-center justify-center gap-2 rounded-xl bg-white py-6 text-xs font-bold text-slate-500">
+                    <Loader2 size={15} className="animate-spin" /> 정류장 설정을 불러오는 중입니다.
+                  </div>
+                ) : pickupSpots.length === 0 ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] font-bold leading-5 text-amber-800">
+                    등록된 정류장이 없습니다. 셔틀 관리 → 정류장 관리에서 위치를 먼저 등록해 주세요.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1.5 flex items-center gap-1 text-[11px] font-black text-blue-700"><MapPin size={12} /> 승차 정류장</label>
+                        <select value={pickupSpotId} onChange={(e) => { setPickupSpotId(e.target.value); if (!e.target.value) setPickupDetailLocation(''); }} className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold text-slate-800 outline-none ring-1 ring-blue-100 focus:ring-2 focus:ring-blue-500">
+                          <option value="">이용 안 함</option>
+                          {pickupSpots.map((spot) => <option key={spot.id} value={spot.id}>{spot.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1.5 flex items-center gap-1 text-[11px] font-black text-violet-700"><MapPin size={12} /> 하차 정류장</label>
+                        <select value={dropoffSpotId} onChange={(e) => { setDropoffSpotId(e.target.value); if (!e.target.value) setDropoffDetailLocation(''); }} className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold text-slate-800 outline-none ring-1 ring-violet-100 focus:ring-2 focus:ring-violet-500">
+                          <option value="">이용 안 함</option>
+                          {pickupSpots.map((spot) => <option key={spot.id} value={spot.id}>{spot.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => { setDropoffSpotId(pickupSpotId); setDropoffDetailLocation(pickupDetailLocation); }} disabled={!pickupSpotId} className="rounded-lg bg-white px-2.5 py-1.5 text-[10px] font-black text-blue-700 ring-1 ring-blue-100 disabled:cursor-not-allowed disabled:text-slate-300">
+                      승차 위치를 하차에도 동일 적용
+                    </button>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <input value={pickupDetailLocation} onChange={(e) => setPickupDetailLocation(e.target.value)} disabled={!pickupSpotId} placeholder="승차 상세 위치 (예: 아파트 정문)" className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold outline-none ring-1 ring-blue-100 focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100" />
+                      <input value={dropoffDetailLocation} onChange={(e) => setDropoffDetailLocation(e.target.value)} disabled={!dropoffSpotId} placeholder="하차 상세 위치 (예: 아파트 후문)" className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold outline-none ring-1 ring-violet-100 focus:ring-2 focus:ring-violet-500 disabled:bg-slate-100" />
+                    </div>
+                    {(pickupSpotId || dropoffSpotId) && (
+                      <div className="rounded-lg bg-white/80 px-3 py-2 text-[10px] leading-4 text-slate-500">
+                        {[pickupSpotId, dropoffSpotId].filter(Boolean).map((id) => pickupSpots.find((spot) => spot.id === id)).filter(Boolean).map((spot, index) => <div key={`${spot!.id}-${index}`}><span className="font-black text-slate-600">{index === 0 ? '선택 위치' : '하차 위치'}:</span> {spot!.name}{spot!.address ? ` · ${spot!.address}` : ''}</div>)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+
               <div>
                 <label className="block text-xs font-bold text-slate-500 mb-1.5">비공개 학생 메모</label>
                 <textarea 
@@ -2476,7 +2625,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 )}
                 <button 
                   type="submit" 
-                  disabled={saveLoading}
+                  disabled={saveLoading || pickupSettingsLoading}
                   className={`flex ${editingId ? 'w-2/3' : 'w-full'} items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300 shadow-sm`}
                 >
                   {saveLoading ? <Loader2 size={16} className="animate-spin" /> : null}
