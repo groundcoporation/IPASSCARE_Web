@@ -58,6 +58,7 @@ interface Student {
   } | null;
   child?: {
     deleted_at: string | null;
+    parent_id?: string | null;
   } | null;
   // Joined classes
   academy_student_classes?: Array<{
@@ -288,7 +289,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       let studentsQuery = supabase.from('academy_students').select(`
         *,
         parent_user:users(name, email, status, phone, branch_id),
-        child:children(deleted_at, back_number, branch_id)
+        child:children(deleted_at, back_number, branch_id, parent_id)
       `);
       if (activeBranchId && activeBranchId !== 'all') {
         studentsQuery = studentsQuery.eq('branch_id', activeBranchId);
@@ -396,6 +397,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           const cleanPhone = student.mother_phone || student.father_phone || student.student_phone || student.parent_user?.phone;
           return {
             ...student,
+            parent_user_id: student.child?.parent_id || student.parent_user_id,
             attendance_code: formatCleanAttendanceCode(student.attendance_code, cleanPhone, student.child?.back_number),
             academy_student_classes: studentClassesByStudent.get(student.id) || [],
           };
@@ -836,7 +838,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           status: string | null;
         }>;
         const currentPlanRows = (currentPlans || []) as any[];
-        const currentMonthEnd = `${currentBillMonth()}-31`;
+        const [currentBillYear, currentBillMonthNumber] = currentBillMonth().split('-').map(Number);
+        const currentMonthEnd = new Date(Date.UTC(currentBillYear, currentBillMonthNumber, 0)).toISOString().slice(0, 10);
         const hasCurrentMonthIssuedPackage = ownedRows.some((row) => (
           (!row.valid_from || row.valid_from.slice(0, 10) <= currentMonthEnd)
           && (!row.valid_until && !row.expiry_date || (row.valid_until || row.expiry_date)!.slice(0, 10) >= `${currentBillMonth()}-01`)
@@ -1069,7 +1072,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
     setSaveLoading(true);
     try {
-      const parentId = await linkParentAccount(motherPhone, fatherPhone);
+      // 앱 자녀는 children.parent_id가 소유권의 기준입니다. 동일 전화번호를
+      // 사용하는 다른 계정을 검색해 기존 학부모 연결을 덮어쓰지 않습니다.
+      const parentId = isAppLinked
+        ? editingStudent?.child?.parent_id || editingStudent?.parent_user_id || null
+        : await linkParentAccount(motherPhone, fatherPhone);
 
       const studentPayload = {
         branch_id: selectedBranchId,

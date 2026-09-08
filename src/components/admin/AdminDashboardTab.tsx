@@ -37,6 +37,10 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const currentMonthStr = useMemo(() => new Date().toISOString().slice(0, 7), []);
+  const currentMonthEnd = useMemo(() => {
+    const [year, month] = currentMonthStr.split('-').map(Number);
+    return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+  }, [currentMonthStr]);
   const currentYear = useMemo(() => new Date().getFullYear(), []);
 
   // Fetch all live dashboard data
@@ -69,7 +73,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
         .select('id, child_id, schedule_id, class_date, status, attendance_status, branch_id')
         .is('deleted_at', null)
         .gte('class_date', `${currentMonthStr}-01`)
-        .lte('class_date', `${currentMonthStr}-31`);
+        .lte('class_date', currentMonthEnd);
       if (targetBranch) reservationsQuery = reservationsQuery.eq('branch_id', targetBranch);
 
       // 4. Attendance logs for this month
@@ -77,7 +81,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
         .from('attendance_logs')
         .select('id, child_id, date, status, check_in, check_out, branch_id')
         .gte('date', `${currentMonthStr}-01`)
-        .lte('date', `${currentMonthStr}-31`);
+        .lte('date', currentMonthEnd);
       if (targetBranch) logsQuery = logsQuery.eq('branch_id', targetBranch);
 
       // 5. Bills for this month

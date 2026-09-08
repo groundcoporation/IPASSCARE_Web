@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { CreditCard, Calendar, Plus, RefreshCw, CheckCircle2, AlertCircle, BellRing, FileText, Loader2, ListFilter, Users, ArrowRight, Search, Trash2 } from 'lucide-react';
+import { AppError, formatError, normalizeError, logError } from '../../errors/appError';
+import { handleError } from '../../errors/handleError';
+import { discountedBillAmount, normalizeDiscountPercent } from '../../utils/billingAmount';
+import { CheckCircle2, AlertCircle, BellRing, FileText, Loader2, ArrowRight, Search, Trash2 } from 'lucide-react';
 
 interface Bill {
   id: string;
@@ -10,6 +13,11 @@ interface Bill {
   package_option_id: string | null;
   bill_month: string;
   amount_due: number;
+  original_amount?: number;
+  discount_type?: 'none' | 'percent' | 'final_amount';
+  discount_value?: number;
+  discount_amount?: number;
+  adjustment_reason?: string | null;
   amount_paid: number;
   billing_date: string;
   payment_date: string | null;
@@ -73,40 +81,6 @@ interface AppPaymentRequest {
   closed_at: string | null;
 }
 
-interface StudentClassRow {
-  id: string;
-  student_id: string;
-  class_schedule_id: string | null;
-  package_option_id: string | null;
-  billing_cycle: string | null;
-  payment_day: string | null;
-  status: string;
-  registered_at: string;
-  academy_students: {
-    student_name: string;
-    parent_user_id: string | null;
-    branch_id: string;
-    is_sms_enabled: boolean;
-    child_id: string | null;
-    child?: {
-      deleted_at: string | null;
-    } | null;
-    parent?: {
-      status: string;
-    } | null;
-  } | null;
-  class_schedules: {
-    target_class: string;
-  } | null;
-  package_options: {
-    label: string;
-    price: number;
-    packages: {
-      name: string;
-    } | null;
-  } | null;
-}
-
 interface OwnedPackageTarget {
   userPackageId: string;
   packageId: string | null;
@@ -165,6 +139,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [subTab, setSubTab] = useState<'targets' | 'invoices'>('targets'); // Sub-menu toggle
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const billingBusyRef = useRef(false);
   
   // Tab 1: Billing Targets data
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
@@ -172,12 +147,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
   const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
   const [billingSearch, setBillingSearch] = useState('');
+  const [previewDiscountMode, setPreviewDiscountMode] = useState<'none' | '5percent' | '10percent' | 'custom_percent' | 'custom_amount'>('none');
+  const [previewDiscountPercent, setPreviewDiscountPercent] = useState('');
+  const [previewFinalAmount, setPreviewFinalAmount] = useState('');
+  const [previewAdjustmentReason, setPreviewAdjustmentReason] = useState('');
 
   // Tab 2: Invoices data
   const [bills, setBills] = useState<Bill[]>([]);
   const [appPaymentRequests, setAppPaymentRequests] = useState<AppPaymentRequest[]>([]);
   const [selectedAppBillIds, setSelectedAppBillIds] = useState<Set<string>>(new Set());
-  const [directOnsitePayments, setDirectOnsitePayments] = useState<OfflinePayment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [invoiceSearch, setInvoiceSearch] = useState('');
@@ -298,6 +276,32 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const allAutoBillingStudentsSelected = billingTargetStudents.length > 0
     && billingTargetStudents.every((student) => autoBillingTargetStudentIds.has(student.studentId));
 
+  const billingAmountPreview = useMemo(() => {
+    const selectedTargets = billingTargets.filter((target) =>
+      selectedBillingStudentIds.has(target.studentId) && !target.hasTargetMonthPackage,
+    );
+    const originalAmount = selectedTargets.reduce((sum, target) => sum + Number(target.price || 0), 0);
+    const percent = previewDiscountMode === '5percent'
+      ? 5
+      : previewDiscountMode === '10percent'
+        ? 10
+        : previewDiscountMode === 'custom_percent'
+          ? normalizeDiscountPercent(Number(previewDiscountPercent))
+          : 0;
+    const calculatedAmount = previewDiscountMode === 'custom_amount'
+      ? selectedTargets.length === 1
+        ? Math.max(0, Number(previewFinalAmount.replace(/[^0-9]/g, '')) || 0)
+        : originalAmount
+      : selectedTargets.reduce((sum, target) => sum + discountedBillAmount(Number(target.price || 0), percent), 0);
+    const finalAmount = selectedTargets.length > 0 ? calculatedAmount : 0;
+    return {
+      targetCount: selectedTargets.length,
+      originalAmount,
+      discountAmount: originalAmount - finalAmount,
+      finalAmount,
+    };
+  }, [billingTargets, previewDiscountMode, previewDiscountPercent, previewFinalAmount, selectedBillingStudentIds]);
+
   const toggleBillingStudent = (studentId: string) => {
     const student = billingTargetStudents.find((item) => item.studentId === studentId);
     if (!student || isStudentAlreadyBilled(student)) return;
@@ -350,7 +354,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     setAutoBillingTargetSaving(true);
     try {
       const { data: authData } = await supabase.auth.getUser();
-      if (!authData.user) throw new Error('로그인이 필요합니다.');
+      if (!authData.user) throw new AppError('AUTH_REQUIRED');
       const now = new Date().toISOString();
       const { error } = await supabase
         .from('academy_billing_automation_targets')
@@ -367,8 +371,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         studentIds.forEach((studentId) => enabled ? next.add(studentId) : next.delete(studentId));
         return next;
       });
-    } catch (error: any) {
-      alert(`자동 청구 대상 저장 실패: ${error?.message || '알 수 없는 오류'}`);
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.targets.save' });
     } finally {
       setAutoBillingTargetSaving(false);
     }
@@ -390,7 +394,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     setAutoBillingSaving(true);
     try {
       const { data: authData } = await supabase.auth.getUser();
-      if (!authData.user) throw new Error('로그인이 필요합니다.');
+      if (!authData.user) throw new AppError('AUTH_REQUIRED');
       const nextEnabled = !autoBillingEnabled;
       const { error } = await supabase
         .from('academy_billing_automation_settings')
@@ -406,8 +410,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       alert(nextEnabled
         ? '자동 청구를 켰습니다. 매월 1일 미갱신 대상에게 앱 청구서가 자동 발송됩니다.'
         : '자동 청구를 껐습니다. 기존 청구서에는 영향을 주지 않습니다.');
-    } catch (error: any) {
-      alert(`자동 청구 설정 변경 실패: ${error?.message || '알 수 없는 오류'}`);
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.settings.save' });
     } finally {
       setAutoBillingSaving(false);
     }
@@ -426,7 +430,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           branch_id,
           is_sms_enabled,
           child_id,
-          child:children(deleted_at),
+          child:children(deleted_at, parent_id),
           parent:users(status),
           academy_student_classes(
             id,
@@ -446,11 +450,19 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         `);
       if (studentError) throw studentError;
 
-      const activeStudents = (students as any[] || []).filter((student) =>
-        (!student.child_id || student.child?.deleted_at == null)
-        && (!student.parent_user_id || student.parent?.status !== 'deleted')
-        && (!activeBranchId || activeBranchId === 'all' || student.branch_id === activeBranchId)
-      );
+      const activeStudents = (students as any[] || [])
+        .filter((student) =>
+          (!student.child_id || student.child?.deleted_at == null)
+          && (!student.parent_user_id || student.parent?.status !== 'deleted')
+          && (!activeBranchId || activeBranchId === 'all' || student.branch_id === activeBranchId)
+        )
+        .map((student) => ({
+          ...student,
+          // 앱 자녀의 실제 소유자는 children.parent_id가 기준입니다.
+          // 과거 전화번호 자동 연결로 academy_students가 잘못 연결됐더라도
+          // 조회·청구 대상 계산에서는 올바른 학부모를 사용합니다.
+          parent_user_id: student.child?.parent_id || student.parent_user_id,
+        }));
       setBillingRosterStudents(activeStudents.map((student) => ({
         studentId: student.id,
         studentName: student.student_name || '원생',
@@ -733,7 +745,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         );
       });
       const sharedShuttleTargets: OwnedPackageTarget[] = Array.from(sharedPackagesByParentAndProduct.values())
-        .map((ownedGroup) => {
+        .flatMap((ownedGroup): OwnedPackageTarget[] => {
           const targetMonthPackage = ownedGroup
             .filter((owned) => overlaps(owned, selectedPeriod) || isUndatedActivePackage(owned))
             .sort(newestFirst)[0];
@@ -742,13 +754,13 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               || (!owned.valid_from && !packageEnd(owned) && owned.status === 'active'))
             .sort(newestFirst)[0];
           const owned = targetMonthPackage || renewalSourcePackage;
-          if (!owned) return null;
+          if (!owned) return [];
 
           const representativeStudent = (studentsByParentId.get(owned.user_id) || [])
             .find((student) => !owned.branch_id || student.branch_id === owned.branch_id);
-          if (!representativeStudent) return null;
+          if (!representativeStudent) return [];
           const option: any = owned.option_id ? optionById.get(owned.option_id) : null;
-          return {
+          return [{
             userPackageId: owned.id,
             packageId: owned.package_id || null,
             hasTargetMonthPackage: Boolean(targetMonthPackage),
@@ -767,9 +779,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             classNames: [],
             parentUserId: owned.user_id,
             isShared: true,
-          } satisfies OwnedPackageTarget;
-        })
-        .filter((target): target is OwnedPackageTarget => target !== null);
+          } satisfies OwnedPackageTarget];
+        });
 
       const webTargets: OwnedPackageTarget[] = webOnlyStudents.flatMap((student) =>
         (student.academy_student_classes || [])
@@ -992,6 +1003,35 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       alert('고지서를 발행할 원생을 한 명 이상 선택해 주세요.');
       return;
     }
+    if (previewDiscountMode === 'custom_amount' && selectedTargets.length !== 1) {
+      alert('최종 청구 금액 직접 입력은 청구 대상 1건을 선택했을 때만 사용할 수 있습니다. 여러 건에는 할인율을 적용해 주세요.');
+      return;
+    }
+    if (previewDiscountMode === 'custom_amount' && previewFinalAmount.trim() === '') {
+      alert('최종 청구 금액을 입력해 주세요.');
+      return;
+    }
+    if (previewDiscountMode === 'custom_percent' && previewDiscountPercent.trim() === '') {
+      alert('적용할 할인율을 입력해 주세요.');
+      return;
+    }
+    if (previewDiscountMode === 'custom_percent' && (!Number.isFinite(Number(previewDiscountPercent)) || Number(previewDiscountPercent) < 0 || Number(previewDiscountPercent) > 100)) {
+      alert('[BILL_DISCOUNT_INVALID] 할인율은 0~100 사이로 입력해 주세요.');
+      return;
+    }
+    if (previewDiscountMode === 'custom_amount' && (!Number.isSafeInteger(Number(previewFinalAmount)) || Number(previewFinalAmount) > 2147483647)) {
+      alert('[BILL_AMOUNT_INVALID] 청구 금액을 확인해 주세요.');
+      return;
+    }
+
+    const discountPercent = previewDiscountMode === '5percent'
+      ? 5
+      : previewDiscountMode === '10percent'
+        ? 10
+        : previewDiscountMode === 'custom_percent'
+          ? normalizeDiscountPercent(Number(previewDiscountPercent))
+          : 0;
+    const directFinalAmount = Math.max(0, Number(previewFinalAmount.replace(/[^0-9]/g, '')) || 0);
 
     const branchName = activeBranchId && activeBranchId !== 'all' 
       ? branches.find(b => b.id === activeBranchId)?.name || '해당'
@@ -1001,10 +1041,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     const validityEnd = new Date(
       Date.UTC(Number(targetMonth.slice(0, 4)), Number(targetMonth.slice(5, 7)), 0),
     ).toISOString().slice(0, 10);
-    if (!confirm(`${branchName} 지점에서 선택한 원생 ${selectedBillingStudentIds.size}명에게 [${targetMonth}월분] 청구 고지서를 발행하시겠습니까?\n이용권 사용기간: ${validityStart} ~ ${validityEnd}\n선택한 원생이 보유한 이용권별로 생성되며, 이미 발행된 고지서는 건너뜁니다.`)) {
+    if (!confirm(`${branchName} 지점에서 선택한 원생 ${selectedBillingStudentIds.size}명에게 [${targetMonth}월분] 청구 고지서를 발행하시겠습니까?\n기본 청구액: ${billingAmountPreview.originalAmount.toLocaleString()}원\n금액 조정: ${billingAmountPreview.discountAmount >= 0 ? '-' : '+'}${Math.abs(billingAmountPreview.discountAmount).toLocaleString()}원\n최종 청구액: ${billingAmountPreview.finalAmount.toLocaleString()}원\n이용권 사용기간: ${validityStart} ~ ${validityEnd}\n선택한 원생이 보유한 이용권별로 생성되며, 이미 발행된 고지서는 건너뜁니다.`)) {
       return;
     }
 
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
     setActionLoading(true);
     try {
       if (selectedTargets.length === 0) {
@@ -1019,6 +1061,21 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       let lastErrMsg = '';
 
       for (const target of selectedTargets) {
+        const originalAmount = Number(target.price || 0);
+        const finalAmount = previewDiscountMode === 'custom_amount'
+          ? directFinalAmount
+          : discountedBillAmount(originalAmount, discountPercent);
+        const persistedDiscountType = previewDiscountMode === 'custom_amount'
+          ? 'final_amount'
+          : discountPercent > 0
+            ? 'percent'
+            : 'none';
+        const persistedDiscountValue = persistedDiscountType === 'final_amount'
+          ? finalAmount
+          : persistedDiscountType === 'percent'
+            ? discountPercent
+            : 0;
+
         let existingQuery = supabase
           .from('academy_bills')
           .select('id, status')
@@ -1049,7 +1106,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           class_schedule_id: null,
           package_option_id: target.optionId,
           bill_month: targetMonth,
-          amount_due: target.price,
+          original_amount: originalAmount,
+          discount_type: persistedDiscountType,
+          discount_value: persistedDiscountValue,
+          discount_amount: originalAmount - finalAmount,
+          adjustment_reason: previewAdjustmentReason.trim() || null,
+          amount_due: finalAmount,
           amount_paid: 0,
           billing_date: new Date().toISOString().slice(0, 10),
           status: 'unpaid',
@@ -1063,9 +1125,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           .insert([billPayload]);
 
         if (insErr) {
-          console.error('Invoice insert error:', insErr);
+          logError(normalizeError(insErr, 'BILL_CREATE_FAILED'), { operation: 'billing.create.item' });
           failCount++;
-          lastErrMsg = insErr.message;
+          lastErrMsg = formatError(normalizeError(insErr, 'BILL_CREATE_FAILED'));
         } else {
           createdCount++;
           if (target.userPackageId.startsWith('plan:')) {
@@ -1078,18 +1140,23 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         }
       }
 
-      if (failCount > 0 && createdCount === 0) {
-        alert(`청구서 DB 저장 중 오류가 발생했습니다:\n${lastErrMsg}`);
+      if (failCount > 0) {
+        alert(`청구서 처리 결과: 생성 ${createdCount}건 / 기존 ${alreadyCount}건 / 실패 ${failCount}건\n${lastErrMsg}\n재시도 전 청구내역을 확인해 주세요.`);
       } else {
         alert(`청구서 처리 완료!\n- 새로 발행된 청구서: ${createdCount}건\n- 이미 발행되어 건너뜀: ${alreadyCount}건\n\n[청구내역 조회] 탭으로 자동 이동합니다.`);
+        setPreviewDiscountMode('none');
+        setPreviewDiscountPercent('');
+        setPreviewFinalAmount('');
+        setPreviewAdjustmentReason('');
       }
 
       setSelectedMonth(targetMonth);
       setSubTab('invoices');
       loadBills();
-    } catch (err: any) {
-      alert(`청구서 발행 실패: ${err.message}`);
+    } catch (err: unknown) {
+      await handleError(err, 'BILL_CREATE_FAILED', { operation: 'billing.create' });
     } finally {
+      billingBusyRef.current = false;
       setActionLoading(false);
     }
   };
@@ -1115,6 +1182,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       : bill.memo || '청구 항목';
     if (!confirm(`${bill.academy_students?.student_name || '원생'}의 ${bill.bill_month}월 ${label} 청구서를 삭제할까요?\n이미 앱으로 발송된 미결제 청구서는 만료 처리됩니다.`)) return;
 
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
     setActionLoading(true);
     try {
       const { error } = await supabase.rpc('delete_unpaid_academy_bill', {
@@ -1129,9 +1198,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       });
       await Promise.all([loadBills(), loadBillingTargets()]);
       alert('미결제 청구서를 삭제했습니다.');
-    } catch (error: any) {
-      alert(`청구서 삭제 실패: ${error?.message || '알 수 없는 오류'}`);
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_DELETE_FAILED', { operation: 'billing.delete', transactionId: bill.id });
     } finally {
+      billingBusyRef.current = false;
       setActionLoading(false);
     }
   };
@@ -1145,26 +1215,45 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     const parentName = request.parent_name || '학부모';
     if (!confirm(`${parentName}님에게 직접 발행한 '${title}' 어플 청구서를 삭제할까요?\n삭제 시 학부모 앱의 청구 내역에서도 삭제 처리됩니다.`)) return;
 
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
     setActionLoading(true);
     try {
-      let { error } = await supabase.rpc('delete_unpaid_app_payment_request', {
+      const { error } = await supabase.rpc('delete_unpaid_app_payment_request', {
         p_request_id: request.id,
         p_reason: '수납 관리에서 어플 관리자 직접 청구 삭제',
       });
-      if (error && (error.message.includes('function') || error.code === 'PGRST202')) {
-        const res = await supabase.from('payment_requests').delete().eq('id', request.id);
-        error = res.error;
-      }
       if (error) throw error;
       await loadBills();
       alert('어플 직접 청구가 삭제되었습니다.');
-    } catch (error: any) {
-      alert(`어플 청구 삭제 실패: ${error?.message || '알 수 없는 오류'}`);
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_DELETE_FAILED', { operation: 'billing.app.delete', transactionId: request.id });
     } finally {
+      billingBusyRef.current = false;
       setActionLoading(false);
     }
   };
 
+
+  const handleFreeBill = async (bill: Bill) => {
+    if (actionLoading) return;
+    if (!confirm('이 0원 청구서를 무료 처리하시겠습니까?\n결제 요청 없이 이용권이 즉시 지급됩니다.')) return;
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
+    setActionLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('complete_free_academy_bill', { p_bill_id: bill.id });
+      if (error) throw error;
+      if (!data?.success) throw new AppError('BILL_FREE_FAILED');
+      alert(data.already_completed ? '이미 무료 처리된 청구서입니다.' : '무료 처리 및 이용권 지급이 완료되었습니다.');
+      await loadBills();
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_FREE_FAILED', { operation: 'billing.free', transactionId: bill.id });
+    } finally {
+      billingBusyRef.current = false;
+      setActionLoading(false);
+    }
+  };
 
   // Process manual payment
   const handleProcessPayment = async (e: React.FormEvent) => {
@@ -1173,6 +1262,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     const amount = Number(paidAmount);
     if (isNaN(amount) || amount <= 0) return alert('정확한 수납 금액을 입력해주세요.');
 
+    let scheduledPaymentId: string | undefined;
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
     setActionLoading(true);
     try {
       const methodMap: Record<string, string> = {
@@ -1188,6 +1280,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         p_memo: paymentMemo.trim() || null,
       });
       if (scheduleError) throw scheduleError;
+      scheduledPaymentId = scheduledResult?.payment_id;
+      if (!scheduledPaymentId) throw new AppError('PAYMENT_SAVE_FAILED');
 
       if (paymentTiming === 'now') {
         const paymentId = scheduledResult?.payment_id;
@@ -1195,53 +1289,18 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           p_payment_id: paymentId,
           p_memo: paymentMemo.trim() || null,
         });
-        if (confirmError) throw confirmError;
+        if (confirmError || !confirmedResult?.success) throw new AppError('PAYMENT_CONFIRM_PENDING', confirmError);
         if (confirmedResult?.bill_status === 'paid' && !confirmedResult?.package_issued) {
-          alert('수납은 완료됐지만 연결된 이용권 옵션을 찾지 못했습니다. 학생의 요금제 배정을 확인해 주세요.');
+          await handleError(new AppError('PAYMENT_PACKAGE_PENDING'), 'PAYMENT_PACKAGE_PENDING', { operation: 'billing.package', transactionId: paymentId });
         }
       }
 
       setIsPayModalOpen(false);
       await loadBills();
-    } catch (err: any) {
-      alert(`수기 수납 처리에 실패했습니다: ${err.message}`);
+    } catch (err: unknown) {
+      await handleError(scheduledPaymentId ? new AppError('PAYMENT_CONFIRM_PENDING', err) : err, 'PAYMENT_SAVE_FAILED', { operation: 'billing.payment', transactionId: scheduledPaymentId || selectedBill.id });
     } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const confirmScheduledPayment = async (payment: OfflinePayment) => {
-    if (!confirm('현장에서 실제 수납한 것을 확인했나요? 완료 후 결제 포인트와 이용권이 처리됩니다.')) return;
-    setActionLoading(true);
-    try {
-      const { data, error } = await supabase.rpc('confirm_offline_payment', {
-        p_payment_id: payment.id,
-        p_memo: payment.memo,
-      });
-      if (error) throw error;
-      if (data?.bill_status === 'paid' && !data?.package_issued) {
-        alert('수납은 완료됐지만 연결된 이용권 옵션을 찾지 못했습니다. 학생의 요금제 배정을 확인해 주세요.');
-      }
-      await loadBills();
-    } catch (err: any) {
-      alert(`수납 완료 처리에 실패했습니다: ${err.message}`);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const cancelScheduledPayment = async (payment: OfflinePayment) => {
-    if (!confirm('이 현장결제 예정 건을 취소할까요? 실제 결제 및 포인트에는 영향이 없습니다.')) return;
-    setActionLoading(true);
-    try {
-      const { error } = await supabase.rpc('cancel_scheduled_offline_payment', {
-        p_payment_id: payment.id,
-      });
-      if (error) throw error;
-      await loadBills();
-    } catch (err: any) {
-      alert(`결제 예정 취소에 실패했습니다: ${err.message}`);
-    } finally {
+      billingBusyRef.current = false;
       setActionLoading(false);
     }
   };
@@ -1273,6 +1332,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   const appSendableBills = filteredBills.filter((bill) =>
     bill.status === 'unpaid'
+    && bill.amount_due > 0
     && !bill.payment_request_id
     && Boolean(bill.academy_students?.parent_user_id)
     && Boolean(bill.package_option_id),
@@ -1282,7 +1342,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   useEffect(() => {
     const availableIds = new Set(bills
-      .filter((bill) => bill.status === 'unpaid' && !bill.payment_request_id)
+      .filter((bill) => bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id)
       .map((bill) => bill.id));
     setSelectedAppBillIds((previous) => {
       const next = new Set(Array.from(previous).filter((id) => availableIds.has(id)));
@@ -1312,6 +1372,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     if (selectedAppBillIds.size === 0) return alert('앱으로 발송할 미납 고지서를 선택해 주세요.');
     if (!confirm(`선택한 고지서 ${selectedAppBillIds.size}건을 학부모 앱으로 발송하시겠습니까?`)) return;
 
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
     setActionLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('send-academy-bills', {
@@ -1323,7 +1385,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const skipped = Number(data?.skipped ?? 0);
       const failed = Number(data?.failed ?? 0);
       const failedMessages = Array.isArray(data?.results)
-        ? data.results.filter((result: any) => !result.success).map((result: any) => result.error).filter(Boolean)
+        ? data.results.filter((result: any) => !result.success).map((result: any) => formatError(normalizeError({ code: result.code, message: result.error }, 'BILL_REMINDER_FAILED')))
         : [];
 
       alert([
@@ -1335,9 +1397,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       ].filter(Boolean).join('\n'));
       setSelectedAppBillIds(new Set());
       await loadBills();
-    } catch (err: any) {
-      alert(`앱 청구서 발송에 실패했습니다: ${err?.message || '알 수 없는 오류'}`);
+    } catch (err: unknown) {
+      await handleError(err, 'BILL_SEND_FAILED', { operation: 'billing.send' });
     } finally {
+      billingBusyRef.current = false;
       setActionLoading(false);
     }
   };
@@ -1345,6 +1408,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const handleSendPaymentReminders = async (paymentRequestIds: string[]) => {
     if (!paymentRequestIds.length) return alert('재알림할 미납 청구서가 없습니다.');
     if (!confirm(`미납 청구서 ${paymentRequestIds.length}건의 납부 알림을 다시 보내시겠습니까?`)) return;
+    if (billingBusyRef.current) return;
+    billingBusyRef.current = true;
     setActionLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('send-payment-reminders', {
@@ -1354,13 +1419,14 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const sent = Number(data?.sent ?? 0);
       const failed = Number(data?.failed ?? 0);
       const failedMessages = Array.isArray(data?.results)
-        ? data.results.filter((result: any) => !result.success).map((result: any) => result.error).filter(Boolean)
+        ? data.results.filter((result: any) => !result.success).map((result: any) => formatError(normalizeError({ code: result.code, message: result.error }, 'BILL_SEND_FAILED')))
         : [];
       alert([`미납 알림 재발송 결과`, `- 발송: ${sent}건`, `- 실패/제외: ${failed}건`, failedMessages.length ? `\n${failedMessages.slice(0, 3).join('\n')}` : ''].filter(Boolean).join('\n'));
       await loadBills();
-    } catch (err: any) {
-      alert(`미납 알림 재발송에 실패했습니다: ${err?.message || '알 수 없는 오류'}`);
+    } catch (err: unknown) {
+      await handleError(err, 'BILL_REMINDER_FAILED', { operation: 'billing.remind' });
     } finally {
+      billingBusyRef.current = false;
       setActionLoading(false);
     }
   };
@@ -1383,14 +1449,40 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Calculate sums
   const stats = React.useMemo(() => {
-    const totalDue = bills.reduce((sum, b) => sum + b.amount_due, 0)
-      + appPaymentRequests.reduce((sum, request) => sum + Number(request.final_amount || request.total_amount || 0), 0);
-    const totalPaid = bills.reduce((sum, b) => sum + (b.status === 'paid' ? b.amount_paid : 0), 0)
-      + appPaymentRequests.reduce((sum, request) => request.status === 'paid' ? sum + Number(request.final_amount || request.total_amount || 0) : sum, 0);
-    const totalUnpaid = totalDue - totalPaid;
-    const rate = totalDue > 0 ? Math.round((totalPaid / totalDue) * 100) : 0;
-    
-    return { totalDue, totalPaid, totalUnpaid, rate };
+    const webDue = bills.reduce((sum, bill) => sum + Number(bill.amount_due || 0), 0);
+    const webPaid = bills.reduce(
+      (sum, bill) => sum + (bill.status === 'paid' ? Number(bill.amount_paid || 0) : 0),
+      0,
+    );
+    const appDue = appPaymentRequests.reduce(
+      (sum, request) => sum + Number(request.final_amount ?? request.total_amount ?? 0),
+      0,
+    );
+    const appPaid = appPaymentRequests.reduce(
+      (sum, request) => request.status === 'paid'
+        ? sum + Number(request.final_amount ?? request.total_amount ?? 0)
+        : sum,
+      0,
+    );
+
+    const toStats = (due: number, paid: number, paidCount: number, totalCount: number) => ({
+      due,
+      paid,
+      unpaid: Math.max(due - paid, 0),
+      paymentRate: totalCount > 0 ? Math.round((paidCount / totalCount) * 100) : 0,
+      paidCount,
+      totalCount,
+    });
+
+    return {
+      web: toStats(webDue, webPaid, bills.filter((bill) => bill.status === 'paid').length, bills.length),
+      app: toStats(
+        appDue,
+        appPaid,
+        appPaymentRequests.filter((request) => request.status === 'paid').length,
+        appPaymentRequests.length,
+      ),
+    };
   }, [bills, appPaymentRequests]);
 
   return (
@@ -1492,6 +1584,82 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                 {actionLoading ? <Loader2 size={12} className="animate-spin" /> : null}
                 {selectedMonth.slice(5)}월 학원비 청구
               </button>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-xs">
+            <div className="flex flex-col gap-1 border-b border-violet-100 bg-violet-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-sm font-black text-slate-900">🎁 청구 금액 조정</h3>
+                <p className="mt-1 text-[11px] font-medium text-slate-500">선택한 청구 대상의 할인율 또는 최종 청구액을 미리 확인합니다.</p>
+              </div>
+              <span className="mt-2 self-start rounded-full bg-white px-3 py-1 text-[10px] font-black text-violet-700 sm:mt-0">
+                선택 {selectedBillingStudentIds.size}명 · 청구 {billingAmountPreview.targetCount}건
+              </span>
+            </div>
+
+            <div className="grid gap-5 p-5 lg:grid-cols-[1fr_320px]">
+              <div>
+                <p className="mb-2 text-[11px] font-black text-slate-500">할인 방식</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    ['none', '기본 0%'],
+                    ['5percent', '5% 할인'],
+                    ['10percent', '10% 할인'],
+                    ['custom_percent', '% 직접 입력'],
+                    ['custom_amount', '최종 금액 입력'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setPreviewDiscountMode(value as typeof previewDiscountMode)}
+                      className={`rounded-full px-3.5 py-2 text-xs font-black transition ${previewDiscountMode === value ? 'bg-violet-600 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:border-violet-300 hover:text-violet-700'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {previewDiscountMode === 'custom_percent' && (
+                  <div className="mt-4 flex max-w-xs items-center gap-2">
+                    <input type="number" min="0" max="100" value={previewDiscountPercent} onChange={(event) => setPreviewDiscountPercent(event.target.value)} placeholder="예: 15" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100" />
+                    <span className="text-sm font-black text-slate-500">%</span>
+                  </div>
+                )}
+                {previewDiscountMode === 'custom_amount' && (
+                  <div className="mt-4 max-w-xs">
+                    <div className="flex items-center gap-2">
+                      <input type="text" inputMode="numeric" disabled={billingAmountPreview.targetCount !== 1} value={previewFinalAmount} onChange={(event) => setPreviewFinalAmount(event.target.value.replace(/[^0-9]/g, ''))} placeholder="최종 청구 금액" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 disabled:cursor-not-allowed disabled:opacity-50" />
+                      <span className="text-sm font-black text-slate-500">원</span>
+                    </div>
+                    {billingAmountPreview.targetCount !== 1 && <p className="mt-1.5 text-[10px] font-bold text-rose-500">최종 금액 직접 입력은 청구 1건 선택 시 사용할 수 있습니다.</p>}
+                  </div>
+                )}
+
+                {previewDiscountMode !== 'none' && (
+                  <input
+                    type="text"
+                    value={previewAdjustmentReason}
+                    onChange={(event) => setPreviewAdjustmentReason(event.target.value)}
+                    maxLength={100}
+                    placeholder="할인 사유 (예: 형제 할인, 장기 등록 할인)"
+                    className="mt-4 w-full max-w-lg rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                  />
+                )}
+
+                <p className="mt-4 text-[10px] font-bold text-emerald-600">청구서 발행 시 할인 전 금액과 조정 내역이 함께 저장됩니다.</p>
+              </div>
+
+              <div className="rounded-2xl bg-slate-950 p-4 text-white">
+                <p className="mb-2 text-[11px] text-slate-300">할인율은 소수 둘째 자리까지 적용하며, 청구 건별 원 미만은 버립니다. 0원 건은 청구내역에서 ‘무료 처리’로 이용권을 지급해 주세요.</p>
+                <div className="flex items-center justify-between text-xs"><span className="font-bold text-slate-400">기본 청구액</span><span className="font-black">{billingAmountPreview.originalAmount.toLocaleString()}원</span></div>
+                <div className="mt-3 flex items-center justify-between text-xs">
+                  <span className={`font-bold ${billingAmountPreview.discountAmount < 0 ? 'text-sky-300' : 'text-rose-300'}`}>{billingAmountPreview.discountAmount < 0 ? '추가 금액' : '할인 금액'}</span>
+                  <span className={`font-black ${billingAmountPreview.discountAmount < 0 ? 'text-sky-300' : 'text-rose-300'}`}>{billingAmountPreview.discountAmount < 0 ? '+' : '-'}{Math.abs(billingAmountPreview.discountAmount).toLocaleString()}원</span>
+                </div>
+                <div className="my-4 border-t border-slate-700" />
+                <div className="flex items-end justify-between gap-3"><span className="text-xs font-black text-violet-300">최종 청구액</span><strong className="text-2xl font-black tracking-tight">{billingAmountPreview.finalAmount.toLocaleString()}원</strong></div>
+              </div>
             </div>
           </div>
 
@@ -1737,19 +1905,31 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           <div className="grid gap-4 sm:grid-cols-4">
             <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
               <p className="text-[10px] font-black text-slate-400 tracking-wider">총 청구액</p>
-              <h3 className="text-lg font-black text-slate-900 mt-1">{stats.totalDue.toLocaleString()}원</h3>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-slate-900">{stats.web.due.toLocaleString()}원</strong></div>
+                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-violet-700">{stats.app.due.toLocaleString()}원</strong></div>
+              </div>
             </div>
             <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
               <p className="text-[10px] font-black text-emerald-500 tracking-wider">수납 완료</p>
-              <h3 className="text-lg font-black text-emerald-600 mt-1">{stats.totalPaid.toLocaleString()}원</h3>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-emerald-600">{stats.web.paid.toLocaleString()}원</strong></div>
+                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-emerald-600">{stats.app.paid.toLocaleString()}원</strong></div>
+              </div>
             </div>
             <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
               <p className="text-[10px] font-black text-rose-500 tracking-wider">미납 잔액</p>
-              <h3 className="text-lg font-black text-rose-600 mt-1">{stats.totalUnpaid.toLocaleString()}원</h3>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-rose-600">{stats.web.unpaid.toLocaleString()}원</strong></div>
+                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-rose-600">{stats.app.unpaid.toLocaleString()}원</strong></div>
+              </div>
             </div>
             <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-              <p className="text-[10px] font-black text-blue-500 tracking-wider">이번 달 수납율</p>
-              <h3 className="text-lg font-black text-blue-600 mt-1">{stats.rate}%</h3>
+              <p className="text-[10px] font-black text-blue-500 tracking-wider">이번 달 납부율</p>
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-blue-600">{stats.web.paymentRate}% <small className="text-[10px] font-bold text-slate-400">({stats.web.paidCount}/{stats.web.totalCount}건)</small></strong></div>
+                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-blue-600">{stats.app.paymentRate}% <small className="text-[10px] font-bold text-slate-400">({stats.app.paidCount}/{stats.app.totalCount}건)</small></strong></div>
+              </div>
             </div>
           </div>
 
@@ -1900,11 +2080,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             || (connectedClassText && connectedClassText !== '없음' ? connectedClassText : '수업 미지정');
                           const packageLabel = bill.package_options ? `[${bill.package_options.packages?.name || ''}] ${bill.package_options.label}` : bill.memo || '수강 정보 연동 안 됨';
                           const isPaid = bill.status === 'paid';
-                          const canSendToApp = bill.status === 'unpaid' && !bill.payment_request_id && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
+                          const canSendToApp = bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
                           const isDeclined = bill.status === 'declined';
                           const isExpired = bill.status === 'expired';
+                          const hasAmountAdjustment = Number(bill.original_amount ?? bill.amount_due) !== Number(bill.amount_due);
                           const canDeleteBill = bill.amount_paid === 0 && ['unpaid', 'declined', 'expired'].includes(bill.status);
-                          const methodText: Record<string, string> = { app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
+                          const methodText: Record<string, string> = { free: '무료 처리', app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
                           const billDateText = bill.app_sent_at
                             ? new Date(bill.app_sent_at).toLocaleDateString('ko-KR')
                             : bill.billing_date
@@ -1932,7 +2113,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 <div className="text-xs font-black text-slate-800">{bill.bill_month}월분</div>
                                 <div className="mt-0.5 text-[10px] font-medium text-slate-400">{validity.start} ~ {validity.end}</div>
                               </td>
-                              <td className="px-4 py-3 text-slate-800 font-bold text-right">{bill.amount_due.toLocaleString()}원</td>
+                              <td className="px-4 py-3 text-right">
+                                {hasAmountAdjustment && <div className="text-[10px] font-bold text-slate-400 line-through">{Number(bill.original_amount).toLocaleString()}원</div>}
+                                <div className="font-black text-slate-800">{bill.amount_due.toLocaleString()}원</div>
+                                {hasAmountAdjustment && (
+                                  <div className={`mt-0.5 text-[9px] font-black ${Number(bill.discount_amount) < 0 ? 'text-sky-600' : 'text-rose-500'}`} title={bill.adjustment_reason || undefined}>
+                                    {Number(bill.discount_amount) < 0 ? '추가' : '할인'} {Math.abs(Number(bill.discount_amount || 0)).toLocaleString()}원
+                                  </div>
+                                )}
+                              </td>
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{isPaid ? `${bill.amount_paid.toLocaleString()}원` : '-'}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-600 text-center">{billDateText}</td>
                               <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
@@ -1961,6 +2150,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                       💻 웹 관리자 청구
                                     </span>
                                   )}
+                                  {bill.status === 'unpaid' && bill.amount_due > 0 && <button type="button" onClick={() => openPayModal(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700 hover:bg-emerald-100 disabled:text-slate-300"><CheckCircle2 size={10}/> 수기 수납</button>}
+                                  {bill.status === 'unpaid' && bill.amount_due === 0 && !bill.payment_request_id && <button type="button" onClick={() => void handleFreeBill(bill)} disabled={actionLoading} className="rounded-md bg-violet-50 px-2 py-1 text-[11px] font-black text-violet-700 hover:bg-violet-100 disabled:opacity-50">무료 처리 · 이용권 지급</button>}
                                   {canDeleteBill && <button type="button" onClick={() => void handleDeleteBill(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}
                                   {bill.status === 'unpaid' && bill.payment_request_id && <button type="button" onClick={() => void handleSendPaymentReminders([bill.payment_request_id as string])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}
                                 </div>
@@ -2002,7 +2193,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
                             : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
                     const canDeleteRequest = request.status !== 'paid';
-                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount || request.total_amount || 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
+                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount ?? request.total_amount ?? 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
                   }) : <tr><td colSpan={7} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
                 </tbody>
               </table>
