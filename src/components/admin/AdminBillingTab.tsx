@@ -1475,6 +1475,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     });
 
     return {
+      total: {
+        ...toStats(webDue + appDue, webPaid + appPaid,
+          bills.filter((bill) => bill.status === 'paid').length + appPaymentRequests.filter((request) => request.status === 'paid').length,
+          bills.length + appPaymentRequests.length),
+        unpaid: Math.max(webDue - webPaid, 0) + Math.max(appDue - appPaid, 0),
+      },
       web: toStats(webDue, webPaid, bills.filter((bill) => bill.status === 'paid').length, bills.length),
       app: toStats(
         appDue,
@@ -1901,36 +1907,33 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       ) : (
         /* RENDER VIEW 2: BILLS LEDGER (📋 청구내역 조회 및 수납) */
         <div className="space-y-6">
-          {/* Stats Summary Cards */}
-          <div className="grid gap-4 sm:grid-cols-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-              <p className="text-[10px] font-black text-slate-400 tracking-wider">총 청구액</p>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-slate-900">{stats.web.due.toLocaleString()}원</strong></div>
-                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-violet-700">{stats.app.due.toLocaleString()}원</strong></div>
+          {/* Stats Summary Cards: amounts add; payment rate uses combined counts. */}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {([
+              { key: 'due', title: '총 청구액', color: 'text-slate-900' },
+              { key: 'paid', title: '수납 완료', color: 'text-emerald-600' },
+              { key: 'unpaid', title: '미납 잔액', color: 'text-rose-600' },
+              { key: 'paymentRate', title: '이번 달 납부율', color: 'text-blue-600' },
+            ] as const).map(({ key, title, color }) => (
+              <div key={key} className="min-w-0 rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
+                <p className={`text-[10px] font-black tracking-wider ${color}`}>{title}</p>
+                <div className="mt-3 space-y-2">
+                  {([
+                    { source: 'web', label: key === 'paymentRate' ? '웹 납부율' : '웹 총 합계' },
+                    { source: 'app', label: key === 'paymentRate' ? '앱 납부율' : '앱 총 합계' },
+                    { source: 'total', label: key === 'paymentRate' ? '전체 납부율' : '웹+앱 전체 합계' },
+                  ] as const).map(({ source, label }) => (
+                    <div key={source} className={`flex flex-wrap items-center justify-between gap-x-3 gap-y-1 ${source === 'total' ? 'rounded-lg bg-slate-50 px-2 py-3 border-t border-slate-200' : source === 'app' ? 'border-t border-slate-100 pt-2' : ''}`}>
+                      <span className={`text-xs font-bold ${source === 'total' ? 'text-slate-700' : source === 'app' ? 'text-violet-500' : 'text-slate-500'}`}>{label}</span>
+                      <strong className={`ml-auto text-right text-base font-black tabular-nums ${color}`}>
+                        {stats[source][key].toLocaleString()}{key === 'paymentRate' ? '%' : '원'}
+                        {key === 'paymentRate' && <small className="ml-1 text-[10px] font-bold text-slate-400">({stats[source].paidCount}/{stats[source].totalCount}건)</small>}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-              <p className="text-[10px] font-black text-emerald-500 tracking-wider">수납 완료</p>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-emerald-600">{stats.web.paid.toLocaleString()}원</strong></div>
-                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-emerald-600">{stats.app.paid.toLocaleString()}원</strong></div>
-              </div>
-            </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-              <p className="text-[10px] font-black text-rose-500 tracking-wider">미납 잔액</p>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-rose-600">{stats.web.unpaid.toLocaleString()}원</strong></div>
-                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-rose-600">{stats.app.unpaid.toLocaleString()}원</strong></div>
-              </div>
-            </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-              <p className="text-[10px] font-black text-blue-500 tracking-wider">이번 달 납부율</p>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold text-slate-400">웹</span><strong className="text-base font-black text-blue-600">{stats.web.paymentRate}% <small className="text-[10px] font-bold text-slate-400">({stats.web.paidCount}/{stats.web.totalCount}건)</small></strong></div>
-                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-2"><span className="text-xs font-bold text-violet-500">앱</span><strong className="text-base font-black text-blue-600">{stats.app.paymentRate}% <small className="text-[10px] font-bold text-slate-400">({stats.app.paidCount}/{stats.app.totalCount}건)</small></strong></div>
-              </div>
-            </div>
+            ))}
           </div>
 
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
