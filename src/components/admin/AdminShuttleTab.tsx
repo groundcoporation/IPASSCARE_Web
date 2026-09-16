@@ -4,6 +4,7 @@ import {
   ChevronDown, ChevronUp, Pencil, Plus, RefreshCw, Route, Save, Search, Trash2, UserPlus, UsersRound, X,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
+import { handleError } from '../../errors/handleError';
 
 type ShuttleSection = 'status' | 'control' | 'spots' | 'routes' | 'alerts';
 type RouteDayFilter = '전체' | '월' | '화' | '수' | '목' | '금' | '토' | '일';
@@ -19,16 +20,14 @@ type RouteForm = {
   id: string | null;
   name: string;
   day_of_week: Exclude<RouteDayFilter, '전체'>;
-  direction: 'pickup' | 'dropoff';
-  service_time: string;
-  vehicle_label: string;
   center_address: string;
   center_lat: string;
   center_lng: string;
+  selected_students: StudentRouteAssignment[];
 };
 
 const emptySpot: SpotForm = { id: null, name: '', address: '', lat: '', lng: '', default_time: '' };
-const emptyRoute: RouteForm = { id: null, name: '', day_of_week: '월', direction: 'pickup', service_time: '', vehicle_label: '', center_address: '', center_lat: '', center_lng: '' };
+const emptyRoute: RouteForm = { id: null, name: '', day_of_week: '월', center_address: '', center_lat: '', center_lng: '', selected_students: [] };
 const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString('ko-KR') : '-';
 const escapeMapLabel = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character);
 const statusClasses = (delay: number) => delay <= 15
@@ -48,6 +47,7 @@ export const AdminShuttleTab: React.FC<{
   const [drivers, setDrivers] = useState<Record<string, string>>({});
   const [spots, setSpots] = useState<any[]>([]);
   const [routes, setRoutes] = useState<any[]>([]);
+  const [schedules, setSchedules] = useState<any[]>([]);
   const [assignmentCounts, setAssignmentCounts] = useState<Record<string, number>>({});
   const [logs, setLogs] = useState<any[]>([]);
   const [routeDayFilter, setRouteDayFilter] = useState<RouteDayFilter>('전체');
@@ -62,20 +62,23 @@ export const AdminShuttleTab: React.FC<{
     try {
       let statusQuery = supabase.from('shuttle_status').select('*').order('last_update', { ascending: false });
       let spotQuery = supabase.from('pickup_spots').select('*').eq('is_active', true).order('name');
-      let routeQuery = supabase.from('shuttle_routes').select('*').eq('is_active', true).order('day_of_week');
+      let routeQuery = supabase.from('shuttle_routes').select('*, class_schedule:class_schedules!shuttle_routes_class_schedule_id_fkey(id,target_class,day_of_week,start_time,end_time)').eq('is_active', true).order('day_of_week');
+      let scheduleQuery = supabase.from('class_schedules').select('id,target_class,day_of_week,start_time,end_time').eq('is_active', true).order('start_time');
       let logQuery = supabase.from('shuttle_notification_logs').select('*').order('created_at', { ascending: false }).limit(100);
       if (activeBranchId) {
         statusQuery = statusQuery.eq('branch_id', activeBranchId);
         spotQuery = spotQuery.eq('branch_id', activeBranchId);
         routeQuery = routeQuery.eq('branch_id', activeBranchId);
+        scheduleQuery = scheduleQuery.eq('branch_id', activeBranchId);
         logQuery = logQuery.eq('branch_id', activeBranchId);
       }
-      const [statusResult, spotResult, routeResult, logResult] = await Promise.all([
-        statusQuery, spotQuery, routeQuery, logQuery,
+      const [statusResult, spotResult, routeResult, scheduleResult, logResult] = await Promise.all([
+        statusQuery, spotQuery, routeQuery, scheduleQuery, logQuery,
       ]);
       if (statusResult.error) throw statusResult.error;
       if (spotResult.error) throw spotResult.error;
       if (routeResult.error) throw routeResult.error;
+      if (scheduleResult.error) throw scheduleResult.error;
 
       const nextStatuses = statusResult.data || [];
       const driverIds = [...new Set(nextStatuses.map((item: any) => item.driver_id).filter(Boolean))];
@@ -95,6 +98,7 @@ export const AdminShuttleTab: React.FC<{
       setDrivers(Object.fromEntries((driverResult.data || []).map((item: any) => [item.id, item.name || '기사'])));
       setSpots(spotResult.data || []);
       setRoutes(routeResult.data || []);
+      setSchedules(scheduleResult.data || []);
       setLogs(logResult.error ? [] : (logResult.data || []));
       setAssignmentCounts((assignmentResult.data || []).reduce((acc: Record<string, number>, item: any) => {
         acc[item.route_id] = (acc[item.route_id] || 0) + 1;
@@ -178,7 +182,11 @@ export const AdminShuttleTab: React.FC<{
   };
 
   const saveRoute = async () => {
-    if (!routeForm || !activeBranchId || !routeForm.name.trim() || !routeForm.service_time) return;
+    if (!routeForm || !activeBranchId) return;
+    if (!routeForm.name.trim()) return window.alert('노선 이름을 입력해 주세요.');
+    if (!routeForm.selected_students.length) return window.alert('노선에 탑승할 학생을 1명 이상 배정해 주세요.');
+    if (!routeForm.center_address.trim() && (!routeForm.center_lat.trim() || !routeForm.center_lng.trim())) return window.alert('센터 복귀 위치를 입력해 주세요.');
+    const firstStudent = routeForm.selected_students[0];
     const centerLat = routeForm.center_lat.trim() ? Number(routeForm.center_lat) : null;
     const centerLng = routeForm.center_lng.trim() ? Number(routeForm.center_lng) : null;
     if ((centerLat != null && !Number.isFinite(centerLat)) || (centerLng != null && !Number.isFinite(centerLng))) {
@@ -186,30 +194,49 @@ export const AdminShuttleTab: React.FC<{
       return;
     }
     setSaving(true);
-    const payload = {
-      branch_id: activeBranchId,
-      name: routeForm.name.trim(),
-      day_of_week: routeForm.day_of_week,
-      direction: routeForm.direction,
-      service_time: routeForm.service_time,
-      vehicle_label: routeForm.vehicle_label.trim() || null,
-      center_address: routeForm.center_address.trim() || null,
-      center_lat: centerLat,
-      center_lng: centerLng,
-      is_active: true,
-      updated_at: new Date().toISOString(),
-    };
-    const result = routeForm.id
-      ? await supabase.from('shuttle_routes').update(payload).eq('id', routeForm.id)
-      : await supabase.from('shuttle_routes').insert(payload);
-    setSaving(false);
-    if (result.error) return window.alert(result.error.message);
-    setRouteForm(null);
-    await loadData();
+    try {
+      const payload = {
+        branch_id: activeBranchId,
+        name: routeForm.name.trim(),
+        day_of_week: routeForm.day_of_week,
+        direction: firstStudent.direction,
+        class_schedule_id: firstStudent.class_schedule_id,
+        center_address: routeForm.center_address.trim() || null,
+        center_lat: centerLat,
+        center_lng: centerLng,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      };
+      const result = routeForm.id
+        ? await supabase.from('shuttle_routes').update(payload).eq('id', routeForm.id).select('id').single()
+        : await supabase.from('shuttle_routes').insert(payload).select('id').single();
+      if (result.error) throw result.error;
+      const routeId = result.data.id;
+      const { error: deleteError } = await supabase.from('shuttle_route_assignments').delete().eq('route_id', routeId);
+      if (deleteError) throw deleteError;
+      const assignmentRows = routeForm.selected_students.map((student, index) => ({
+        route_id: routeId,
+        child_id: student.child_id,
+        class_schedule_id: student.class_schedule_id,
+        direction: student.direction,
+        pickup_spot_id: student.pickup_spot_id || null,
+        custom_time: student.custom_time || null,
+        display_order: index,
+      }));
+      const { error: assignmentError } = await supabase.from('shuttle_route_assignments').upsert(assignmentRows, { onConflict: 'child_id,class_schedule_id,direction' });
+      if (assignmentError) throw assignmentError;
+      setRouteForm(null);
+      await loadData();
+    } catch (error: unknown) {
+      await handleError(error, 'SHUTTLE_ROUTE_SAVE_FAILED', { operation: 'shuttle.route.save' });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const removeRoute = async (route: any) => {
-    if (!window.confirm(`'${route.name}' 노선을 비활성화할까요? 기존 학생 배정은 보존됩니다.`)) return;
+    const routeLabel = route.class_schedule?.target_class || '선택한 수업';
+    if (!window.confirm(`'${routeLabel}' 노선을 비활성화할까요? 기존 학생 배정은 보존됩니다.`)) return;
     const { error: removeError } = await supabase.from('shuttle_routes').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', route.id);
     if (removeError) return window.alert(removeError.message);
     await loadData();
@@ -266,13 +293,13 @@ export const AdminShuttleTab: React.FC<{
           {canEdit && activeBranchId && <button onClick={() => setRouteForm(emptyRoute)} className="ml-1 flex shrink-0 items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white"><Plus size={15}/>노선 추가</button>}
         </div>
       </div>
-      <div className="grid gap-4 xl:grid-cols-2">{filteredRoutes.length === 0 ? <Empty text={routeDayFilter === '전체' ? '활성 노선이 없습니다.' : `${routeDayFilter}요일 활성 노선이 없습니다.`}/> : filteredRoutes.map(item => <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex justify-between gap-3"><div><p className="text-xs font-black text-violet-600">{item.day_of_week}요일 · {item.direction === 'pickup' ? '등원' : '하원'}</p><h3 className="mt-2 text-lg font-black text-slate-900">{item.name}</h3><p className="mt-1 text-xs font-bold text-slate-400">{item.vehicle_label || '차량 미지정'}</p></div><div className="flex items-start gap-2"><span className="rounded-xl bg-violet-50 px-3 py-2 text-sm font-black text-violet-700">{assignmentCounts[item.id] || 0}명 배정</span>{canEdit && <><button onClick={() => setRouteForm({ id: item.id, name: item.name || '', day_of_week: item.day_of_week, direction: item.direction, service_time: item.service_time ? String(item.service_time).slice(0,5) : '', vehicle_label: item.vehicle_label || '', center_address: item.center_address || '', center_lat: String(item.center_lat ?? ''), center_lng: String(item.center_lng ?? '') })} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Pencil size={16}/></button><button onClick={() => void removeRoute(item)} className="rounded-lg border border-red-100 p-2 text-red-500"><Trash2 size={16}/></button></>}</div></div><div className="mt-4 flex items-center gap-2 text-sm text-slate-500"><Clock3 size={15}/>{item.service_time ? String(item.service_time).slice(0,5) : '수업 시간 기준'} · {item.center_address || '센터 주소 미등록'}</div>{canEdit && <button onClick={() => setAssignmentRoute(item)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-50 px-4 py-3 text-sm font-black text-violet-700 hover:bg-violet-100"><UsersRound size={16}/>학생 배정 관리</button>}</div>)}</div>
+      <div className="grid gap-4 xl:grid-cols-2">{filteredRoutes.length === 0 ? <Empty text={routeDayFilter === '전체' ? '활성 노선이 없습니다.' : `${routeDayFilter}요일 활성 노선이 없습니다.`}/> : filteredRoutes.map(item => <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex justify-between gap-3"><div><p className="text-xs font-black text-violet-600">{item.day_of_week}요일</p><h3 className="mt-2 text-lg font-black text-slate-900">{item.name || '노선 이름 없음'}</h3></div><div className="flex items-start gap-2"><span className="rounded-xl bg-violet-50 px-3 py-2 text-sm font-black text-violet-700">{assignmentCounts[item.id] || 0}명 배정</span>{canEdit && <><button onClick={() => setRouteForm({ id: item.id, name: item.name || '', day_of_week: item.day_of_week || '월', center_address: item.center_address || '', center_lat: String(item.center_lat ?? ''), center_lng: String(item.center_lng ?? ''), selected_students: [] })} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Pencil size={16}/></button><button onClick={() => void removeRoute(item)} className="rounded-lg border border-red-100 p-2 text-red-500"><Trash2 size={16}/></button></>}</div></div><div className="mt-4 flex items-center gap-2 text-sm text-slate-500"><MapPin size={15}/>{item.center_address || '센터 주소 미등록'}</div></div>)}</div>
     </div>}
 
     {!loading && section === 'alerts' && <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-slate-50 text-xs text-slate-500"><tr><th className="p-4">일시</th><th className="p-4">방향</th><th className="p-4">알림</th><th className="p-4">거리</th><th className="p-4">상태</th><th className="p-4">오류</th></tr></thead><tbody className="divide-y divide-slate-100">{logs.map(log => <tr key={log.id}><td className="p-4">{formatTime(log.sent_at || log.created_at)}</td><td className="p-4 font-bold">{log.direction === 'pickup' ? '등원' : '하원'}</td><td className="p-4">{log.event_type === 'departure' ? '목적지 출발' : log.event_type === 'arrival' ? '도착' : '500m 접근'}</td><td className="p-4">{log.distance_meters != null ? `${log.distance_meters}m` : '-'}</td><td className="p-4"><span className={`rounded-full px-2.5 py-1 text-xs font-black ${log.status === 'sent' ? 'bg-emerald-50 text-emerald-700' : log.status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>{log.status}</span></td><td className="max-w-[280px] truncate p-4 text-red-500">{log.error_message || '-'}</td></tr>)}</tbody></table>{logs.length === 0 && <Empty text="조회 가능한 알림 이력이 없습니다."/>}</div></div>}
 
     {spotForm && <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4"><div className="my-auto w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-xl font-black">{spotForm.id ? '정류장 수정' : '정류장 추가'}</h2><button onClick={() => setSpotForm(null)} className="rounded-lg p-2 hover:bg-slate-100"><X size={20}/></button></div><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label="정류장 이름" value={spotForm.name} onChange={name => setSpotForm({ ...spotForm, name })}/><Field label="기본 시각" type="time" value={spotForm.default_time} onChange={default_time => setSpotForm({ ...spotForm, default_time })}/><div className="sm:col-span-2"><Field label="주소" value={spotForm.address} onChange={address => setSpotForm({ ...spotForm, address })}/></div><Field label="위도" value={spotForm.lat} onChange={lat => setSpotForm({ ...spotForm, lat })}/><Field label="경도" value={spotForm.lng} onChange={lng => setSpotForm({ ...spotForm, lng })}/><div className="sm:col-span-2"><SpotLocationPicker lat={spotForm.lat} lng={spotForm.lng} onPick={(lat, lng) => setSpotForm(current => current ? { ...current, lat: lat.toFixed(7), lng: lng.toFixed(7) } : current)}/></div></div><div className="mt-6 flex justify-end gap-2"><button onClick={() => setSpotForm(null)} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-black">취소</button><button disabled={saving} onClick={() => void saveSpot()} className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:opacity-50"><Save size={16}/>{saving ? '저장 중' : '저장'}</button></div></div></div>}
-    {routeForm && <RouteEditor form={routeForm} setForm={setRouteForm} saving={saving} onClose={() => setRouteForm(null)} onSave={() => void saveRoute()}/>}
+    {routeForm && activeBranchId && <RouteEditor form={routeForm} branchId={activeBranchId} spots={spots} schedules={schedules} setForm={setRouteForm} saving={saving} onClose={() => setRouteForm(null)} onSave={() => void saveRoute()}/>}
     {assignmentRoute && activeBranchId && <RouteAssignmentEditor route={assignmentRoute} branchId={activeBranchId} spots={spots} onClose={() => setAssignmentRoute(null)} onChanged={() => void loadData(true)}/>}
   </div>;
 };
@@ -281,29 +308,102 @@ const Empty = ({ text }: { text: string }) => <div className="col-span-full roun
 const Info = ({ label, value }: { label: string; value: React.ReactNode }) => <div className="rounded-xl bg-slate-50 p-3"><p className="text-[11px] font-bold text-slate-400">{label}</p><p className="mt-1 truncate font-black text-slate-700">{value}</p></div>;
 const Field = ({ label, value, onChange, type = 'text' }: { label: string; value: string; onChange: (value: string) => void; type?: string }) => <label className="block"><span className="mb-2 block text-xs font-black text-slate-600">{label}</span><input type={type} value={value} onChange={event => onChange(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"/></label>;
 
-const RouteEditor = ({ form, setForm, saving, onClose, onSave }: {
+const RouteEditor = ({ form, branchId, spots, schedules, setForm, saving, onClose, onSave }: {
   form: RouteForm;
-  setForm: (form: RouteForm) => void;
+  branchId: string;
+  spots: any[];
+  schedules: any[];
+  setForm: React.Dispatch<React.SetStateAction<RouteForm | null>>;
   saving: boolean;
   onClose: () => void;
   onSave: () => void;
-}) => <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4">
-  <div className="my-auto w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
-    <div className="flex items-center justify-between"><h2 className="text-xl font-black">{form.id ? '노선 수정' : '노선 추가'}</h2><button onClick={onClose} className="rounded-lg p-2 hover:bg-slate-100"><X size={20}/></button></div>
-    <div className="mt-5 grid gap-4 sm:grid-cols-2">
-      <div className="sm:col-span-2"><Field label="노선 이름" value={form.name} onChange={name => setForm({ ...form, name })}/></div>
-      <SelectField label="요일" value={form.day_of_week} onChange={day_of_week => setForm({ ...form, day_of_week: day_of_week as RouteForm['day_of_week'] })} options={['월', '화', '수', '목', '금', '토', '일'].map(value => ({ value, label: `${value}요일` }))}/>
-      <SelectField label="운행 방향" value={form.direction} onChange={direction => setForm({ ...form, direction: direction as RouteForm['direction'] })} options={[{ value: 'pickup', label: '등원' }, { value: 'dropoff', label: '하원' }]}/>
-      <Field label="운행 시각" type="time" value={form.service_time} onChange={service_time => setForm({ ...form, service_time })}/>
-      <Field label="차량명/호차" value={form.vehicle_label} onChange={vehicle_label => setForm({ ...form, vehicle_label })}/>
-      <div className="sm:col-span-2"><Field label="센터 주소" value={form.center_address} onChange={center_address => setForm({ ...form, center_address })}/></div>
-      <Field label="센터 위도" value={form.center_lat} onChange={center_lat => setForm({ ...form, center_lat })}/>
-      <Field label="센터 경도" value={form.center_lng} onChange={center_lng => setForm({ ...form, center_lng })}/>
+}) => {
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [children, setChildren] = useState<any[]>([]);
+  const [eligibleByChild, setEligibleByChild] = useState<Record<string, string[]>>({});
+  const [pickupSettings, setPickupSettings] = useState<Record<string, any>>({});
+
+  const updateForm = (patch: Partial<RouteForm>) => setForm(current => current ? { ...current, ...patch } : current);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+      try {
+        const [parentResult, scheduleAssignmentResult, routeAssignmentResult] = await Promise.all([
+          supabase.from('users').select('id,name,children(id,child_name,deleted_at)').eq('branch_id', branchId),
+          supabase.from('student_schedule_assignments').select('child_id,schedule_id').eq('branch_id', branchId).eq('is_active', true).lte('starts_on', today).or(`ends_on.is.null,ends_on.gte.${today}`).not('child_id', 'is', null),
+          form.id ? supabase.from('shuttle_route_assignments').select('child_id,class_schedule_id,direction,pickup_spot_id,custom_time,display_order').eq('route_id', form.id).order('display_order') : Promise.resolve({ data: [], error: null }),
+        ]);
+        if (parentResult.error) throw parentResult.error;
+        if (scheduleAssignmentResult.error) throw scheduleAssignmentResult.error;
+        if (routeAssignmentResult.error) throw routeAssignmentResult.error;
+        const nextChildren = (parentResult.data || []).flatMap((parent: any) => (parent.children || []).filter((child: any) => !child.deleted_at).map((child: any) => ({ ...child, parent_name: parent.name || '보호자' })));
+        const childIds = nextChildren.map((child: any) => child.id);
+        const settingResult = childIds.length ? await supabase.from('pickup_settings').select('child_id,pickup_spot_id,dropoff_spot_id').eq('is_active', true).in('child_id', childIds) : { data: [], error: null };
+        if (settingResult.error) throw settingResult.error;
+        if (cancelled) return;
+        const childMap = Object.fromEntries(nextChildren.map((child: any) => [child.id, child]));
+        setChildren(nextChildren);
+        setEligibleByChild((scheduleAssignmentResult.data || []).reduce((acc: Record<string, string[]>, item: any) => { if (item.child_id) acc[item.child_id] = [...(acc[item.child_id] || []), item.schedule_id]; return acc; }, {}));
+        setPickupSettings(Object.fromEntries((settingResult.data || []).map((item: any) => [item.child_id, item])));
+        if (form.id) updateForm({ selected_students: (routeAssignmentResult.data || []).map((item: any) => ({
+          child_id: item.child_id,
+          child_name: childMap[item.child_id]?.child_name || '이름 확인 필요',
+          parent_name: childMap[item.child_id]?.parent_name || '보호자',
+          class_schedule_id: item.class_schedule_id,
+          direction: item.direction,
+          pickup_spot_id: item.pickup_spot_id || '',
+          custom_time: item.custom_time ? String(item.custom_time).slice(0, 5) : '',
+        })) });
+      } catch (error: unknown) {
+        await handleError(error, 'SHUTTLE_ROUTE_SAVE_FAILED', { operation: 'shuttle.route.editor.load' });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [branchId, form.id]);
+
+  const selectedIds = new Set(form.selected_students.map(student => student.child_id));
+  const availableChildren = children.filter(child => !selectedIds.has(child.id) && (!search.trim() || `${child.child_name} ${child.parent_name}`.toLowerCase().includes(search.trim().toLowerCase())));
+  const addChild = (child: any) => {
+    const eligibleIds = new Set(eligibleByChild[child.id] || []);
+    const eligibleSchedules = schedules.filter(schedule => eligibleIds.has(schedule.id));
+    const schedule = eligibleSchedules.find(item => item.day_of_week === form.day_of_week) || eligibleSchedules[0];
+    if (!schedule) return window.alert('회원 관리에서 이 학생에게 활성 수업을 먼저 배정해 주세요.');
+    const setting = pickupSettings[child.id] || {};
+    updateForm({ selected_students: [...form.selected_students, {
+      child_id: child.id, child_name: child.child_name, parent_name: child.parent_name,
+      class_schedule_id: schedule.id, direction: 'pickup', pickup_spot_id: setting.pickup_spot_id || '', custom_time: '',
+    }] });
+    setSearch('');
+  };
+  const updateStudent = (index: number, patch: Partial<StudentRouteAssignment>) => updateForm({ selected_students: form.selected_students.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
+  const moveStudent = (index: number, offset: number) => {
+    const target = index + offset;
+    if (target < 0 || target >= form.selected_students.length) return;
+    const next = [...form.selected_students];
+    [next[index], next[target]] = [next[target], next[index]];
+    updateForm({ selected_students: next });
+  };
+
+  return <div className="fixed inset-0 z-[100] overflow-y-auto bg-slate-950/55 p-4"><div className="mx-auto my-4 w-full max-w-6xl rounded-3xl bg-slate-50 shadow-2xl">
+    <div className="flex items-center justify-between rounded-t-3xl border-b border-slate-200 bg-white p-6"><div><h2 className="text-xl font-black">{form.id ? '수업 셔틀 수정' : '새 수업 셔틀 추가'}</h2><p className="mt-1 text-sm font-bold text-slate-400">노선 정보를 설정하고 아동을 배정해 주세요.</p></div><button onClick={onClose} className="rounded-xl p-2 hover:bg-slate-100"><X size={22}/></button></div>
+    <div className="space-y-5 p-5">
+      <section><h3 className="mb-2 text-sm font-black text-slate-700">1. 운행 기본 설정</h3><div className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 sm:grid-cols-2"><Field label="노선 이름" value={form.name} onChange={name => updateForm({ name })}/><SelectField label="요일" value={form.day_of_week} onChange={day_of_week => updateForm({ day_of_week: day_of_week as RouteForm['day_of_week'] })} options={['월','화','수','목','금','토','일'].map(value => ({ value, label: `${value}요일` }))}/></div></section>
+      <section><h3 className="mb-2 text-sm font-black text-slate-700">2. 센터 복귀 위치</h3><div className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 sm:grid-cols-2"><div className="sm:col-span-2"><p className="mb-3 text-xs font-bold text-slate-400">모든 하차를 마친 뒤 복귀할 학원 위치입니다.</p><Field label="센터 주소" value={form.center_address} onChange={center_address => updateForm({ center_address })}/></div><Field label="센터 위도" value={form.center_lat} onChange={center_lat => updateForm({ center_lat })}/><Field label="센터 경도" value={form.center_lng} onChange={center_lng => updateForm({ center_lng })}/></div></section>
+      <section><h3 className="mb-2 text-sm font-black text-slate-700">3. 탑승 학생 배정</h3><div className="grid gap-4 lg:grid-cols-[1fr_1.5fr]">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4"><div className="relative"><Search size={16} className="absolute left-3 top-3.5 text-slate-400"/><input value={search} onChange={event => setSearch(event.target.value)} placeholder="학생 또는 보호자 이름" className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-3 text-sm outline-none focus:border-blue-500"/></div><div className="mt-3 max-h-[430px] space-y-2 overflow-y-auto">{availableChildren.map(child => { const eligible = (eligibleByChild[child.id] || []).length > 0; return <button key={child.id} disabled={!eligible} onClick={() => addChild(child)} className="flex w-full items-center justify-between rounded-xl border border-slate-100 p-3 text-left hover:bg-blue-50 disabled:opacity-40"><div><p className="text-sm font-black">{child.child_name}</p><p className="mt-1 text-xs font-bold text-slate-400">{child.parent_name}{eligible ? '' : ' · 활성 수업 없음'}</p></div><UserPlus size={17} className="text-blue-600"/></button>})}</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4"><div className="flex justify-between"><h4 className="font-black">배정된 학생</h4><span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-black text-violet-700">{form.selected_students.length}명</span></div><div className="mt-3 max-h-[470px] space-y-3 overflow-y-auto">{form.selected_students.map((student, index) => <div key={`${student.child_id}-${index}`} className="rounded-2xl border border-slate-200 p-4"><div className="flex justify-between gap-3"><div><p className="font-black">{index + 1}. {student.child_name}</p><p className="mt-1 text-xs font-bold text-slate-400">{student.parent_name}</p></div><div className="flex gap-1"><button onClick={() => moveStudent(index,-1)} disabled={index===0} className="rounded-lg border p-1.5 disabled:opacity-30"><ChevronUp size={15}/></button><button onClick={() => moveStudent(index,1)} disabled={index===form.selected_students.length-1} className="rounded-lg border p-1.5 disabled:opacity-30"><ChevronDown size={15}/></button><button onClick={() => updateForm({ selected_students: form.selected_students.filter((_, i) => i !== index) })} className="rounded-lg border border-red-100 p-1.5 text-red-500"><Trash2 size={15}/></button></div></div><div className="mt-3 grid gap-2 sm:grid-cols-3"><select value={student.direction} onChange={event => { const direction = event.target.value as 'pickup'|'dropoff'; const setting = pickupSettings[student.child_id] || {}; updateStudent(index,{ direction, pickup_spot_id: direction === 'dropoff' ? setting.dropoff_spot_id || setting.pickup_spot_id || '' : setting.pickup_spot_id || '' }); }} className="rounded-xl border px-3 py-2.5 text-xs font-bold"><option value="pickup">등원(승차)</option><option value="dropoff">하원(하차)</option></select><select value={student.pickup_spot_id} onChange={event => updateStudent(index,{ pickup_spot_id:event.target.value })} className="rounded-xl border px-3 py-2.5 text-xs font-bold"><option value="">정류장 미지정</option>{spots.map(spot => <option key={spot.id} value={spot.id}>{spot.name}</option>)}</select><input type="time" value={student.custom_time} onChange={event => updateStudent(index,{ custom_time:event.target.value })} className="rounded-xl border px-3 py-2.5 text-xs font-bold" title="개별 지정 시간"/></div></div>)}{!form.selected_students.length && <p className="p-12 text-center text-sm font-bold text-slate-400">왼쪽에서 학생을 추가해 주세요.</p>}</div></div>
+      </div></section>
     </div>
-    <p className="mt-4 text-xs font-bold text-slate-400">노선을 비활성화해도 기존 학생 배정 기록은 삭제되지 않습니다.</p>
-    <div className="mt-6 flex justify-end gap-2"><button onClick={onClose} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-black">취소</button><button disabled={saving || !form.name.trim() || !form.service_time} onClick={onSave} className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:opacity-50"><Save size={16}/>{saving ? '저장 중' : '저장'}</button></div>
-  </div>
-</div>;
+    <div className="flex justify-end gap-2 rounded-b-3xl border-t border-slate-200 bg-white p-5"><button onClick={onClose} className="rounded-xl border px-4 py-3 text-sm font-black">취소</button><button disabled={loading || saving || !form.name.trim() || !form.selected_students.length} onClick={onSave} className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:opacity-50"><Save size={16}/>{saving ? '저장 중' : '수업 셔틀 저장'}</button></div>
+  </div></div>;
+};
 
 const SelectField = ({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[] }) => <label className="block"><span className="mb-2 block text-xs font-black text-slate-600">{label}</span><select value={value} onChange={event => onChange(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500">{options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
 

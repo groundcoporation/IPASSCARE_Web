@@ -1,5 +1,8 @@
 /** Shared error contract. Keep app/web copies identical; never show raw server messages. */
 export const errorMessages = {
+  SHUTTLE_TRACKING_FAILED: "위치 전송 상태를 확인하지 못했습니다. 네트워크와 위치 권한을 확인해 주세요.",
+  SHUTTLE_TRACKING_NOT_READY: "백그라운드 위치 추적을 준비하지 못했습니다. 위치 항상 허용과 운행 상태를 확인한 후 다시 시도해 주세요.",
+  SHUTTLE_ROUTE_SAVE_FAILED: "셔틀 노선을 저장하지 못했습니다. 수업 일정과 최신 저장 상태를 확인해 주세요.",
   UNKNOWN_ERROR: "작업을 완료하지 못했습니다. 상태를 확인해 주세요.",
   AUTH_REQUIRED: "다시 로그인해 주세요.",
   PERMISSION_DENIED: "이 작업을 처리할 권한이 없습니다.",
