@@ -2551,61 +2551,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 />
               </div>
 
-              <section className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
-                <div className="mb-3 flex items-start gap-2.5">
-                  <span className="rounded-xl bg-blue-600 p-2 text-white"><Bus size={16} /></span>
-                  <div>
-                    <div className="text-xs font-black text-slate-800">기본 승·하차 정류장</div>
-                    <div className="mt-0.5 text-[10px] font-medium leading-4 text-slate-500">기사 앱의 노선 배치와 길안내에서 사용할 기본 위치입니다.</div>
-                  </div>
-                </div>
-
-                {!modalStudent?.child_id ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] font-bold leading-5 text-amber-800">
-                    앱 자녀 계정과 연결된 학생만 정류장을 지정할 수 있습니다. 먼저 학부모 앱 계정과 학생을 연결해 주세요.
-                  </div>
-                ) : pickupSettingsLoading ? (
-                  <div className="flex items-center justify-center gap-2 rounded-xl bg-white py-6 text-xs font-bold text-slate-500">
-                    <Loader2 size={15} className="animate-spin" /> 정류장 설정을 불러오는 중입니다.
-                  </div>
-                ) : pickupSpots.length === 0 ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] font-bold leading-5 text-amber-800">
-                    등록된 정류장이 없습니다. 셔틀 관리 → 정류장 관리에서 위치를 먼저 등록해 주세요.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1.5 flex items-center gap-1 text-[11px] font-black text-blue-700"><MapPin size={12} /> 승차 정류장</label>
-                        <select value={pickupSpotId} onChange={(e) => { setPickupSpotId(e.target.value); if (!e.target.value) setPickupDetailLocation(''); }} className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold text-slate-800 outline-none ring-1 ring-blue-100 focus:ring-2 focus:ring-blue-500">
-                          <option value="">이용 안 함</option>
-                          {pickupSpots.map((spot) => <option key={spot.id} value={spot.id}>{spot.name}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="mb-1.5 flex items-center gap-1 text-[11px] font-black text-violet-700"><MapPin size={12} /> 하차 정류장</label>
-                        <select value={dropoffSpotId} onChange={(e) => { setDropoffSpotId(e.target.value); if (!e.target.value) setDropoffDetailLocation(''); }} className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold text-slate-800 outline-none ring-1 ring-violet-100 focus:ring-2 focus:ring-violet-500">
-                          <option value="">이용 안 함</option>
-                          {pickupSpots.map((spot) => <option key={spot.id} value={spot.id}>{spot.name}</option>)}
-                        </select>
-                      </div>
-                    </div>
-                    <button type="button" onClick={() => { setDropoffSpotId(pickupSpotId); setDropoffDetailLocation(pickupDetailLocation); }} disabled={!pickupSpotId} className="rounded-lg bg-white px-2.5 py-1.5 text-[10px] font-black text-blue-700 ring-1 ring-blue-100 disabled:cursor-not-allowed disabled:text-slate-300">
-                      승차 위치를 하차에도 동일 적용
-                    </button>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <input value={pickupDetailLocation} onChange={(e) => setPickupDetailLocation(e.target.value)} disabled={!pickupSpotId} placeholder="승차 상세 위치 (예: 아파트 정문)" className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold outline-none ring-1 ring-blue-100 focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100" />
-                      <input value={dropoffDetailLocation} onChange={(e) => setDropoffDetailLocation(e.target.value)} disabled={!dropoffSpotId} placeholder="하차 상세 위치 (예: 아파트 후문)" className="w-full rounded-xl border-none bg-white px-3 py-3 text-xs font-bold outline-none ring-1 ring-violet-100 focus:ring-2 focus:ring-violet-500 disabled:bg-slate-100" />
-                    </div>
-                    {(pickupSpotId || dropoffSpotId) && (
-                      <div className="rounded-lg bg-white/80 px-3 py-2 text-[10px] leading-4 text-slate-500">
-                        {[pickupSpotId, dropoffSpotId].filter(Boolean).map((id) => pickupSpots.find((spot) => spot.id === id)).filter(Boolean).map((spot, index) => <div key={`${spot!.id}-${index}`}><span className="font-black text-slate-600">{index === 0 ? '선택 위치' : '하차 위치'}:</span> {spot!.name}{spot!.address ? ` · ${spot!.address}` : ''}</div>)}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </section>
-
               <div>
                 <label className="block text-xs font-bold text-slate-500 mb-1.5">비공개 학생 메모</label>
                 <textarea 
