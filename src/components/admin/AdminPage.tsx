@@ -6,6 +6,7 @@ import {
   History, Clock, Coins, Bell, Megaphone
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
+import { handleError } from "../../errors/handleError";
 import { loadActiveAppSchedulesByChild } from "../../lib/adminScheduleAssignments";
 import { ReferralTreeTab } from "./ReferralTreeTab";
 import { AdminStudentTab } from "./AdminStudentTab";
@@ -1345,8 +1346,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         await supabase.from("attendance_logs").delete().eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
         await supabase.from("reservations").update({ pickup_shuttle_status: null, dropoff_shuttle_status: null, attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
       } else if (actionType === 'cancel_ride_in') {
-        await supabase.from("reservations").update({ pickup_shuttle_status: null }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
-        await supabase.from("attendance_logs").update({ shuttle_ride_time: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+        const reservationResult = await supabase.from("reservations").update({ pickup_shuttle_status: null }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        if (reservationResult.error) throw reservationResult.error;
+        const logResult = await supabase.from("attendance_logs").update({
+          shuttle_ride_time: null,
+          status: todayAttendanceRecords[studentId]?.check_in ? '등원' : null,
+        }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+        if (logResult.error) throw logResult.error;
       } else if (actionType === 'cancel_check_in') {
         await supabase.from("reservations").update({ attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         await supabase.from("attendance_logs").update({ check_in: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
@@ -1354,8 +1360,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         await supabase.from("reservations").update({ attendance_status: '등원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         await supabase.from("attendance_logs").update({ check_out: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
       } else if (actionType === 'cancel_ride_out') {
-        await supabase.from("reservations").update({ dropoff_shuttle_status: null }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
-        await supabase.from("attendance_logs").update({ shuttle_drop_time: null }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+        const reservationResult = await supabase.from("reservations").update({ dropoff_shuttle_status: null }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+        if (reservationResult.error) throw reservationResult.error;
+        const currentRecord = todayAttendanceRecords[studentId];
+        const logResult = await supabase.from("attendance_logs").update({
+          shuttle_drop_time: null,
+          status: currentRecord?.check_out ? '하원' : currentRecord?.check_in ? '등원' : null,
+        }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
+        if (logResult.error) throw logResult.error;
       } else if (actionType === 'cancel_absent') {
         await supabase.from("reservations").update({ attendance_status: '예약' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         await supabase.from("attendance_logs").update({ status: '등원' }).eq("child_id", targetChildId).eq("date", selectedAttendanceDate);
@@ -1385,8 +1397,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         };
         if (actionType === 'ride_in') {
           payload.shuttle_ride_time = nowIso;
-          payload.check_in = nowIso;
-          await supabase.from("reservations").update({ pickup_shuttle_status: 'boarded' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+          const reservationResult = await supabase.from("reservations").update({ pickup_shuttle_status: 'boarded' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+          if (reservationResult.error) throw reservationResult.error;
         } else if (actionType === 'check_in') {
           payload.check_in = nowIso;
           await supabase.from("reservations").update({ attendance_status: '등원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
@@ -1395,22 +1407,27 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           await supabase.from("reservations").update({ attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         } else if (actionType === 'ride_out') {
           payload.shuttle_drop_time = nowIso;
-          payload.check_out = nowIso;
-          await supabase.from("reservations").update({ dropoff_shuttle_status: 'dropped_off', attendance_status: '하원' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+          const reservationResult = await supabase.from("reservations").update({ dropoff_shuttle_status: 'dropped_off' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
+          if (reservationResult.error) throw reservationResult.error;
         } else if (actionType === 'is_absent') {
           payload.status = '결석';
           await supabase.from("reservations").update({ attendance_status: '결석' }).eq("child_id", targetChildId).eq("class_date", selectedAttendanceDate).is("deleted_at", null);
         }
 
-        const { data: existing } = await supabase.from("attendance_logs").select("id").eq("child_id", targetChildId).eq("date", selectedAttendanceDate).maybeSingle();
+        const existingResult = await supabase.from("attendance_logs").select("id").eq("child_id", targetChildId).eq("date", selectedAttendanceDate).maybeSingle();
+        if (existingResult.error) throw existingResult.error;
+        const existing = existingResult.data;
         if (existing) {
-          await supabase.from("attendance_logs").update(payload).eq("id", existing.id);
+          const result = await supabase.from("attendance_logs").update(payload).eq("id", existing.id);
+          if (result.error) throw result.error;
         } else {
-          await supabase.from("attendance_logs").insert([payload]);
+          const result = await supabase.from("attendance_logs").insert([payload]);
+          if (result.error) throw result.error;
         }
       }
-    } catch (dbErr) {
-      console.warn("Attendance log DB save warning:", dbErr);
+    } catch (dbErr: unknown) {
+      await loadDailyAttendanceStudents();
+      await handleError(dbErr, 'ATT_SAVE_FAILED', { operation: 'attendance.timeline.save' });
     }
   };
 
@@ -1463,21 +1480,42 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           branch_id: targetBranch,
           status: statusMap[actionType] || '등원'
         };
-        if (actionType === 'check_in' || actionType === 'ride_in') row.check_in = nowIso;
-        else if (actionType === 'check_out' || actionType === 'ride_out') row.check_out = nowIso;
+        if (actionType === 'ride_in') row.shuttle_ride_time = nowIso;
+        else if (actionType === 'check_in') row.check_in = nowIso;
+        else if (actionType === 'check_out') row.check_out = nowIso;
+        else if (actionType === 'ride_out') row.shuttle_drop_time = nowIso;
         return row;
       });
 
       for (const payload of payloads) {
-        const { data: existing } = await supabase.from("attendance_logs").select("id").eq("child_id", payload.child_id).eq("date", payload.date).maybeSingle();
+        if (actionType === 'ride_in' || actionType === 'ride_out' || actionType === 'check_in' || actionType === 'check_out' || actionType === 'is_absent') {
+          const reservationPatch = actionType === 'ride_in'
+            ? { pickup_shuttle_status: 'boarded' }
+            : actionType === 'ride_out'
+              ? { dropoff_shuttle_status: 'dropped_off' }
+              : actionType === 'check_in'
+                ? { attendance_status: '등원' }
+                : actionType === 'check_out'
+                  ? { attendance_status: '하원' }
+                  : { attendance_status: '결석' };
+          const reservationResult = await supabase.from("reservations").update(reservationPatch).eq("child_id", payload.child_id).eq("class_date", payload.date).is("deleted_at", null);
+          if (reservationResult.error) throw reservationResult.error;
+        }
+        const existingResult = await supabase.from("attendance_logs").select("id").eq("child_id", payload.child_id).eq("date", payload.date).maybeSingle();
+        if (existingResult.error) throw existingResult.error;
+        const existing = existingResult.data;
         if (existing) {
-          await supabase.from("attendance_logs").update(payload).eq("id", existing.id);
+          const result = await supabase.from("attendance_logs").update(payload).eq("id", existing.id);
+          if (result.error) throw result.error;
         } else {
-          await supabase.from("attendance_logs").insert([payload]);
+          const result = await supabase.from("attendance_logs").insert([payload]);
+          if (result.error) throw result.error;
         }
       }
-    } catch (dbErr) {
-      console.warn("Batch attendance log DB save error:", dbErr);
+    } catch (dbErr: unknown) {
+      await loadDailyAttendanceStudents();
+      await handleError(dbErr, 'ATT_SAVE_FAILED', { operation: 'attendance.timeline.batch-save' });
+      return;
     }
 
     const labels: Record<string, string> = {
