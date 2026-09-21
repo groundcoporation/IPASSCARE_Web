@@ -6,6 +6,7 @@ import {
   History, Clock, Coins, Bell, Megaphone
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
+import { AppError } from "../../errors/appError";
 import { handleError } from "../../errors/handleError";
 import { loadActiveAppSchedulesByChild } from "../../lib/adminScheduleAssignments";
 import { ReferralTreeTab } from "./ReferralTreeTab";
@@ -84,6 +85,68 @@ const paymentReference = (payment: Pick<Payment, "id" | "pg_tid" | "status" | "p
   }
   return payment.id;
 };
+type AttendanceNotificationAction = 'ride_in' | 'check_in' | 'check_out' | 'ride_out';
+type TimelineAttendanceAction = AttendanceNotificationAction
+  | 'no_pickup'
+  | 'no_dropoff'
+  | 'no_shuttle'
+  | 'is_absent'
+  | 'reset'
+  | 'cancel_ride_in'
+  | 'cancel_check_in'
+  | 'cancel_check_out'
+  | 'cancel_ride_out'
+  | 'cancel_absent';
+type BatchAttendanceAction = AttendanceNotificationAction | 'is_absent';
+type AttendanceConfirmation =
+  | { mode: 'single'; studentId: string; action: TimelineAttendanceAction; sendNotification: boolean }
+  | { mode: 'batch'; action: BatchAttendanceAction; targetCount: number; sendNotification: boolean };
+
+const attendanceActionPresentation: Record<TimelineAttendanceAction, {
+  eyebrow: string;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  tone: 'indigo' | 'emerald' | 'amber' | 'rose';
+}> = {
+  ride_in: { eyebrow: '셔틀 출결', title: '승차 처리할까요?', description: '셔틀 승차 시각을 기록하고 학부모에게 승차 알림을 보냅니다.', confirmLabel: '승차 처리', tone: 'indigo' },
+  check_in: { eyebrow: '학원 출결', title: '등원 처리할까요?', description: '학원 도착 시각을 기록하고 학부모에게 등원 알림을 보냅니다.', confirmLabel: '등원 처리', tone: 'emerald' },
+  check_out: { eyebrow: '학원 출결', title: '하원 처리할까요?', description: '학원 출발 시각을 기록하고 학부모에게 하원 알림을 보냅니다.', confirmLabel: '하원 처리', tone: 'amber' },
+  ride_out: { eyebrow: '셔틀 출결', title: '하차 처리할까요?', description: '셔틀 하차 시각을 기록하고 학부모에게 하차 알림을 보냅니다.', confirmLabel: '하차 처리', tone: 'indigo' },
+  no_pickup: { eyebrow: '셔틀 출결', title: '승차 미탑승 처리할까요?', description: '선택한 원생을 승차 미탑승 상태로 기록합니다.', confirmLabel: '미탑승 처리', tone: 'amber' },
+  no_shuttle: { eyebrow: '셔틀 출결', title: '승차 미탑승 처리할까요?', description: '선택한 원생을 승차 미탑승 상태로 기록합니다.', confirmLabel: '미탑승 처리', tone: 'amber' },
+  no_dropoff: { eyebrow: '셔틀 출결', title: '하차 미탑승 처리할까요?', description: '선택한 원생을 하차 미탑승 상태로 기록합니다.', confirmLabel: '미탑승 처리', tone: 'amber' },
+  is_absent: { eyebrow: '출결 상태', title: '결석 처리할까요?', description: '선택한 원생을 오늘 결석으로 기록합니다.', confirmLabel: '결석 처리', tone: 'rose' },
+  reset: { eyebrow: '처리 초기화', title: '전체 기록을 초기화할까요?', description: '승하차·등하원·미탑승 상태를 모두 초기화합니다.', confirmLabel: '전체 초기화', tone: 'rose' },
+  cancel_ride_in: { eyebrow: '처리 취소', title: '승차 처리를 취소할까요?', description: '승차 또는 승차 미탑승 기록을 취소합니다.', confirmLabel: '승차 취소', tone: 'rose' },
+  cancel_check_in: { eyebrow: '처리 취소', title: '등원 처리를 취소할까요?', description: '기록된 등원 상태와 시각을 취소합니다.', confirmLabel: '등원 취소', tone: 'rose' },
+  cancel_check_out: { eyebrow: '처리 취소', title: '하원 처리를 취소할까요?', description: '기록된 하원 상태와 시각을 취소합니다.', confirmLabel: '하원 취소', tone: 'rose' },
+  cancel_ride_out: { eyebrow: '처리 취소', title: '하차 처리를 취소할까요?', description: '하차 또는 하차 미탑승 기록을 취소합니다.', confirmLabel: '하차 취소', tone: 'rose' },
+  cancel_absent: { eyebrow: '처리 취소', title: '결석 처리를 취소할까요?', description: '기록된 결석 상태를 취소합니다.', confirmLabel: '결석 취소', tone: 'rose' },
+};
+const attendanceNotificationActions = new Set<AttendanceNotificationAction>([
+  'ride_in',
+  'check_in',
+  'check_out',
+  'ride_out',
+]);
+
+const sendAttendanceNotification = async (
+  childId: string,
+  branchId: string,
+  serviceDate: string,
+  action: AttendanceNotificationAction,
+) => {
+  const { data, error } = await supabase.functions.invoke('send-attendance-notification', {
+    body: {
+      child_id: childId,
+      branch_id: branchId,
+      service_date: serviceDate,
+      action,
+    },
+  });
+  if (error || data?.success !== true) throw error || new Error('Attendance notification was not accepted');
+};
 
 // Helper: Extract YouTube Video ID from any URL format
 export function extractYoutubeId(url: string): string | null {
@@ -147,6 +210,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [attendanceViewFilter, setAttendanceViewFilter] = useState<'scheduled' | 'unprocessed' | 'completed' | 'all'>('scheduled');
   const [selectedAttendanceClassFilter, setSelectedAttendanceClassFilter] = useState("all");
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [attendanceConfirmation, setAttendanceConfirmation] = useState<AttendanceConfirmation | null>(null);
+  const [attendanceActionBusy, setAttendanceActionBusy] = useState(false);
   const [attendanceCalendarMonth, setAttendanceCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [calendarMonthLogs, setCalendarMonthLogs] = useState<any[]>([]);
@@ -1263,30 +1328,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   };
 
   // Real-time timeline attendance action helpers
-  const handleTimelineAction = async (studentId: string, actionType: 'ride_in' | 'no_pickup' | 'check_in' | 'check_out' | 'ride_out' | 'no_dropoff' | 'no_shuttle' | 'is_absent' | 'reset' | 'cancel_ride_in' | 'cancel_check_in' | 'cancel_check_out' | 'cancel_ride_out' | 'cancel_absent') => {
+  const executeTimelineAction = async (
+    studentId: string,
+    actionType: TimelineAttendanceAction,
+    sendNotification: boolean,
+  ) => {
     const student = todayAttendanceStudents.find(s => s.id === studentId);
-    const studentName = student?.student_name || '해당 원생';
-    if (actionType === 'reset') {
-      const shouldReset = confirm(
-        `${studentName} 원생의 ${selectedAttendanceDate} 전체 출결 처리를 초기화하시겠습니까?\n승하차·등하원·미탑승 상태가 모두 초기화됩니다.`
-      );
-      if (!shouldReset) return;
-    } else if (actionType === 'cancel_ride_in') {
-      const shouldCancel = confirm(`${studentName} 원생의 [승차 / 미탑승] 처리를 취소하시겠습니까?`);
-      if (!shouldCancel) return;
-    } else if (actionType === 'cancel_check_in') {
-      const shouldCancel = confirm(`${studentName} 원생의 [등원] 처리를 취소하시겠습니까?`);
-      if (!shouldCancel) return;
-    } else if (actionType === 'cancel_check_out') {
-      const shouldCancel = confirm(`${studentName} 원생의 [하원] 처리를 취소하시겠습니까?`);
-      if (!shouldCancel) return;
-    } else if (actionType === 'cancel_ride_out') {
-      const shouldCancel = confirm(`${studentName} 원생의 [하차 / 미탑승] 처리를 취소하시겠습니까?`);
-      if (!shouldCancel) return;
-    } else if (actionType === 'cancel_absent') {
-      const shouldCancel = confirm(`${studentName} 원생의 [결석] 처리를 취소하시겠습니까?`);
-      if (!shouldCancel) return;
-    }
 
     const nowTime = new Date().toTimeString().slice(0, 5);
     const nowIso = new Date().toISOString();
@@ -1425,13 +1472,33 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           if (result.error) throw result.error;
         }
       }
+
+      if (sendNotification && attendanceNotificationActions.has(actionType as AttendanceNotificationAction)) {
+        try {
+          await sendAttendanceNotification(
+            targetChildId,
+            targetBranch,
+            selectedAttendanceDate,
+            actionType as AttendanceNotificationAction,
+          );
+        } catch (notificationError: unknown) {
+          await handleError(
+            new AppError('ATT_NOTIFICATION_FAILED', notificationError),
+            'ATT_NOTIFICATION_FAILED',
+            { operation: 'attendance.timeline.notify' },
+          );
+        }
+      }
     } catch (dbErr: unknown) {
       await loadDailyAttendanceStudents();
       await handleError(dbErr, 'ATT_SAVE_FAILED', { operation: 'attendance.timeline.save' });
     }
   };
 
-  const handleBatchTimelineAction = async (actionType: 'ride_in' | 'check_in' | 'check_out' | 'ride_out' | 'is_absent') => {
+  const executeBatchTimelineAction = async (
+    actionType: BatchAttendanceAction,
+    sendNotification: boolean,
+  ) => {
     const requestedIds = selectedStudentIds.length > 0
       ? selectedStudentIds 
       : filteredAttendanceStudents.map(s => s.id);
@@ -1512,20 +1579,92 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           if (result.error) throw result.error;
         }
       }
+
+      if (sendNotification && attendanceNotificationActions.has(actionType as AttendanceNotificationAction)) {
+        const notificationResults = await Promise.allSettled(
+          targetIds.map(async (studentId) => {
+            const student = todayAttendanceStudents.find((item) => item.id === studentId);
+            const childId = student?.child_id || student?.id || studentId;
+            const targetBranch = scopedBranchId(profile, branchFilter) || profile?.branch_id || student?.branch_id || 'branch_1';
+            await sendAttendanceNotification(
+              childId,
+              targetBranch,
+              selectedAttendanceDate,
+              actionType as AttendanceNotificationAction,
+            );
+          }),
+        );
+        if (notificationResults.some((result) => result.status === 'rejected')) {
+          await handleError(
+            new AppError('ATT_NOTIFICATION_FAILED'),
+            'ATT_NOTIFICATION_FAILED',
+            { operation: 'attendance.timeline.batch-notify' },
+          );
+        }
+      }
     } catch (dbErr: unknown) {
       await loadDailyAttendanceStudents();
       await handleError(dbErr, 'ATT_SAVE_FAILED', { operation: 'attendance.timeline.batch-save' });
       return;
     }
 
-    const labels: Record<string, string> = {
-      ride_in: '셔틀 승차',
-      check_in: '학원 등원',
-      check_out: '학원 하원',
-      ride_out: '셔틀 하차',
-      is_absent: '결석'
-    };
-    alert(`${targetIds.length}명의 원생에게 [${labels[actionType]}] 처리가 일괄 적용되었습니다.`);
+  };
+
+  const getBatchAttendanceTargetIds = () => {
+    const requestedIds = selectedStudentIds.length > 0
+      ? selectedStudentIds
+      : filteredAttendanceStudents.map((student) => student.id);
+    return requestedIds.filter((studentId) => {
+      const student = todayAttendanceStudents.find((item) => item.id === studentId);
+      return student && isStudentScheduledOnDate(student);
+    });
+  };
+
+  const handleTimelineAction = (studentId: string, action: TimelineAttendanceAction) => {
+    if (attendanceActionBusy) return;
+    setAttendanceConfirmation({
+      mode: 'single',
+      studentId,
+      action,
+      sendNotification: attendanceNotificationActions.has(action as AttendanceNotificationAction),
+    });
+  };
+
+  const handleBatchTimelineAction = (action: BatchAttendanceAction) => {
+    if (attendanceActionBusy) return;
+    const targetCount = getBatchAttendanceTargetIds().length;
+    if (!targetCount) {
+      alert('적용할 대상 학생이 없습니다.');
+      return;
+    }
+    setAttendanceConfirmation({
+      mode: 'batch',
+      action,
+      targetCount,
+      sendNotification: attendanceNotificationActions.has(action as AttendanceNotificationAction),
+    });
+  };
+
+  const confirmAttendanceAction = async () => {
+    if (!attendanceConfirmation || attendanceActionBusy) return;
+    setAttendanceActionBusy(true);
+    try {
+      if (attendanceConfirmation.mode === 'single') {
+        await executeTimelineAction(
+          attendanceConfirmation.studentId,
+          attendanceConfirmation.action,
+          attendanceConfirmation.sendNotification,
+        );
+      } else {
+        await executeBatchTimelineAction(
+          attendanceConfirmation.action,
+          attendanceConfirmation.sendNotification,
+        );
+      }
+      setAttendanceConfirmation(null);
+    } finally {
+      setAttendanceActionBusy(false);
+    }
   };
 
   const shownAttendance = useMemo(() => attendance.filter((item) => `${item.childName} ${item.parentName} ${item.packageName}`.toLowerCase().includes(search.trim().toLowerCase())), [attendance, search]);
@@ -1833,6 +1972,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const activeBranchId = scopedBranchId(profile, branchFilter);
   const activeBranchName = activeBranchId ? branches.find((branch) => branch.id === activeBranchId)?.name ?? null : null;
   const categoryLabelsMap: Record<string, string> = { parent: "학부모 매뉴얼", admin: "학원장 매뉴얼", driver: "기사님 매뉴얼" };
+  const attendanceConfirmationConfig = attendanceConfirmation
+    ? attendanceActionPresentation[attendanceConfirmation.action]
+    : null;
+  const attendanceConfirmationStudent = attendanceConfirmation?.mode === 'single'
+    ? todayAttendanceStudents.find((student) => student.id === attendanceConfirmation.studentId)
+    : null;
+  const attendanceConfirmationSubject = attendanceConfirmation?.mode === 'batch'
+    ? `${attendanceConfirmation.targetCount}명 일괄 처리`
+    : `${attendanceConfirmationStudent?.student_name || attendanceConfirmationStudent?.child_name || '해당 원생'} 원생`;
+  const attendanceConfirmationSupportsNotification = Boolean(
+    attendanceConfirmation && attendanceNotificationActions.has(attendanceConfirmation.action as AttendanceNotificationAction),
+  );
+  const attendanceConfirmationDescription = attendanceConfirmationSupportsNotification && attendanceConfirmation?.sendNotification === false
+    ? '출결 상태와 처리 시각만 저장하며 학부모 알림은 발송하지 않습니다.'
+    : attendanceConfirmationConfig?.description;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900 font-sans antialiased">
@@ -3954,6 +4108,145 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
           </div>
         </main>
       </div>
+
+      {/* Attendance Action Confirmation */}
+      {attendanceConfirmation && attendanceConfirmationConfig && (
+        <div
+          className="fixed inset-0 z-[5000] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+          onClick={() => !attendanceActionBusy && setAttendanceConfirmation(null)}
+          role="presentation"
+        >
+          <div
+            className="relative w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-[0_30px_100px_rgba(15,23,42,0.35)] sm:rounded-[2rem]"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="attendance-confirm-title"
+          >
+            <div className={`h-1.5 w-full ${
+              attendanceConfirmationConfig.tone === 'emerald' ? 'bg-emerald-500'
+                : attendanceConfirmationConfig.tone === 'amber' ? 'bg-amber-400'
+                  : attendanceConfirmationConfig.tone === 'rose' ? 'bg-rose-500'
+                    : 'bg-indigo-600'
+            }`} />
+            <div className="p-6 sm:p-7">
+              <div className="flex items-start gap-4">
+                <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl ${
+                  attendanceConfirmationConfig.tone === 'emerald' ? 'bg-emerald-50 text-emerald-600'
+                    : attendanceConfirmationConfig.tone === 'amber' ? 'bg-amber-50 text-amber-600'
+                      : attendanceConfirmationConfig.tone === 'rose' ? 'bg-rose-50 text-rose-600'
+                        : 'bg-indigo-50 text-indigo-600'
+                }`}>
+                  {attendanceConfirmationConfig.tone === 'rose'
+                    ? <ShieldAlert size={27} strokeWidth={2.4} />
+                    : attendanceConfirmation.action === 'ride_in' || attendanceConfirmation.action === 'ride_out'
+                      ? <Bus size={28} strokeWidth={2.4} />
+                      : <CheckCircle2 size={28} strokeWidth={2.4} />}
+                </div>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <p className={`text-xs font-black tracking-[0.16em] ${
+                    attendanceConfirmationConfig.tone === 'emerald' ? 'text-emerald-600'
+                      : attendanceConfirmationConfig.tone === 'amber' ? 'text-amber-600'
+                        : attendanceConfirmationConfig.tone === 'rose' ? 'text-rose-600'
+                          : 'text-indigo-600'
+                  }`}>
+                    {attendanceConfirmationConfig.eyebrow}
+                  </p>
+                  <h3 id="attendance-confirm-title" className="mt-1.5 text-2xl font-black tracking-tight text-slate-950">
+                    {attendanceConfirmationConfig.title}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAttendanceConfirmation(null)}
+                  disabled={attendanceActionBusy}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 disabled:opacity-40"
+                  aria-label="닫기"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-base font-black text-slate-900">{attendanceConfirmationSubject}</span>
+                  <span className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-extrabold text-slate-600 ring-1 ring-slate-200">
+                    {selectedAttendanceDate}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
+                  {attendanceConfirmationDescription}
+                </p>
+              </div>
+
+              {attendanceConfirmationSupportsNotification && (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-black tracking-wide text-slate-500">학부모 알림 선택</p>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setAttendanceConfirmation((current) => current ? { ...current, sendNotification: true } : current)}
+                      disabled={attendanceActionBusy}
+                      className={`rounded-2xl border p-3.5 text-left transition ${
+                        attendanceConfirmation.sendNotification
+                          ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-500/15'
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${attendanceConfirmation.sendNotification ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                        <Bell size={18} />
+                      </span>
+                      <span className="mt-2.5 block text-sm font-black text-slate-900">알림 발송</span>
+                      <span className="mt-1 block text-[11px] font-semibold leading-4 text-slate-500">저장 후 학부모에게 안내</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAttendanceConfirmation((current) => current ? { ...current, sendNotification: false } : current)}
+                      disabled={attendanceActionBusy}
+                      className={`rounded-2xl border p-3.5 text-left transition ${
+                        !attendanceConfirmation.sendNotification
+                          ? 'border-slate-700 bg-slate-100 ring-2 ring-slate-700/10'
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${!attendanceConfirmation.sendNotification ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                        <Bell size={18} className="opacity-50" />
+                      </span>
+                      <span className="mt-2.5 block text-sm font-black text-slate-900">알림 없이 처리</span>
+                      <span className="mt-1 block text-[11px] font-semibold leading-4 text-slate-500">출결 기록만 저장</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-6 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setAttendanceConfirmation(null)}
+                  disabled={attendanceActionBusy}
+                  className="rounded-2xl bg-slate-100 py-3.5 text-sm font-black text-slate-700 transition hover:bg-slate-200 disabled:opacity-50"
+                >
+                  돌아가기
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmAttendanceAction()}
+                  disabled={attendanceActionBusy}
+                  className={`flex items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-black text-white shadow-lg transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${
+                    attendanceConfirmationConfig.tone === 'emerald' ? 'bg-emerald-600 shadow-emerald-600/20 hover:bg-emerald-700'
+                      : attendanceConfirmationConfig.tone === 'amber' ? 'bg-amber-500 shadow-amber-500/20 hover:bg-amber-600'
+                        : attendanceConfirmationConfig.tone === 'rose' ? 'bg-rose-600 shadow-rose-600/20 hover:bg-rose-700'
+                          : 'bg-indigo-600 shadow-indigo-600/20 hover:bg-indigo-700'
+                  }`}
+                >
+                  {attendanceActionBusy && <Loader2 size={17} className="animate-spin" />}
+                  {attendanceActionBusy ? '처리 중...' : attendanceConfirmationConfig.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Loading Overlay */}
       {loading && (
