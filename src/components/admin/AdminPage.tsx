@@ -1687,6 +1687,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   // Selected Day computation & scheduled check (Must be before conditional returns)
   const currentDayShort = getShortDayOfWeek(selectedAttendanceDate || new Date().toISOString().slice(0, 10));
   const currentDayFull = getKoreanDayOfWeek(selectedAttendanceDate || new Date().toISOString().slice(0, 10));
+  const isPastAttendanceDate = selectedAttendanceDate < localDate(new Date());
 
   const isStudentScheduledOnDate = useCallback((student: any) => {
     const reservationKey = student?.child_id || student?.id;
@@ -2592,6 +2593,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                   🟠 학원 하원 완료
                                 </span>
                               );
+                            } else if (record?.check_in && isPastAttendanceDate) {
+                              statusBadge = (
+                                <span className="inline-block bg-rose-50 text-rose-700 border border-rose-200 font-black px-2.5 py-1 rounded-full text-[11px]">
+                                  ⚠️ 하원 미처리
+                                </span>
+                              );
                             } else if (record?.check_in) {
                               statusBadge = (
                                 <span className="inline-block bg-emerald-100 text-emerald-800 font-black px-2.5 py-1 rounded-full text-[11px]">
@@ -3087,6 +3094,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 statusBadge = (
                                   <span className="inline-block bg-amber-100 text-amber-800 font-black px-2.5 py-1 rounded-full text-[11px]">
                                     🟠 학원 하원 완료
+                                  </span>
+                                );
+                              } else if (record?.check_in && isPastAttendanceDate) {
+                                statusBadge = (
+                                  <span className="inline-block bg-rose-50 text-rose-700 border border-rose-200 font-black px-2.5 py-1 rounded-full text-[11px]">
+                                    ⚠️ 하원 미처리
                                   </span>
                                 );
                               } else if (record?.check_in) {

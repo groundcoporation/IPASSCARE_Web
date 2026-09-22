@@ -134,14 +134,12 @@ export const AdminShuttleTab: React.FC<{
     return () => { window.clearInterval(fallback); void supabase.removeChannel(channel); };
   }, [activeBranchId, loadData]);
 
-  // 앱 강제 종료나 구버전의 남은 상태처럼 장시간 갱신되지 않은 행은 실제
-  // 운행 차량으로 집계하지 않습니다. 데이터는 보존하되 관제 화면의 유령
-  // 차량 및 운행 대수에서는 제외합니다.
-  const activeVehicles = useMemo(() => statuses.filter((item) => (
-    item.is_driving
-    && Number.isFinite(Date.parse(item.last_update))
-    && Date.now() - Date.parse(item.last_update) <= 180_000
-  )), [statuses]);
+  // 위치 갱신이 장시간 멈춰도 기사가 운행을 종료하기 전까지 관제 목록과
+  // 지도에서 차량을 유지합니다. 지연 여부는 상태 배지로만 구분합니다.
+  const activeVehicles = useMemo(
+    () => statuses.filter((item) => item.is_driving),
+    [statuses],
+  );
   const filteredRoutes = useMemo(
     () => routeDayFilter === '전체' ? routes : routes.filter((item) => item.day_of_week === routeDayFilter),
     [routeDayFilter, routes],
