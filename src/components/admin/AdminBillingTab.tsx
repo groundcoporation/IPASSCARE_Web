@@ -484,11 +484,30 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       });
       studentsByParentId.forEach((siblings) => siblings.sort((left, right) => String(left.id).localeCompare(String(right.id))));
       const selectedPeriod = billingMonthPeriod(selectedMonth);
-      const { data: monthlyPlans, error: monthlyPlanError } = appStudents.length > 0
+      const appStudentIds = appStudents.map((student) => student.id);
+      const { data: planRevisions, error: planRevisionError } = appStudents.length > 0
+        ? await supabase
+            .from('academy_student_billing_plan_revisions')
+            .select('student_id, effective_month')
+            .lte('effective_month', selectedPeriod.start)
+            .in('student_id', appStudentIds)
+        : { data: [], error: null };
+      if (planRevisionError) throw planRevisionError;
+
+      const latestRevisionByStudent = new Map<string, string>();
+      (planRevisions as any[] || []).forEach((revision) => {
+        const previous = latestRevisionByStudent.get(revision.student_id);
+        if (!previous || revision.effective_month > previous) {
+          latestRevisionByStudent.set(revision.student_id, revision.effective_month);
+        }
+      });
+
+      const { data: monthlyPlanRows, error: monthlyPlanError } = appStudents.length > 0
         ? await supabase
             .from('academy_student_monthly_plans')
             .select(`
               id,
+              effective_month,
               item_type,
               status,
               student_id,
@@ -501,11 +520,21 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               class_schedules(target_class),
               package_options(id, label, price, packages(id, name, voucher_type))
             `)
-            .eq('effective_month', selectedPeriod.start)
+            .lte('effective_month', selectedPeriod.start)
             .in('status', ['planned', 'applied'])
-            .in('student_id', appStudents.map((student) => student.id))
+            .in('student_id', appStudentIds)
         : { data: [], error: null };
       if (monthlyPlanError) throw monthlyPlanError;
+      const monthlyPlans = (monthlyPlanRows as any[] || []).filter((plan) => {
+        if (plan.item_type === 'class') return plan.effective_month === selectedPeriod.start;
+        if (plan.billing_source === 'additional') return plan.effective_month === selectedPeriod.start;
+        const voucherType = plan.package_options?.packages?.voucher_type;
+        if (
+          plan.effective_month !== selectedPeriod.start
+          && (voucherType === 'single' || voucherType === 'one_time')
+        ) return false;
+        return plan.effective_month === latestRevisionByStudent.get(plan.student_id);
+      });
 
       // Resolve assignments effective during the selected billing month.
       // Future-dated assignments must not leak into the current month.
@@ -675,6 +704,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         plan.status === 'planned' || plan.status === 'applied',
       );
       const currentPlanOptionsByStudent = new Map<string, Set<string>>();
+      latestRevisionByStudent.forEach((_, studentId) => {
+        // Keep an explicit empty set. It means billing was stopped at the
+        // latest revision and must suppress older purchased-package fallbacks.
+        currentPlanOptionsByStudent.set(studentId, new Set<string>());
+      });
       currentMonthPlanRows
         .filter((plan) => plan.item_type === 'package' && plan.package_option_id)
         .forEach((plan) => {

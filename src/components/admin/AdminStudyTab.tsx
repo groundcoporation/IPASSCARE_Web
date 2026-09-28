@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import { handleError } from '../../errors/handleError';
 import { 
   BookOpen, Plus, Search, Calendar, Save, Trash2, Edit3, Eye, 
   Download, RefreshCw, CheckCircle2, User, Clock, FileText, X, AlertCircle,
-  ArrowDown, ArrowUp
+  ArrowDown, ArrowUp, BellRing, LockKeyhole
 } from 'lucide-react';
 
 export interface StudyLog {
@@ -19,6 +20,7 @@ export interface StudyLog {
   special_note: string | null;
   created_at: string;
   updated_at?: string;
+  is_parent_visible?: boolean;
 }
 
 interface Teacher {
@@ -38,6 +40,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
 
   // Filters
   const [selectedClassFilter, setSelectedClassFilter] = useState<string>('all');
@@ -59,6 +62,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
   const [formContent, setFormContent] = useState<string>('');
   const [formHomework, setFormHomework] = useState<string>('');
   const [formSpecialNote, setFormSpecialNote] = useState<string>('');
+  const [sendParentNotification, setSendParentNotification] = useState<boolean>(true);
 
   // Load Data
   const loadData = useCallback(async () => {
@@ -149,6 +153,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
 
   // Open Write Modal
   const openWriteModal = (logToEdit?: StudyLog) => {
+    setSendParentNotification(!logToEdit);
     if (logToEdit) {
       setEditingLogId(logToEdit.id);
       setFormClassId(logToEdit.class_schedule_id || '');
@@ -216,39 +221,70 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
       } else {
         const { data, error } = await supabase
           .from('academy_study_logs')
-          .insert([payload])
+          .insert([{ ...payload, is_parent_visible: sendParentNotification }])
           .select()
           .single();
 
         if (error) throw error;
-        if (data) {
-          setStudyLogs(prev => [data, ...prev]);
+        if (!data) throw new Error('study log insert returned no data');
+        setStudyLogs(prev => [data, ...prev]);
+
+        if (sendParentNotification) {
+          try {
+            const { data: notificationResult, error: notificationError } = await supabase.functions.invoke(
+              'send-journal-notification',
+              { body: { journalType: 'study', journalId: data.id } },
+            );
+            if (notificationError || notificationResult?.success !== true) throw notificationError || notificationResult;
+            alert(notificationResult.targetCount > 0
+              ? '학습일지가 등록되고 학부모에게 알림이 발송되었습니다.'
+              : '학습일지가 등록되었습니다. 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+          } catch (notificationError: unknown) {
+            await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.study.notify' });
+          }
+        } else {
+          alert('학습일지가 저장되었습니다. 학부모 알림은 발송하지 않았습니다.');
         }
-        alert('학습일지가 성공적으로 등록되었습니다.');
       }
 
       setIsWriteModalOpen(false);
-    } catch (err: any) {
-      console.error('Error saving study log:', err);
-      const fakeId = crypto.randomUUID();
-      const newLog: StudyLog = {
-        id: editingLogId || fakeId,
-        branch_id: activeBranchId || null,
-        class_schedule_id: formClassId || null,
-        class_name: formClassName || '클래스',
-        teacher_name: formTeacherName.trim() || profile?.name || '담당선생님',
-        lesson_date: formLessonDate,
-        title: formTitle.trim(),
-        content: formContent.trim(),
-        homework: formHomework.trim() || null,
-        special_note: formSpecialNote.trim() || null,
-        created_at: new Date().toISOString()
-      };
-      setStudyLogs(prev => editingLogId ? prev.map(l => l.id === editingLogId ? newLog : l) : [newLog, ...prev]);
-      setIsWriteModalOpen(false);
-      alert('학습일지가 저장되었습니다. (DB 테이블 생성 후 영구 동기화됩니다)');
+    } catch (error: unknown) {
+      await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.study.save' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handlePublishStudyLog = async (log: StudyLog) => {
+    if (log.is_parent_visible || publishingId) return;
+    if (!confirm('이 학습일지를 학부모 앱에 공개하고 알림을 보내시겠습니까?')) return;
+    setPublishingId(log.id);
+    try {
+      const { error: publishError } = await supabase
+        .from('academy_study_logs')
+        .update({ is_parent_visible: true, updated_at: new Date().toISOString() })
+        .eq('id', log.id);
+      if (publishError) throw publishError;
+
+      const publishedLog = { ...log, is_parent_visible: true };
+      setStudyLogs(prev => prev.map(item => item.id === log.id ? publishedLog : item));
+      if (viewingLog?.id === log.id) setViewingLog(publishedLog);
+
+      try {
+        const { data, error } = await supabase.functions.invoke('send-journal-notification', {
+          body: { journalType: 'study', journalId: log.id },
+        });
+        if (error || data?.success !== true) throw error || data;
+        alert(data.targetCount > 0
+          ? '학부모 앱에 일지를 공개하고 알림을 발송했습니다.'
+          : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+      } catch (notificationError: unknown) {
+        await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.study.publish.notify' });
+      }
+    } catch (error: unknown) {
+      await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.study.publish' });
+    } finally {
+      setPublishingId(null);
     }
   };
 
@@ -412,7 +448,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
                 <th className="px-4 py-3.5 min-w-[220px]">제목 및 주요 진도</th>
                 <th className="px-3 py-3.5 text-center min-w-[90px]">숙제/과제</th>
                 <th className="px-4 py-3.5 text-center min-w-[110px]">수업 일자</th>
-                <th className="px-4 py-3.5 text-center min-w-[120px]">관리</th>
+                <th className="px-4 py-3.5 text-center min-w-[210px]">학부모 공개 및 관리</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -461,19 +497,28 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
                     </td>
 
                     <td className="px-4 py-3.5 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <button
-                          onClick={() => openWriteModal(log)}
-                          className="px-2.5 py-1 rounded-lg text-xs font-bold text-blue-600 hover:bg-blue-50 transition"
-                        >
-                          수정
-                        </button>
-                        <button
-                          onClick={() => handleDeleteStudyLog(log.id)}
-                          className="px-2.5 py-1 rounded-lg text-xs font-bold text-rose-500 hover:bg-rose-50 transition"
-                        >
-                          삭제
-                        </button>
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        {log.is_parent_visible ? (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200">
+                            <CheckCircle2 size={14} /> 학부모 공개 완료
+                          </span>
+                        ) : (
+                          <div className="flex flex-col items-center gap-1">
+                            <button
+                              onClick={() => handlePublishStudyLog(log)}
+                              disabled={publishingId === log.id}
+                              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-black text-white bg-violet-600 hover:bg-violet-700 shadow-sm hover:shadow-md disabled:opacity-50 transition"
+                            >
+                              <BellRing size={15} />
+                              {publishingId === log.id ? '전송 중...' : '학부모에게 보내기'}
+                            </button>
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400"><LockKeyhole size={10} />현재 학원 내부용</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => openWriteModal(log)} className="px-2.5 py-1 rounded-lg text-[11px] font-bold text-blue-600 hover:bg-blue-50 transition">수정</button>
+                          <button onClick={() => handleDeleteStudyLog(log.id)} className="px-2.5 py-1 rounded-lg text-[11px] font-bold text-rose-500 hover:bg-rose-50 transition">삭제</button>
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -642,6 +687,29 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
                 />
               </div>
 
+              {!editingLogId && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={sendParentNotification}
+                  onClick={() => setSendParentNotification((current) => !current)}
+                  className={`w-full flex items-center justify-between gap-4 rounded-2xl border p-4 text-left transition ${sendParentNotification ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${sendParentNotification ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                      <User size={18} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-black text-slate-900">학부모에게 공개하고 알림 보내기</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">켜면 학부모 앱에 일지가 표시되고 새 일지 알림이 전송됩니다.</p>
+                    </div>
+                  </div>
+                  <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition ${sendParentNotification ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                    <span className={`mt-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${sendParentNotification ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </span>
+                </button>
+              )}
+
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
@@ -656,7 +724,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, pr
                   className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50"
                 >
                   <Save size={14} />
-                  <span>{saving ? '저장 중...' : editingLogId ? '수정 완료' : '일지 저장'}</span>
+                  <span>{saving ? '저장 중...' : editingLogId ? '수정 완료' : sendParentNotification ? '학부모 공개·알림과 함께 저장' : '학원 내부용으로 저장'}</span>
                 </button>
               </div>
             </form>

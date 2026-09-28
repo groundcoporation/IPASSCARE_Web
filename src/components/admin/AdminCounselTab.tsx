@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
+import { handleError } from '../../errors/handleError';
 import { 
   Users, Search, Plus, Calendar, Save, Trash2, Edit3, MessageSquare, 
   Clock, AlertCircle, RefreshCw, CheckCircle2, Phone, BookOpen, ChevronRight, X,
-  ArrowUpDown, ArrowDown, ArrowUp, Filter, UserCheck
+  ArrowUpDown, ArrowDown, ArrowUp, Filter, UserCheck, BellRing, LockKeyhole
 } from 'lucide-react';
 
 export interface CounselLog {
@@ -17,6 +18,7 @@ export interface CounselLog {
   content: string;
   created_at: string;
   updated_at?: string;
+  is_parent_visible?: boolean;
 }
 
 interface Teacher {
@@ -50,6 +52,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   const [search, setSearch] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
 
   // History Filter & Sorting
   const [historySortOrder, setHistorySortOrder] = useState<'desc' | 'asc'>('desc');
@@ -62,6 +65,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   const [selectedCategory, setSelectedCategory] = useState<string>('일반상담');
   const [counselContent, setCounselContent] = useState<string>('');
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [sendParentNotification, setSendParentNotification] = useState<boolean>(true);
 
   // Load Students, Teachers, and Counsel Logs
   const loadData = useCallback(async () => {
@@ -232,43 +236,75 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       } else {
         const { data, error } = await supabase
           .from('academy_counsel_logs')
-          .insert([payload])
+          .insert([{ ...payload, is_parent_visible: sendParentNotification }])
           .select()
           .single();
 
         if (error) throw error;
-        if (data) {
-          setCounselLogs(prev => [data, ...prev]);
+        if (!data) throw new Error('counsel log insert returned no data');
+        setCounselLogs(prev => [data, ...prev]);
+
+        if (sendParentNotification) {
+          try {
+            const { data: notificationResult, error: notificationError } = await supabase.functions.invoke(
+              'send-journal-notification',
+              { body: { journalType: 'counsel', journalId: data.id } },
+            );
+            if (notificationError || notificationResult?.success !== true) throw notificationError || notificationResult;
+            alert(notificationResult.targetCount > 0
+              ? '상담일지가 등록되고 학부모에게 알림이 발송되었습니다.'
+              : '상담일지가 등록되었습니다. 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+          } catch (notificationError: unknown) {
+            await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.counsel.notify' });
+          }
+        } else {
+          alert('상담일지가 저장되었습니다. 학부모 알림은 발송하지 않았습니다.');
         }
-        alert('상담내용이 안전하게 저장되었습니다.');
       }
 
       setCounselContent('');
       setSelectedCategory('일반상담');
-    } catch (err: any) {
-      console.error('Error saving counsel log:', err);
-      const fakeId = crypto.randomUUID();
-      const newLog: CounselLog = {
-        id: editingLogId || fakeId,
-        branch_id: activeBranchId || null,
-        student_id: selectedStudentId,
-        counselor_name: counselorName.trim() || profile?.name || '관리자',
-        counsel_date: counselDate,
-        category: selectedCategory,
-        content: counselContent.trim(),
-        created_at: new Date().toISOString()
-      };
-      setCounselLogs(prev => editingLogId ? prev.map(l => l.id === editingLogId ? newLog : l) : [newLog, ...prev]);
-      setEditingLogId(null);
-      setCounselContent('');
-      alert('상담내용이 저장되었습니다. (DB 테이블 생성 후 영구 동기화됩니다)');
+      setSendParentNotification(true);
+    } catch (error: unknown) {
+      await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.save' });
     } finally {
       setSaving(false);
     }
   };
 
+  const handlePublishCounselLog = async (log: CounselLog) => {
+    if (log.is_parent_visible || publishingId) return;
+    if (!confirm('이 상담일지를 학부모 앱에 공개하고 알림을 보내시겠습니까?')) return;
+    setPublishingId(log.id);
+    try {
+      const { error: publishError } = await supabase
+        .from('academy_counsel_logs')
+        .update({ is_parent_visible: true, updated_at: new Date().toISOString() })
+        .eq('id', log.id);
+      if (publishError) throw publishError;
+
+      setCounselLogs(prev => prev.map(item => item.id === log.id ? { ...item, is_parent_visible: true } : item));
+      try {
+        const { data, error } = await supabase.functions.invoke('send-journal-notification', {
+          body: { journalType: 'counsel', journalId: log.id },
+        });
+        if (error || data?.success !== true) throw error || data;
+        alert(data.targetCount > 0
+          ? '학부모 앱에 일지를 공개하고 알림을 발송했습니다.'
+          : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+      } catch (notificationError: unknown) {
+        await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.counsel.publish.notify' });
+      }
+    } catch (error: unknown) {
+      await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.publish' });
+    } finally {
+      setPublishingId(null);
+    }
+  };
+
   // Handle Edit Click
   const handleEditClick = (log: CounselLog) => {
+    setSendParentNotification(false);
     setEditingLogId(log.id);
     setCounselDate(log.counsel_date);
     setCounselorName(log.counselor_name);
@@ -471,6 +507,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                         setEditingLogId(null);
                         setCounselContent('');
                         setSelectedCategory('일반상담');
+                        setSendParentNotification(true);
                       }}
                       className="text-xs text-slate-400 hover:text-slate-700 flex items-center gap-1 font-bold"
                     >
@@ -560,6 +597,29 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                   />
                 </div>
 
+                {!editingLogId && (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={sendParentNotification}
+                    onClick={() => setSendParentNotification((current) => !current)}
+                    className={`w-full flex items-center justify-between gap-4 rounded-2xl border p-4 text-left transition ${sendParentNotification ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${sendParentNotification ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                        <UserCheck size={18} />
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-slate-900">학부모에게 공개하고 알림 보내기</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">켜면 학부모 앱에 일지가 표시되고 새 일지 알림이 전송됩니다.</p>
+                      </div>
+                    </div>
+                    <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition ${sendParentNotification ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                      <span className={`mt-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${sendParentNotification ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </span>
+                  </button>
+                )}
+
                 {/* Submit Button */}
                 <div className="flex justify-end">
                   <button
@@ -568,7 +628,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                     className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50"
                   >
                     <Save size={14} />
-                    <span>{saving ? '저장 중...' : editingLogId ? '수정사항 저장' : '상담내용 저장'}</span>
+                    <span>{saving ? '저장 중...' : editingLogId ? '수정사항 저장' : sendParentNotification ? '학부모 공개·알림과 함께 저장' : '학원 내부용으로 저장'}</span>
                   </button>
                 </div>
               </form>
@@ -635,7 +695,25 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-1">
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            {log.is_parent_visible ? (
+                              <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200">
+                                <CheckCircle2 size={14} /> 학부모 공개 완료
+                              </span>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-slate-400"><LockKeyhole size={10} />내부용</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePublishCounselLog(log)}
+                                  disabled={publishingId === log.id}
+                                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-black text-white bg-violet-600 hover:bg-violet-700 shadow-sm hover:shadow-md disabled:opacity-50 transition"
+                                >
+                                  <BellRing size={15} />
+                                  {publishingId === log.id ? '전송 중...' : '학부모에게 보내기'}
+                                </button>
+                              </div>
+                            )}
                             <button
                               type="button"
                               onClick={() => handleEditClick(log)}

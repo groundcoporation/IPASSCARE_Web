@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabaseClient';
 import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, AlertTriangle, RefreshCw, X, CreditCard, LogOut, Bus, MapPin } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
+import { handleError } from '../../errors/handleError';
 
 export interface WithdrawalRecord {
   id: string;
@@ -782,6 +783,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           { data: currentPlans },
           { data: previousPlans },
           { data: previousBills },
+          { data: billingRevisions, error: billingRevisionError },
+          { data: recurringPlans, error: recurringPlanError },
         ] = await Promise.all([
           supabase
             .from('user_packages')
@@ -817,7 +820,23 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             .select('package_option_id')
             .eq('student_id', student.id)
             .eq('bill_month', billMonthByOffset(-1)),
+          supabase
+            .from('academy_student_billing_plan_revisions')
+            .select('effective_month')
+            .eq('student_id', student.id)
+            .lte('effective_month', nextMonthStart())
+            .order('effective_month', { ascending: false }),
+          supabase
+            .from('academy_student_monthly_plans')
+            .select('effective_month, package_option_id, billing_cycle, payment_day, package_options(packages(voucher_type))')
+            .eq('student_id', student.id)
+            .eq('item_type', 'package')
+            .eq('billing_source', 'standard')
+            .in('status', ['planned', 'applied'])
+            .lte('effective_month', nextMonthStart()),
         ]);
+        if (billingRevisionError) throw billingRevisionError;
+        if (recurringPlanError) throw recurringPlanError;
         const today = new Date().toISOString().slice(0, 10);
         const ownedRows = ((owned || []) as Array<{
           option_id: string | null;
@@ -863,23 +882,64 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         const previousBillPackageIds = (previousBills || [])
           .map((bill: any) => bill.package_option_id)
           .filter(Boolean) as string[];
-        const currentPackageOptionIds = currentPlanPackageIds.length > 0
-          ? currentPlanPackageIds
-          : currentBillPackageIds.length > 0
-            ? currentBillPackageIds
-            : previousPlanPackageIds.length > 0
-              ? previousPlanPackageIds
-              : previousBillPackageIds;
+        const revisionRows = (billingRevisions || []) as Array<{ effective_month: string }>;
+        const recurringPlanRows = (recurringPlans || []) as Array<{
+          effective_month: string;
+          package_option_id: string | null;
+          billing_cycle: string | null;
+          payment_day: string | null;
+          package_options?: {
+            packages?: { voucher_type: string | null } | null;
+          } | null;
+        }>;
+        const currentMonthStart = `${currentBillMonth()}-01`;
+        const currentRevisionMonth = revisionRows.find((revision) =>
+          revision.effective_month <= currentMonthStart
+        )?.effective_month || null;
+        const nextRevisionMonth = revisionRows[0]?.effective_month || null;
+        const isRecurringAtMonth = (plan: typeof recurringPlanRows[number], targetMonth: string) => {
+          if (plan.effective_month === targetMonth) return true;
+          const voucherType = plan.package_options?.packages?.voucher_type;
+          return voucherType !== 'single' && voucherType !== 'one_time';
+        };
+        const currentRecurringRows = currentRevisionMonth
+          ? recurringPlanRows.filter((plan) =>
+              plan.effective_month === currentRevisionMonth && isRecurringAtMonth(plan, currentMonthStart)
+            )
+          : [];
+        const nextRecurringRows = nextRevisionMonth
+          ? recurringPlanRows.filter((plan) =>
+              plan.effective_month === nextRevisionMonth && isRecurringAtMonth(plan, nextMonthStart())
+            )
+          : [];
+        const currentRecurringPackageIds = currentRecurringRows
+          .map((plan) => plan.package_option_id)
+          .filter(Boolean) as string[];
+        const currentPackageOptionIds = currentRevisionMonth
+          ? currentRecurringPackageIds
+          : currentPlanPackageIds.length > 0
+            ? currentPlanPackageIds
+            : currentBillPackageIds.length > 0
+              ? currentBillPackageIds
+              : previousPlanPackageIds.length > 0
+                ? previousPlanPackageIds
+                : previousBillPackageIds;
         const fallbackOwnedOptionIds = ownedRows.map((row) => row.option_id).filter(Boolean) as string[];
         setCurrentMonthPackageSource(
-          currentPlanPackageIds.length > 0 ? 'current_plan'
+          currentRevisionMonth ? 'current_plan'
+            : currentPlanPackageIds.length > 0 ? 'current_plan'
             : currentBillPackageIds.length > 0 ? 'current_bill'
               : previousPlanPackageIds.length > 0 ? 'previous_plan'
                 : previousBillPackageIds.length > 0 ? 'previous_bill'
                   : fallbackOwnedOptionIds.length > 0 ? 'active_owned'
                     : 'none',
         );
-        setCurrentMonthPackages(Array.from(new Set(currentPackageOptionIds.length > 0 ? currentPackageOptionIds : fallbackOwnedOptionIds))
+        const visibleCurrentPackageIds = currentRevisionMonth
+          ? currentPackageOptionIds
+          : currentPackageOptionIds.length > 0
+            ? currentPackageOptionIds
+            : fallbackOwnedOptionIds;
+        setCurrentMonthPackages(Array.from(new Set(visibleCurrentPackageIds))
           .map((optionId) => ({
             ...emptyAssignment(),
             package_option_id: optionId,
@@ -891,22 +951,32 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         setCurrentMonthClassIds(plannedCurrentClassIds.length > 0
           ? plannedCurrentClassIds
           : (student.app_schedule_classes || []).map((schedule) => schedule.id));
-        const firstOptionId = ownedRows.find((row) => row.option_id)?.option_id || '';
         const planRows = (plans || []) as any[];
         setNextMonthClassIds(planRows.length > 0
           ? planRows.filter((plan) => plan.item_type === 'class').map((plan) => plan.class_schedule_id).filter(Boolean)
           : (student.app_schedule_classes || []).map((schedule) => schedule.id));
-        setNextMonthPackages(planRows.length > 0
-          ? planRows.filter((plan) => plan.item_type === 'package').map((plan: any) => ({
+        const inheritedNextMonthRowsRaw = nextRevisionMonth
+          ? nextRecurringRows
+          : (currentRevisionMonth
+              ? currentPackageOptionIds
+              : currentPackageOptionIds.length > 0 ? currentPackageOptionIds : fallbackOwnedOptionIds)
+              .map((optionId) => ({
+                effective_month: currentMonthStart,
+                package_option_id: optionId,
+                billing_cycle: '월 기간제',
+                payment_day: '매월 1일',
+              }));
+        const inheritedNextMonthRows = Array.from(new Map(
+          inheritedNextMonthRowsRaw
+            .filter((plan) => Boolean(plan.package_option_id))
+            .map((plan) => [plan.package_option_id, plan]),
+        ).values());
+        setNextMonthPackages(inheritedNextMonthRows.map((plan) => ({
               class_schedule_id: '',
               package_option_id: plan.package_option_id || '',
               billing_cycle: plan.billing_cycle || '월 기간제',
               payment_day: plan.payment_day || '매월 1일',
-            }))
-          : (firstOptionId ? [{
-              ...emptyAssignment(),
-              package_option_id: firstOptionId,
-            }] : []));
+            })));
       } else {
         setCurrentPackageLabels([]);
         setCurrentMonthPackages([]);
@@ -966,6 +1036,52 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     return data && data.length > 0 ? data[0].id : null;
   };
 
+  const ensurePersistedEditingStudent = async (): Promise<string> => {
+    if (!editingId) throw new Error('학생 선택 정보가 없습니다.');
+    if (!editingId.startsWith('child-')) return editingId;
+
+    const virtualStudent = students.find((student) => student.id === editingId);
+    if (!virtualStudent?.child_id) throw new Error('연결된 자녀 정보를 찾을 수 없습니다.');
+
+    const { data: existingStudent, error: lookupError } = await supabase
+      .from('academy_students')
+      .select('id')
+      .eq('child_id', virtualStudent.child_id)
+      .maybeSingle();
+    if (lookupError) throw lookupError;
+    if (existingStudent?.id) {
+      setEditingId(existingStudent.id);
+      return existingStudent.id;
+    }
+
+    const { data: createdStudent, error: createError } = await supabase
+      .from('academy_students')
+      .insert({
+        branch_id: selectedBranchId || virtualStudent.branch_id,
+        student_name: studentName.trim() || virtualStudent.student_name,
+        parent_name: parentName.trim() || virtualStudent.parent_name || null,
+        attendance_code: attendanceCode.trim() || virtualStudent.attendance_code,
+        mother_phone: motherPhone.trim() || virtualStudent.mother_phone || null,
+        father_phone: fatherPhone.trim() || virtualStudent.father_phone || null,
+        student_phone: studentPhone.trim() || virtualStudent.student_phone || null,
+        birth_date: birthDate || virtualStudent.birth_date || null,
+        school_name: schoolName.trim() || virtualStudent.school_name || null,
+        grade_level: gradeLevel.trim() || virtualStudent.grade_level || null,
+        address: address.trim() || virtualStudent.address || null,
+        admission_date: admissionDate || virtualStudent.admission_date || null,
+        memo: memo.trim() || virtualStudent.memo || null,
+        is_sms_enabled: isSmsEnabled,
+        parent_user_id: virtualStudent.child?.parent_id || virtualStudent.parent_user_id,
+        child_id: virtualStudent.child_id,
+      })
+      .select('id')
+      .single();
+    if (createError) throw createError;
+
+    setEditingId(createdStudent.id);
+    return createdStudent.id;
+  };
+
   const handleSaveCurrentMonthBill = async () => {
     if (!editingId) return;
     if (currentMonthPackages.some((assignment) => !assignment.package_option_id)) {
@@ -991,36 +1107,30 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
     setCurrentMonthBillSaving(true);
     try {
-      const { data: scheduleResult, error: scheduleError } = await supabase.rpc(
-        'sync_current_and_next_month_student_schedules',
+      const persistedStudentId = await ensurePersistedEditingStudent();
+      const { data: saveResult, error: saveError } = await supabase.rpc(
+        'save_current_month_student_schedule_and_billing',
         {
-          p_student_id: editingId,
+          p_student_id: persistedStudentId,
           p_schedule_ids: currentMonthClassIds,
           p_apply_next_month: applyCurrentClassesToNextMonth,
+          p_package_option_ids: optionIds,
         },
       );
-      if (scheduleError) throw scheduleError;
+      if (saveError) throw saveError;
 
-      // The database RPC changes draft rows only. It promotes an already-issued
-      // app pass to applied and rejects attempts to replace a locked bill.
-      const { error: billingPlanError } = await supabase.rpc(
-        'save_current_month_student_billing_draft',
-        { p_student_id: editingId, p_package_option_ids: optionIds },
-      );
-      if (billingPlanError) throw billingPlanError;
-
-      const effectiveFrom = scheduleResult?.current?.effective_from
-        ? new Date(`${scheduleResult.current.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
+      const effectiveFrom = saveResult?.schedule?.current?.effective_from
+        ? new Date(`${saveResult.schedule.current.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
         : '오늘';
       if (applyCurrentClassesToNextMonth) {
         setNextMonthClassIds(currentMonthClassIds);
       }
       await loadData();
       alert(optionIds.length > 0
-        ? `이번 달 수업과 청구 예정 이용권을 저장했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`
-        : `이번 달 수업 설정을 저장하고 청구 예정 이용권을 모두 제거했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`);
-    } catch (error: any) {
-      alert(`이번 달 청구 처리 실패: ${error?.message || '알 수 없는 오류'}`);
+        ? `이번 달 수업과 청구 예정 이용권을 저장했습니다. 이용권은 변경하거나 해지할 때까지 다음 달에도 유지됩니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`
+        : `이번 달 수업 설정을 저장하고 이후 청구 이용권을 모두 해지했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`);
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.current-plan.save' });
     } finally {
       setCurrentMonthBillSaving(false);
     }
@@ -1188,49 +1298,24 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           }, { onConflict: 'child_id' });
         if (pickupSettingError) throw pickupSettingError;
 
-        // Class plans are synchronized through a transactional RPC that also
-        // creates the future-dated app assignments and target-month bookings.
-        const { error: futureScheduleError } = await supabase.rpc(
-          'sync_future_month_student_schedules',
+        // Class and package plans are committed together. A validation failure
+        // rolls back both so the two screens cannot disagree.
+        const { error: futurePlanError } = await supabase.rpc(
+          'save_future_month_student_schedule_and_billing',
           {
             p_student_id: studentId,
             p_effective_month: nextMonthStart(),
             p_schedule_ids: nextMonthClassIds,
+            p_package_option_ids: nextMonthPackages.map((assignment) => assignment.package_option_id),
           },
         );
-        if (futureScheduleError) throw futureScheduleError;
-
-        // Billable packages are independent from class assignments and can be
-        // added/removed without changing the future timetable.
-        const { error: deletePlanError } = await supabase
-          .from('academy_student_monthly_plans')
-          .delete()
-          .eq('student_id', studentId)
-          .eq('effective_month', nextMonthStart())
-          .eq('item_type', 'package');
-        if (deletePlanError) throw deletePlanError;
-
-        const nextPlanRows = nextMonthPackages.map((assignment) => ({
-            student_id: studentId,
-            branch_id: selectedBranchId,
-            effective_month: nextMonthStart(),
-            item_type: 'package',
-            class_schedule_id: null,
-            package_option_id: assignment.package_option_id,
-            billing_cycle: assignment.billing_cycle,
-            payment_day: assignment.payment_day,
-            status: 'planned',
-          }));
-        const { error: planError } = nextPlanRows.length > 0
-          ? await supabase.from('academy_student_monthly_plans').insert(nextPlanRows)
-          : { error: null };
-        if (planError) throw planError;
+        if (futurePlanError) throw futurePlanError;
       }
 
       setIsModalOpen(false);
       loadData();
-    } catch (err: any) {
-      alert(`저장에 실패했습니다: ${err.message}`);
+    } catch (error: unknown) {
+      await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.save' });
     } finally {
       setSaveLoading(false);
     }
@@ -2377,7 +2462,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 ) : (
                 <>
                 <div className="flex items-center justify-between gap-3">
-                  <div><div className="text-xs font-black text-slate-800">{isModalAppLinked ? `${monthLabel(1)} 수업 및 이용권` : '수강 수업반 및 요금제'}</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">{isModalAppLinked ? '다음 달 청구서에는 여기서 저장한 이용권과 수업이 반영됩니다.' : '학생이 수강하는 수업을 여러 개 등록할 수 있습니다.'}</div></div>
+                  <div><div className="text-xs font-black text-slate-800">{isModalAppLinked ? `${monthLabel(1)} 수업 및 이용권` : '수강 수업반 및 요금제'}</div><div className="mt-0.5 text-[10px] font-medium text-slate-500">{isModalAppLinked ? '저장한 이용권은 구매 여부와 관계없이 변경하거나 해지할 때까지 다음 달 청구 대상으로 이어집니다.' : '학생이 수강하는 수업을 여러 개 등록할 수 있습니다.'}</div></div>
                   {!isModalAppLinked && <button type="button" onClick={() => setClassAssignments((current) => [...current, emptyAssignment()])} className="flex shrink-0 items-center gap-1 rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white hover:bg-blue-700"><Plus size={14} /> 항목 추가</button>}
                 </div>
                 {isModalAppLinked && (
