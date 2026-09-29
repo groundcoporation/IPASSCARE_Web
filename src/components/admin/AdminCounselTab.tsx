@@ -224,15 +224,33 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       };
 
       if (editingLogId) {
-        const { error } = await supabase
+        const existingLog = counselLogs.find((log) => log.id === editingLogId);
+        const { data, error } = await supabase
           .from('academy_counsel_logs')
-          .update(payload)
-          .eq('id', editingLogId);
+          .update({ ...payload, is_parent_visible: Boolean(existingLog?.is_parent_visible) || sendParentNotification })
+          .eq('id', editingLogId)
+          .select()
+          .single();
 
         if (error) throw error;
-        setCounselLogs(prev => prev.map(log => log.id === editingLogId ? { ...log, ...payload } : log));
+        setCounselLogs(prev => prev.map(log => log.id === editingLogId ? data : log));
         setEditingLogId(null);
-        alert('상담일지가 수정되었습니다.');
+        if (sendParentNotification) {
+          try {
+            const { data: notificationResult, error: notificationError } = await supabase.functions.invoke(
+              'send-journal-notification',
+              { body: { journalType: 'counsel', journalId: data.id, notificationKind: 'updated' } },
+            );
+            if (notificationError || notificationResult?.success !== true) throw notificationError || notificationResult;
+            alert(notificationResult.targetCount > 0
+              ? '수정 내용을 저장하고 학부모에게 다시 알림을 보냈습니다.'
+              : '수정 내용은 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+          } catch (notificationError: unknown) {
+            await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.counsel.update-notification' });
+          }
+        } else {
+          alert('상담일지를 알림 없이 수정했습니다.');
+        }
       } else {
         const { data, error } = await supabase
           .from('academy_counsel_logs')
@@ -589,7 +607,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                   <label className="block text-[11px] font-bold text-slate-600 mb-1">상담 및 특이사항 상세 내용</label>
                   <textarea
                     rows={4}
-                    placeholder="학부모 통화 내용, 수업 시간표 변경 요청, 차량 탑승 특이사항, 원비 관련 요청 등을 자유롭게 기록하세요..."
+                    placeholder="학습 태도, 수업 이해도, 진도, 과제, 시간표 변경, 원비 등 상담 내용을 자유롭게 기록하세요..."
                     value={counselContent}
                     onChange={(e) => setCounselContent(e.target.value)}
                     className="w-full bg-slate-100 rounded-2xl p-4 text-xs font-medium border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none leading-relaxed"
@@ -597,8 +615,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                   />
                 </div>
 
-                {!editingLogId && (
-                  <button
+                <button
                     type="button"
                     role="switch"
                     aria-checked={sendParentNotification}
@@ -610,15 +627,14 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                         <UserCheck size={18} />
                       </div>
                       <div>
-                        <p className="text-xs font-black text-slate-900">학부모에게 공개하고 알림 보내기</p>
-                        <p className="text-[11px] text-slate-500 mt-0.5">켜면 학부모 앱에 일지가 표시되고 새 일지 알림이 전송됩니다.</p>
+                        <p className="text-xs font-black text-slate-900">{editingLogId ? '수정하고 학부모에게 다시 알림 보내기' : '학부모에게 공개하고 알림 보내기'}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{editingLogId ? '기본값은 알림 없이 저장입니다. 켜면 수정 알림을 다시 보내며, 내부용 일지는 학부모에게 공개됩니다.' : '켜면 학부모 앱에 일지가 표시되고 새 일지 알림이 전송됩니다.'}</p>
                       </div>
                     </div>
                     <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition ${sendParentNotification ? 'bg-blue-600' : 'bg-slate-300'}`}>
                       <span className={`mt-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${sendParentNotification ? 'translate-x-6' : 'translate-x-1'}`} />
                     </span>
                   </button>
-                )}
 
                 {/* Submit Button */}
                 <div className="flex justify-end">
@@ -628,7 +644,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                     className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50"
                   >
                     <Save size={14} />
-                    <span>{saving ? '저장 중...' : editingLogId ? '수정사항 저장' : sendParentNotification ? '학부모 공개·알림과 함께 저장' : '학원 내부용으로 저장'}</span>
+                    <span>{saving ? '저장 중...' : editingLogId ? sendParentNotification ? '수정 저장 + 다시 알림' : '알림 없이 수정 저장' : sendParentNotification ? '학부모 공개·알림과 함께 저장' : '학원 내부용으로 저장'}</span>
                   </button>
                 </div>
               </form>
