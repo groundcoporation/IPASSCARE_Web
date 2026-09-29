@@ -1453,7 +1453,13 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const sent = Number(data?.sent ?? 0);
       const failed = Number(data?.failed ?? 0);
       const failedMessages = Array.isArray(data?.results)
-        ? data.results.filter((result: any) => !result.success).map((result: any) => formatError(normalizeError({ code: result.code, message: result.error }, 'BILL_SEND_FAILED')))
+        ? data.results
+            .filter((result: any) => !result.success)
+            .map((result: any) =>
+              result.error
+                ? `• ${result.error}`
+                : formatError(normalizeError({ code: result.code, message: result.error }, 'BILL_SEND_FAILED'))
+            )
         : [];
       alert([`미납 알림 재발송 결과`, `- 발송: ${sent}건`, `- 실패/제외: ${failed}건`, failedMessages.length ? `\n${failedMessages.slice(0, 3).join('\n')}` : ''].filter(Boolean).join('\n'));
       await loadBills();
