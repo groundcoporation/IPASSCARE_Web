@@ -9,6 +9,10 @@ export const errorMessages = {
   NETWORK_ERROR: "서버 응답을 확인하지 못했습니다. 처리 내역을 확인한 후 다시 시도해 주세요.",
   SERVER_UPDATE_REQUIRED: "서버 업데이트가 필요합니다. 관리자에게 문의해 주세요.",
   CONFLICT_ERROR: "정보가 변경되었거나 이미 처리되었습니다. 최신 상태를 확인해 주세요.",
+  INPUT_INVALID: "입력한 값의 형식이 올바르지 않습니다. 날짜, 금액 및 필수 선택 항목을 확인해 주세요.",
+  REQUIRED_DATA_MISSING: "저장에 필요한 정보가 빠져 있습니다. 필수 입력 항목을 확인해 주세요.",
+  DATA_REFERENCE_ERROR: "연결된 정보가 없거나 변경되었습니다. 학생, 지점 또는 이용권 정보를 다시 선택해 주세요.",
+  DB_VALIDATION_FAILED: "현재 상태에서는 요청을 처리할 수 없습니다. 최신 정보를 다시 조회한 뒤 안내된 조건을 확인해 주세요.",
   ATT_CHILD_INVALID: "현재 지점의 재원 자녀가 아닙니다. 다시 검색해 주세요.",
   ATT_RESERVATION_INVALID: "예약 정보가 변경되었습니다. 다시 검색해 주세요.",
   ATT_TOO_SOON: "등원 처리 후 1분이 지나야 하원 처리할 수 있습니다.",
@@ -33,6 +37,9 @@ export const errorMessages = {
   BILL_PARENT_INVALID: "활성 학부모 계정 연결이 필요합니다.",
   BILL_OPTION_INVALID: "지점의 이용권 옵션을 확인해 주세요.",
   BILL_MONTH_INVALID: "청구 월을 확인해 주세요.",
+  BILL_PLAN_LOCKED: "이미 청구·결제·갱신 처리가 시작된 이용권입니다. 기존 청구내역을 확인하고 필요한 경우 추가 청구를 이용해 주세요.",
+  BILL_MONTH_CLOSED: "이미 지난 달의 청구 예정 이용권은 변경할 수 없습니다. 현재 달 또는 다음 달을 선택해 주세요.",
+  BILL_DUPLICATE_OPTION: "같은 이용권이 이번 달 청구에 이미 포함되어 있습니다. 다른 이용권을 선택해 주세요.",
   PAYMENT_SAVE_FAILED: "수납 등록 결과를 확인하지 못했습니다. 결제 내역을 먼저 확인하고 중복 등록하지 마세요.",
   PAYMENT_CONFIRM_PENDING: "결제 예정 내역은 등록됐지만 수납 완료 결과를 확인하지 못했습니다. 기존 내역을 확인하고 새 결제를 등록하지 마세요.",
   PAYMENT_PACKAGE_PENDING: "수납은 완료됐지만 이용권 지급을 확인하지 못했습니다. 다시 결제하지 말고 지급 내역을 확인해 주세요.",
@@ -67,6 +74,19 @@ export function normalizeError(error: unknown, fallback: AppErrorCode = "UNKNOWN
   if (status === 403 || code === "42501") return new AppError("PERMISSION_DENIED", error);
   if (["PGRST202", "PGRST204", "42703", "42883"].includes(String(code))) return new AppError("SERVER_UPDATE_REQUIRED", error);
   if (code === "23505" || status === 409) return new AppError("CONFLICT_ERROR", error);
+  if (code === "23502") return new AppError("REQUIRED_DATA_MISSING", error);
+  if (code === "23503") return new AppError("DATA_REFERENCE_ERROR", error);
+  if (["22P02", "22007", "22008"].includes(String(code))) return new AppError("INPUT_INVALID", error);
+  if (code === "P0001" && typeof message === "string") {
+    if (/같은 이용권.*이미 포함|기본 청구 또는 추가 청구/.test(message)) return new AppError("BILL_DUPLICATE_OPTION", error);
+    if (/이미 청구|갱신.*완료|청구.*확정|결제.*시작/.test(message)) return new AppError("BILL_PLAN_LOCKED", error);
+    if (/지난 달|지난달/.test(message)) return new AppError("BILL_MONTH_CLOSED", error);
+    if (/로그인/.test(message)) return new AppError("AUTH_REQUIRED", error);
+    if (/권한|다른 지점/.test(message)) return new AppError("PERMISSION_DENIED", error);
+    if (/학생을 찾|학생.*정보/.test(message)) return new AppError("BILL_STUDENT_INVALID", error);
+    if (/이용권|옵션/.test(message)) return new AppError("BILL_OPTION_INVALID", error);
+    return new AppError("DB_VALIDATION_FAILED", error);
+  }
   // Preserve domain-specific warnings about possibly committed writes.
   if (fallback === "UNKNOWN_ERROR" && typeof message === "string" && /failed to fetch|network request failed|networkerror|timeout/i.test(message)) {
     return new AppError("NETWORK_ERROR", error);
@@ -74,7 +94,12 @@ export function normalizeError(error: unknown, fallback: AppErrorCode = "UNKNOWN
   return new AppError(fallback, error);
 }
 export function formatError(error: AppError): string {
-  return `[${error.code}] ${error.userMessage}`;
+  const sentences = error.userMessage.split(/\.\s+/).map((value) => value.trim()).filter(Boolean);
+  const problem = sentences[0]?.replace(/\.$/, "") || "요청을 처리하지 못했습니다";
+  const nextAction = sentences.slice(1).join(". ").replace(/\.$/, "");
+  return nextAction
+    ? `[${error.code}]\n문제: ${problem}.\n확인: ${nextAction}.`
+    : `[${error.code}]\n안내: ${problem}.`;
 }
 export interface ErrorContext {
   operation: string;

@@ -103,6 +103,21 @@ interface OwnedPackageTarget {
   isAdditional?: boolean;
 }
 
+interface BillingPackageOption {
+  id: string;
+  label: string;
+  price: number;
+  packageName: string;
+  voucherType: string;
+}
+
+const normalizedBillingLabel = (value: string) => value.replace(/[\s·._-]+/g, '').toLowerCase();
+const billingCommercialIdentity = (value: { voucherType?: string | null; optionLabel?: string; label?: string; price?: number }) => [
+  (value.voucherType || 'lesson').toLowerCase(),
+  normalizedBillingLabel(value.optionLabel || value.label || ''),
+  Number(value.price || 0),
+].join(':');
+
 interface BillingTargetStudent {
   studentId: string;
   studentName: string;
@@ -144,6 +159,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   // Tab 1: Billing Targets data
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
   const [billingRosterStudents, setBillingRosterStudents] = useState<BillingTargetStudent[]>([]);
+  const [billingPackageOptions, setBillingPackageOptions] = useState<BillingPackageOption[]>([]);
+  const [packageOptionToAddByStudent, setPackageOptionToAddByStudent] = useState<Record<string, string>>({});
   const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
   const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
   const [billingSearch, setBillingSearch] = useState('');
@@ -217,6 +234,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const billStatusKey = (target: OwnedPackageTarget, month = selectedMonth) =>
     `${target.studentId}:${target.optionId || 'none'}:${month}`;
 
+  const isActiveBillStatus = (status?: string | null) => Boolean(
+    status && !['cancelled', 'canceled', 'void', 'deleted'].includes(status),
+  );
+
   const getStudentBillingState = (student: BillingTargetStudent) => {
     if (student.packages.length === 0) return 'none' as const;
     const studentStates = student.packages.map((target) => {
@@ -229,6 +250,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     });
     if (studentStates.every((state) => state === 'renewed')) return 'renewed' as const;
     if (studentStates.every((state) => state === 'paid')) return 'paid' as const;
+    if (studentStates.every((state) => state === 'renewed' || state === 'paid')) return 'completed' as const;
     if (studentStates.some((state) => state === 'pending')) return 'pending' as const;
     if (studentStates.some((state) => state === 'partial')) return 'partial' as const;
     if (studentStates.some((state) => state === 'sent')) return 'sent' as const;
@@ -236,14 +258,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   };
 
   const isStudentAlreadyBilled = (student: BillingTargetStudent) =>
-    student.packages.length === 0
-    || student.packages.every((target) =>
-      target.hasTargetMonthPackage || (
-        target.userPackageId.startsWith('plan:')
-          ? Boolean(targetBillStatuses[billStatusKey(target)]?.status !== 'paid'
-            && targetBillStatuses[billStatusKey(target)])
-          : Boolean(targetBillStatuses[billStatusKey(target)])
-      )
+    student.packages.length > 0
+    && student.packages.every((target) =>
+      target.hasTargetMonthPackage
+      || isActiveBillStatus(targetBillStatuses[billStatusKey(target)]?.status)
+    );
+
+  const isStudentBillingPlanLocked = (student: BillingTargetStudent) =>
+    student.packages.some((target) =>
+      target.hasTargetMonthPackage || Boolean(targetBillStatuses[billStatusKey(target)]),
     );
 
   const billingSummary = useMemo(() => {
@@ -278,7 +301,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   const billingAmountPreview = useMemo(() => {
     const selectedTargets = billingTargets.filter((target) =>
-      selectedBillingStudentIds.has(target.studentId) && !target.hasTargetMonthPackage,
+      selectedBillingStudentIds.has(target.studentId)
+      && !target.hasTargetMonthPackage
+      && !isActiveBillStatus(targetBillStatuses[billStatusKey(target)]?.status),
     );
     const originalAmount = selectedTargets.reduce((sum, target) => sum + Number(target.price || 0), 0);
     const percent = previewDiscountMode === '5percent'
@@ -463,6 +488,28 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           // 조회·청구 대상 계산에서는 올바른 학부모를 사용합니다.
           parent_user_id: student.child?.parent_id || student.parent_user_id,
         }));
+
+      let billingPackagesQuery = supabase.from('packages').select(`
+        id,
+        name,
+        voucher_type,
+        branch_id,
+        package_options(id, label, price)
+      `);
+      if (activeBranchId && activeBranchId !== 'all') {
+        billingPackagesQuery = billingPackagesQuery.eq('branch_id', activeBranchId);
+      }
+      const { data: billingPackages, error: billingPackagesError } = await billingPackagesQuery;
+      if (billingPackagesError) throw billingPackagesError;
+      setBillingPackageOptions(((billingPackages || []) as any[])
+        .filter((pkg) => (pkg.voucher_type || 'lesson') !== 'gps')
+        .flatMap((pkg) => (pkg.package_options || []).map((option: any) => ({
+          id: option.id,
+          label: option.label,
+          price: Number(option.price || 0),
+          packageName: pkg.name || '이용권',
+          voucherType: pkg.voucher_type || 'lesson',
+        }))));
       setBillingRosterStudents(activeStudents.map((student) => ({
         studentId: student.id,
         studentName: student.student_name || '원생',
@@ -528,12 +575,13 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const monthlyPlans = (monthlyPlanRows as any[] || []).filter((plan) => {
         if (plan.item_type === 'class') return plan.effective_month === selectedPeriod.start;
         if (plan.billing_source === 'additional') return plan.effective_month === selectedPeriod.start;
-        const voucherType = plan.package_options?.packages?.voucher_type;
-        if (
-          plan.effective_month !== selectedPeriod.start
-          && (voucherType === 'single' || voucherType === 'one_time')
-        ) return false;
-        return plan.effective_month === latestRevisionByStudent.get(plan.student_id);
+        const latestRevisionMonth = latestRevisionByStudent.get(plan.student_id);
+        // Legacy plans created before revision tracking have no corresponding
+        // academy_student_billing_plan_revisions row. Student Management still
+        // treats an exact-month row as valid, so Billing must do the same.
+        return latestRevisionMonth
+          ? plan.effective_month === latestRevisionMonth
+          : plan.effective_month === selectedPeriod.start;
       });
 
       // Resolve assignments effective during the selected billing month.
@@ -703,19 +751,6 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const plannedRows = currentMonthPlanRows.filter((plan) =>
         plan.status === 'planned' || plan.status === 'applied',
       );
-      const currentPlanOptionsByStudent = new Map<string, Set<string>>();
-      latestRevisionByStudent.forEach((_, studentId) => {
-        // Keep an explicit empty set. It means billing was stopped at the
-        // latest revision and must suppress older purchased-package fallbacks.
-        currentPlanOptionsByStudent.set(studentId, new Set<string>());
-      });
-      currentMonthPlanRows
-        .filter((plan) => plan.item_type === 'package' && plan.package_option_id)
-        .forEach((plan) => {
-          const optionIds = currentPlanOptionsByStudent.get(plan.student_id) || new Set<string>();
-          optionIds.add(plan.package_option_id);
-          currentPlanOptionsByStudent.set(plan.student_id, optionIds);
-        });
       const plannedClassNamesByStudent = new Map<string, string[]>();
       currentMonthPlanRows.filter((plan) => plan.item_type === 'class').forEach((plan) => {
         const className = plan.class_schedules?.target_class;
@@ -754,7 +789,16 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           price: Number(option.price || 0),
           billingCycle: plan.billing_cycle || '월 기간제',
           paymentDay: plan.payment_day || '매월 1일',
-          classNames: plannedClassNamesByStudent.get(plan.student_id) || [],
+          // The class shown in Billing is operational information, so read it
+          // from the app's effective schedule assignment first. Previously it
+          // depended only on the monthly billing-plan snapshot; opening Student
+          // Management and pressing Save happened to create that snapshot,
+          // which made an already assigned class look missing until then.
+          classNames: student.child_id
+            ? (appClassNamesByChildId.get(student.child_id)
+              || plannedClassNamesByStudent.get(plan.student_id)
+              || [])
+            : (plannedClassNamesByStudent.get(plan.student_id) || []),
           isAdditional,
         });
       });
@@ -841,92 +885,217 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           } satisfies OwnedPackageTarget)),
       );
 
-      const appTargetsCoveredByCurrentPlan = appTargets.filter((target) => {
-        const optionIds = currentPlanOptionsByStudent.get(target.studentId);
-        return !optionIds || optionIds.has(target.optionId || '');
-      });
-      const childCurrentShuttleKeys = new Set(
-        appTargets
-          .filter((target) => target.voucherType === 'shuttle' && target.hasTargetMonthPackage)
-          .map((target) => {
-            const parentUserId = parentUserIdByStudentId.get(target.studentId);
-            const productKey = target.optionId || target.packageId || target.packageName;
-            return parentUserId ? `${parentUserId}:${productKey}` : null;
-          })
-          .filter((key): key is string => Boolean(key)),
-      );
-      const sharedShuttleTargetsCoveredByCurrentPlan = sharedShuttleTargets.filter((target) => {
-        // A child-specific shuttle pass for this month supersedes an older
-        // parent-shared shuttle pass for the same product. The shared pass is
-        // only a renewal source in that case, so exposing it would create a
-        // duplicate 10,000-won billing row.
-        const productKey = target.optionId || target.packageId || target.packageName;
-        if (
-          !target.hasTargetMonthPackage
-          && target.parentUserId
-          && childCurrentShuttleKeys.has(`${target.parentUserId}:${productKey}`)
-        ) {
-          return false;
-        }
-        const optionIds = currentPlanOptionsByStudent.get(target.studentId);
-        return !optionIds || optionIds.has(target.optionId || '');
-      });
-      const issuedCurrentMonthKeys = new Set(
-        [...appTargetsCoveredByCurrentPlan, ...sharedShuttleTargetsCoveredByCurrentPlan]
-          .filter((target) => target.hasTargetMonthPackage)
-          .map(billingTargetKey),
-      );
-      const plannedTargetsByKey = new Map(
-        plannedTargets.map((target) => [billingTargetKey(target), target]),
-      );
-      // A pass from the previous month is the renewal source; a monthly plan
-      // is the operator's current billing instruction. They describe one
-      // target, not two. Keep the app pass metadata but use the plan identity
-      // so bill creation marks that plan as applied.
-      const mergedAppTargets = appTargetsCoveredByCurrentPlan.map((target) => {
-        const planned = plannedTargetsByKey.get(billingTargetKey(target));
-        if (!planned || target.hasTargetMonthPackage) return target;
+      // Student Management is the only source of billing targets. Issued app
+      // passes never create a billing row; they only tell us whether the exact
+      // plan has already been renewed for the selected month.
+      const normalizeProductName = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+      const normalizeOptionLabel = (value: string) => value.replace(/[\s·._-]+/g, '').toLowerCase();
+      const commercialKey = (target: OwnedPackageTarget) => [
+        target.studentId,
+        (target.voucherType || 'lesson').toLowerCase(),
+        normalizeOptionLabel(target.optionLabel),
+        Number(target.price || 0),
+      ].join(':');
+      const currentChildOptionKeys = new Set<string>();
+      const currentChildLegacyProductKeys = new Set<string>();
+      const currentChildCommercialKeys = new Set<string>();
+      appTargets
+        .filter((target) => target.hasTargetMonthPackage)
+        .forEach((target) => {
+          if (target.optionId) {
+            currentChildOptionKeys.add(`${target.studentId}:${target.optionId}`);
+          }
+          const productKey = target.packageId
+            ? `package:${target.packageId}`
+            : `name:${normalizeProductName(target.packageName)}`;
+          currentChildLegacyProductKeys.add(`${target.studentId}:${productKey}`);
+          if (target.optionLabel && Number(target.price || 0) > 0) {
+            currentChildCommercialKeys.add(commercialKey(target));
+          }
+        });
+      const currentSharedShuttleOptionKeys = new Set<string>();
+      const currentSharedShuttleLegacyProductKeys = new Set<string>();
+      const currentSharedShuttleCommercialKeys = new Set<string>();
+      sharedShuttleTargets
+        .filter((target) => target.hasTargetMonthPackage && target.parentUserId)
+        .forEach((target) => {
+          const prefix = `${target.parentUserId}:${target.branchId}`;
+          if (target.optionId) {
+            currentSharedShuttleOptionKeys.add(`${prefix}:${target.optionId}`);
+          }
+          const productKey = target.packageId
+            ? `package:${target.packageId}`
+            : `name:${normalizeProductName(target.packageName)}`;
+          currentSharedShuttleLegacyProductKeys.add(`${prefix}:${productKey}`);
+          if (target.optionLabel && Number(target.price || 0) > 0) {
+            currentSharedShuttleCommercialKeys.add(`${prefix}:${normalizeOptionLabel(target.optionLabel)}:${Number(target.price || 0)}`);
+          }
+        });
+      const plannedTargetsWithRenewalState = plannedTargets.map((target) => {
+        if (target.isAdditional) return target;
+        const parentUserId = parentUserIdByStudentId.get(target.studentId);
+        const legacyProductKey = target.packageId
+          ? `package:${target.packageId}`
+          : `name:${normalizeProductName(target.packageName)}`;
+        const hasChildPackage = (
+          Boolean(target.optionId)
+          && currentChildOptionKeys.has(`${target.studentId}:${target.optionId}`)
+        ) || currentChildLegacyProductKeys.has(`${target.studentId}:${legacyProductKey}`)
+          || (
+            Boolean(target.optionLabel)
+            && Number(target.price || 0) > 0
+            && currentChildCommercialKeys.has(commercialKey(target))
+          );
+        const hasSharedShuttle = target.voucherType === 'shuttle'
+          && Boolean(parentUserId)
+          && (
+            (
+              Boolean(target.optionId)
+              && currentSharedShuttleOptionKeys.has(`${parentUserId}:${target.branchId}:${target.optionId}`)
+            )
+            || currentSharedShuttleLegacyProductKeys.has(`${parentUserId}:${target.branchId}:${legacyProductKey}`)
+            || currentSharedShuttleCommercialKeys.has(`${parentUserId}:${target.branchId}:${normalizeOptionLabel(target.optionLabel)}:${Number(target.price || 0)}`)
+          );
         return {
           ...target,
-          userPackageId: planned.userPackageId,
-          packageId: planned.packageId,
-          optionId: planned.optionId,
-          packageName: planned.packageName,
-          optionLabel: planned.optionLabel,
-          price: planned.price,
-          billingCycle: planned.billingCycle,
-          paymentDay: planned.paymentDay,
-          classNames: planned.classNames.length > 0 ? planned.classNames : target.classNames,
+          hasTargetMonthPackage: hasChildPackage || hasSharedShuttle,
         };
       });
-      const appTargetKeys = new Set(appTargetsCoveredByCurrentPlan.map(billingTargetKey));
-      const unresolvedPlannedTargets = plannedTargets.filter(
-        (target) => !issuedCurrentMonthKeys.has(billingTargetKey(target))
-          && !appTargetKeys.has(billingTargetKey(target)),
-      );
-      const targets = [
-        ...mergedAppTargets,
-        ...unresolvedPlannedTargets,
-        ...sharedShuttleTargetsCoveredByCurrentPlan,
-        ...webTargets,
-      ];
-      setBillingTargets(targets);
 
-      const targetStudentIds = Array.from(new Set(targets.map((target) => target.studentId)));
-      const { data: issuedBills, error: issuedBillError } = targetStudentIds.length > 0
+      // Shuttle products are family-shared. If several children of the same
+      // parent have the same shuttle plan, expose exactly one billing target.
+      // Explicit additional charges remain separate by design.
+      const familyShuttleTargets = new Map<string, OwnedPackageTarget>();
+      const targets: OwnedPackageTarget[] = [];
+      plannedTargetsWithRenewalState.forEach((target) => {
+        if (target.voucherType !== 'shuttle' || target.isAdditional) {
+          targets.push(target);
+          return;
+        }
+        const parentUserId = parentUserIdByStudentId.get(target.studentId);
+        if (!parentUserId) {
+          targets.push(target);
+          return;
+        }
+        const productKey = target.optionId || target.packageId || target.packageName;
+        const key = `${parentUserId}:${target.branchId}:${productKey}`;
+        const existing = familyShuttleTargets.get(key);
+        if (!existing) {
+          familyShuttleTargets.set(key, {
+            ...target,
+            parentUserId,
+            isShared: true,
+          });
+          return;
+        }
+        // Keep the representative student deterministic so a reload cannot
+        // move the same family bill to another sibling and bypass the existing
+        // academy_bills duplicate check.
+        const representative = target.studentId.localeCompare(existing.studentId) < 0
+          ? target
+          : existing;
+        familyShuttleTargets.set(key, {
+          ...representative,
+          hasTargetMonthPackage:
+            existing.hasTargetMonthPackage || target.hasTargetMonthPackage,
+          parentUserId,
+          isShared: true,
+        });
+      });
+      targets.push(...familyShuttleTargets.values(), ...webTargets);
+
+      // Issued bills are historical state, not new billing instructions. They
+      // still need a read-only row when the old plan row no longer exists so
+      // paid/issued students never fall back to "no target".
+      const rosterStudentIds = activeStudents.map((student) => student.id);
+      const { data: issuedBills, error: issuedBillError } = rosterStudentIds.length > 0
         ? await supabase
             .from('academy_bills')
-            .select('student_id, package_option_id, bill_month, status, payment_request_id')
-            .in('student_id', targetStudentIds)
+            .select(`
+              id,
+              student_id,
+              package_option_id,
+              bill_month,
+              amount_due,
+              status,
+              payment_request_id,
+              package_options(id, label, price, packages(id, name, voucher_type))
+            `)
+            .in('student_id', rosterStudentIds)
             .eq('bill_month', selectedMonth)
         : { data: [], error: null };
       if (issuedBillError) throw issuedBillError;
 
+      const inactiveBillStatuses = new Set(['cancelled', 'canceled', 'void', 'deleted']);
+      const activeIssuedBills = (issuedBills as any[] || []).filter((bill) =>
+        !inactiveBillStatuses.has(String(bill.status || 'unpaid').toLowerCase()),
+      );
+
+      activeIssuedBills.forEach((bill) => {
+        if (!bill.package_option_id) return;
+        const alreadyVisible = targets.some((target) =>
+          target.studentId === bill.student_id
+          && target.optionId === bill.package_option_id
+        );
+        if (alreadyVisible) return;
+        const student = activeStudents.find((item) => item.id === bill.student_id);
+        const option = Array.isArray(bill.package_options)
+          ? bill.package_options[0]
+          : bill.package_options;
+        if (!student || !option) return;
+        const restoredTarget: OwnedPackageTarget = {
+          userPackageId: `bill:${bill.id}`,
+          packageId: option.packages?.id || null,
+          hasTargetMonthPackage: false,
+          voucherType: option.packages?.voucher_type || 'lesson',
+          studentId: student.id,
+          studentName: student.student_name || '원생',
+          branchId: student.branch_id,
+          childId: student.child_id,
+          isSmsEnabled: student.is_sms_enabled !== false,
+          optionId: bill.package_option_id,
+          packageName: option.packages?.name || '수강료',
+          optionLabel: option.label || '요금제 정보 없음',
+          price: Number(bill.amount_due ?? option.price ?? 0),
+          billingCycle: '월 기간제',
+          paymentDay: '발행 완료',
+          classNames: plannedClassNamesByStudent.get(student.id)
+            || appClassNamesByChildId.get(student.child_id)
+            || [],
+        };
+        const legacyProductKey = restoredTarget.packageId
+          ? `package:${restoredTarget.packageId}`
+          : `name:${normalizeProductName(restoredTarget.packageName)}`;
+        const restoredCommercialTarget = {
+          ...restoredTarget,
+          // A paid bill may contain a discount. Renewal identity is based on
+          // the catalog option price, not the discounted amount_due.
+          price: Number(option.price ?? restoredTarget.price ?? 0),
+        };
+        restoredTarget.hasTargetMonthPackage = (
+          Boolean(restoredTarget.optionId)
+          && currentChildOptionKeys.has(`${restoredTarget.studentId}:${restoredTarget.optionId}`)
+        ) || currentChildLegacyProductKeys.has(`${restoredTarget.studentId}:${legacyProductKey}`)
+          || (
+            Boolean(restoredTarget.optionLabel)
+            && Number(restoredCommercialTarget.price || 0) > 0
+            && currentChildCommercialKeys.has(commercialKey(restoredCommercialTarget))
+          );
+        targets.push(restoredTarget);
+      });
+      setBillingTargets(targets);
+
       const nextBillStatuses: Record<string, TargetBillStatus> = {};
-      (issuedBills as any[] || []).forEach((bill) => {
+      const billStatusPriority = (status: string | null | undefined) => {
+        const normalized = String(status || 'unpaid').toLowerCase();
+        if (normalized === 'paid') return 3;
+        if (normalized === 'partially_paid' || normalized === 'partial') return 2;
+        return 1;
+      };
+      activeIssuedBills.forEach((bill) => {
         const key = `${bill.student_id}:${bill.package_option_id || 'none'}:${bill.bill_month}`;
         const current = nextBillStatuses[key];
-        if (current && current.status !== 'paid') return;
+        if (current && billStatusPriority(current.status) >= billStatusPriority(bill.status)) return;
         nextBillStatuses[key] = {
           status: bill.status,
           paymentRequestId: bill.payment_request_id || null,
@@ -1030,7 +1199,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   // Generate Invoices for all active students in the selected month
   const handleGenerateBills = async (targetMonth: string) => {
     const selectedTargets = billingTargets.filter((target) =>
-      selectedBillingStudentIds.has(target.studentId) && !target.hasTargetMonthPackage,
+      selectedBillingStudentIds.has(target.studentId)
+      && !target.hasTargetMonthPackage
+      && !isActiveBillStatus(targetBillStatuses[billStatusKey(target)]?.status),
     );
 
     if (selectedBillingStudentIds.size === 0) {
@@ -1110,67 +1281,41 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             ? discountPercent
             : 0;
 
-        let existingQuery = supabase
-          .from('academy_bills')
-          .select('id, status')
-          .eq('student_id', target.studentId)
-          .eq('bill_month', targetMonth);
-
-        if (target.optionId) {
-          existingQuery = existingQuery.eq('package_option_id', target.optionId);
-        } else {
-          existingQuery = existingQuery.is('package_option_id', null);
-        }
-
-        const { data: existing, error: existingError } = await existingQuery.limit(1);
-        if (existingError) throw existingError;
-
-        if (existing?.some((bill) => bill.status !== 'paid')) {
-          alreadyCount++;
-          if (target.userPackageId.startsWith('plan:')) {
-            await supabase.from('academy_student_monthly_plans').update({ status: 'applied' }).eq('id', target.userPackageId.slice(5));
-          }
+        if (!target.optionId) {
+          failCount++;
+          lastErrMsg = formatError(normalizeError({ code: 'BILL_OPTION_INVALID' }, 'BILL_OPTION_INVALID'));
           continue;
         }
 
-        // Create bill
-        const billPayload: any = {
-          branch_id: target.branchId,
-          student_id: target.studentId,
-          class_schedule_id: null,
-          package_option_id: target.optionId,
-          bill_month: targetMonth,
-          original_amount: originalAmount,
-          discount_type: persistedDiscountType,
-          discount_value: persistedDiscountValue,
-          discount_amount: originalAmount - finalAmount,
-          adjustment_reason: previewAdjustmentReason.trim() || null,
-          amount_due: finalAmount,
-          amount_paid: 0,
-          billing_date: new Date().toISOString().slice(0, 10),
-          status: 'unpaid',
-          memo: target.isShared
-            ? `보유 이용권: ${target.packageName} (${target.optionLabel}) | 적용 대상: 가족 공용`
-            : `보유 이용권: ${target.packageName} (${target.optionLabel}) | 연결 수업: ${target.classNames.join(', ') || '없음'}`
-        };
+        const memo = target.isShared
+          ? `보유 이용권: ${target.packageName} (${target.optionLabel}) | 적용 대상: 가족 공용`
+          : `보유 이용권: ${target.packageName} (${target.optionLabel}) | 연결 수업: ${target.classNames.join(', ') || '없음'}`;
+        const { data: createResult, error: createError } = await supabase.rpc(
+          'create_manual_student_bill',
+          {
+            p_student_id: target.studentId,
+            p_plan_id: target.userPackageId.startsWith('plan:') ? target.userPackageId.slice(5) : null,
+            p_package_option_id: target.optionId,
+            p_bill_month: targetMonth,
+            p_original_amount: originalAmount,
+            p_discount_type: persistedDiscountType,
+            p_discount_value: persistedDiscountValue,
+            p_discount_amount: originalAmount - finalAmount,
+            p_amount_due: finalAmount,
+            p_adjustment_reason: previewAdjustmentReason.trim() || null,
+            p_memo: memo,
+          },
+        );
 
-        const { error: insErr } = await supabase
-          .from('academy_bills')
-          .insert([billPayload]);
-
-        if (insErr) {
-          logError(normalizeError(insErr, 'BILL_CREATE_FAILED'), { operation: 'billing.create.item' });
+        if (createError || !createResult?.success) {
+          const normalized = normalizeError(createError || { code: 'BILL_CREATE_FAILED' }, 'BILL_CREATE_FAILED');
+          logError(normalized, { operation: 'billing.create.item' });
           failCount++;
-          lastErrMsg = formatError(normalizeError(insErr, 'BILL_CREATE_FAILED'));
+          lastErrMsg = formatError(normalized);
+        } else if (!createResult.created) {
+          alreadyCount++;
         } else {
           createdCount++;
-          if (target.userPackageId.startsWith('plan:')) {
-            const { error: planStatusError } = await supabase
-              .from('academy_student_monthly_plans')
-              .update({ status: 'applied' })
-              .eq('id', target.userPackageId.slice(5));
-            if (planStatusError) throw planStatusError;
-          }
         }
       }
 
@@ -1204,6 +1349,88 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     setPaymentTiming('now');
     setScheduledAt(new Date().toISOString().slice(0, 10));
     setIsPayModalOpen(true);
+  };
+
+  const standardOptionIdsForStudent = (student: BillingTargetStudent) => Array.from(new Set(
+    student.packages
+      .filter((item) => !item.isAdditional && item.optionId && item.userPackageId.startsWith('plan:'))
+      .map((item) => item.optionId as string),
+  ));
+
+  const allOptionIdsForStudent = (student: BillingTargetStudent) => new Set(
+    student.packages.map((item) => item.optionId).filter(Boolean) as string[],
+  );
+
+  const saveBillingPackageSet = async (student: BillingTargetStudent, optionIds: string[]) => {
+    const { error } = await supabase.rpc('save_student_monthly_package_plan', {
+      p_student_id: student.studentId,
+      p_effective_month: `${selectedMonth}-01`,
+      p_package_option_ids: optionIds,
+    });
+    if (error) throw error;
+  };
+
+  const handleAddBillingPackage = async (student: BillingTargetStudent) => {
+    const optionId = packageOptionToAddByStudent[student.studentId];
+    if (!optionId || actionLoading || billingBusyRef.current) return;
+    const currentOptionIds = standardOptionIdsForStudent(student);
+    const selectedOption = billingPackageOptions.find((option) => option.id === optionId);
+    const duplicatesCommercialOption = selectedOption && student.packages.some((item) =>
+      billingCommercialIdentity(item) === billingCommercialIdentity(selectedOption)
+    );
+    if (allOptionIdsForStudent(student).has(optionId) || duplicatesCommercialOption) {
+      await handleError(
+        { code: 'BILL_DUPLICATE_OPTION' },
+        'BILL_DUPLICATE_OPTION',
+        { operation: 'billing.current-plan.duplicate' },
+      );
+      return;
+    }
+    billingBusyRef.current = true;
+    setActionLoading(true);
+    try {
+      await saveBillingPackageSet(student, [...currentOptionIds, optionId]);
+      setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: '' }));
+      await loadBillingTargets();
+      alert('청구 예정 이용권을 추가했습니다.');
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.current-plan.add' });
+    } finally {
+      billingBusyRef.current = false;
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteBillingPackage = async (student: BillingTargetStudent, target: OwnedPackageTarget) => {
+    if (!target.userPackageId.startsWith('plan:') || target.hasTargetMonthPackage) return;
+    const status = targetBillStatuses[`${target.studentId}:${target.optionId || 'none'}:${selectedMonth}`];
+    if (status) {
+      alert('청구서 생성·발송 또는 결제가 시작된 이용권은 삭제할 수 없습니다. 청구서 내역에서 먼저 상태를 확인해 주세요.');
+      return;
+    }
+    if (!confirm(`${student.studentName} 원생의 '${target.packageName} · ${target.optionLabel}' 청구 예정 이용권을 삭제할까요?`)) return;
+    if (actionLoading || billingBusyRef.current) return;
+    billingBusyRef.current = true;
+    setActionLoading(true);
+    try {
+      if (target.isAdditional) {
+        const { error } = await supabase.rpc('delete_planned_additional_student_billing_item', {
+          p_plan_id: target.userPackageId.slice(5),
+        });
+        if (error) throw error;
+      } else {
+        const remainingOptionIds = standardOptionIdsForStudent(student)
+          .filter((optionId) => optionId !== target.optionId);
+        await saveBillingPackageSet(student, remainingOptionIds);
+      }
+      await loadBillingTargets();
+      alert('청구 예정 이용권을 삭제했습니다.');
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.current-plan.delete' });
+    } finally {
+      billingBusyRef.current = false;
+      setActionLoading(false);
+    }
   };
 
   const handleDeleteBill = async (bill: Bill) => {
@@ -1790,10 +2017,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   ) : visibleBillingTargetStudents.length > 0 ? (
                     visibleBillingTargetStudents.map((student) => {
                       const alreadyBilled = isStudentAlreadyBilled(student);
+                      const billingPlanLocked = isStudentBillingPlanLocked(student);
                       const studentState = getStudentBillingState(student);
                       const studentStateMeta = {
                         none: { label: '청구 대상 없음', row: 'bg-amber-50/50', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
                         renewed: { label: '갱신 완료', row: 'bg-violet-50/80', badge: 'border-violet-200 bg-violet-100 text-violet-700' },
+                        completed: { label: '처리 완료', row: 'bg-emerald-50/70', badge: 'border-emerald-200 bg-emerald-100 text-emerald-700' },
                         paid: { label: '완납', row: 'bg-emerald-50/80', badge: 'border-emerald-200 bg-emerald-100 text-emerald-700' },
                         partial: { label: '일부 수납', row: 'bg-amber-50/80', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
                         sent: { label: '앱 발송됨', row: 'bg-sky-50/80', badge: 'border-sky-200 bg-sky-100 text-sky-700' },
@@ -1835,6 +2064,29 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 </span>
                               </div>
                               <div className="flex items-center gap-2">
+                                <select
+                                  value={packageOptionToAddByStudent[student.studentId] || ''}
+                                  onChange={(event) => setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: event.target.value }))}
+                                  disabled={billingPlanLocked || actionLoading || activeBranchId === 'all'}
+                                  aria-label={`${student.studentName} 청구 이용권 선택`}
+                                  className="max-w-[230px] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                >
+                                  <option value="">청구 이용권 추가…</option>
+                                  {billingPackageOptions
+                                    .filter((option) => !student.packages.some((item) =>
+                                      item.optionId === option.id
+                                      || billingCommercialIdentity(item) === billingCommercialIdentity(option)
+                                    ))
+                                    .map((option) => <option key={option.id} value={option.id}>[{option.packageName}] {option.label} ({option.price.toLocaleString()}원)</option>)}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleAddBillingPackage(student)}
+                                  disabled={billingPlanLocked || actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId]}
+                                  className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                                >
+                                  + 추가
+                                </button>
                                 <span className="text-xs font-black text-slate-800">
                                   예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원
                                 </span>
@@ -1923,9 +2175,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{ownedPackage.paymentDay}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-400 text-center">없음</td>
                               <td className="px-4 py-3 font-black text-blue-600 text-right">₩ {price}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-700 text-center">{ownedPackage.hasTargetMonthPackage ? <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 font-black text-emerald-700">갱신 완료</span> : <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded font-bold">{selectedMonth}-{formattedDay} 청구예정 <ArrowRight size={10} className="text-slate-400" /></span>}</td>
-                              <td className="px-4 py-3 text-center">{ownedPackage.hasTargetMonthPackage ? <span className="text-slate-300">-</span> : <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${student.isSmsEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400'}`}>{student.isSmsEnabled ? '발송' : '미발송'}</span>}</td>
-                              <td className="px-4 py-3 text-center">{ownedPackage.isShared ? <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700">공용 차량</span> : <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700 font-black">{ownedPackage.classNames.length}개 수업</span>}</td>
+                              <td className="px-4 py-3 text-xs font-medium text-slate-700 text-center">{ownedPackage.hasTargetMonthPackage ? <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 font-black text-emerald-700">갱신 완료</span> : rowState === 'paid' ? <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 font-black text-emerald-700">결제 완료</span> : rowState === 'partial' ? <span className="inline-flex rounded bg-amber-50 px-2 py-0.5 font-black text-amber-700">일부 수납</span> : rowState === 'sent' ? <span className="inline-flex rounded bg-sky-50 px-2 py-0.5 font-black text-sky-700">앱 발송됨</span> : rowState === 'issued' ? <span className="inline-flex rounded bg-blue-50 px-2 py-0.5 font-black text-blue-700">청구서 생성됨</span> : <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded font-bold">{selectedMonth}-{formattedDay} 청구예정 <ArrowRight size={10} className="text-slate-400" /></span>}</td>
+                              <td className="px-4 py-3 text-center">{ownedPackage.hasTargetMonthPackage || rowState !== 'pending' ? <span className="text-slate-300">-</span> : <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${student.isSmsEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400'}`}>{student.isSmsEnabled ? '발송' : '미발송'}</span>}</td>
+                              <td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1.5">{ownedPackage.isShared ? <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700">공용 차량</span> : <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700 font-black">{ownedPackage.classNames.length}개 수업</span>}{rowState === 'pending' && ownedPackage.userPackageId.startsWith('plan:') && <button type="button" onClick={() => void handleDeleteBillingPackage(student, ownedPackage)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300" aria-label={`${packageName} 청구 예정 삭제`}><Trash2 size={10}/> 삭제</button>}</div></td>
                             </tr>
                           );
                         })}

@@ -226,6 +226,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [nextMonthClassIds, setNextMonthClassIds] = useState<string[]>([]);
   const [nextMonthClassDay, setNextMonthClassDay] = useState('전체');
   const [nextMonthPackages, setNextMonthPackages] = useState<ClassAssignment[]>([]);
+  const [nextMonthPackageSource, setNextMonthPackageSource] = useState<'saved_month' | 'saved_recurring' | 'preview' | 'none' | 'edited'>('none');
   const [currentMonthPackages, setCurrentMonthPackages] = useState<ClassAssignment[]>([]);
   const [currentMonthPackageSource, setCurrentMonthPackageSource] = useState<'current_plan' | 'current_bill' | 'previous_plan' | 'previous_bill' | 'active_owned' | 'none'>('none');
   const [currentMonthBillingLocked, setCurrentMonthBillingLocked] = useState(false);
@@ -233,7 +234,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [additionalBillSaving, setAdditionalBillSaving] = useState(false);
   const [currentMonthClassIds, setCurrentMonthClassIds] = useState<string[]>([]);
   const [currentMonthClassDay, setCurrentMonthClassDay] = useState('전체');
-  const [currentMonthBillSaving, setCurrentMonthBillSaving] = useState(false);
   const [applyCurrentClassesToNextMonth, setApplyCurrentClassesToNextMonth] = useState(true);
   const [currentPackageLabels, setCurrentPackageLabels] = useState<string[]>([]);
   const [currentEditingStudent, setCurrentEditingStudent] = useState<Student | null>(null);
@@ -898,9 +898,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         )?.effective_month || null;
         const nextRevisionMonth = revisionRows[0]?.effective_month || null;
         const isRecurringAtMonth = (plan: typeof recurringPlanRows[number], targetMonth: string) => {
-          if (plan.effective_month === targetMonth) return true;
-          const voucherType = plan.package_options?.packages?.voucher_type;
-          return voucherType !== 'single' && voucherType !== 'one_time';
+          return plan.effective_month <= targetMonth;
         };
         const currentRecurringRows = currentRevisionMonth
           ? recurringPlanRows.filter((plan) =>
@@ -955,9 +953,14 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         setNextMonthClassIds(planRows.length > 0
           ? planRows.filter((plan) => plan.item_type === 'class').map((plan) => plan.class_schedule_id).filter(Boolean)
           : (student.app_schedule_classes || []).map((schedule) => schedule.id));
-        const inheritedNextMonthRowsRaw = nextRevisionMonth
-          ? nextRecurringRows
-          : (currentRevisionMonth
+        const nextMonthPlanPackageRows = planRows.filter((plan) =>
+          plan.item_type === 'package' && Boolean(plan.package_option_id)
+        );
+        const inheritedNextMonthRowsRaw = nextMonthPlanPackageRows.length > 0
+          ? nextMonthPlanPackageRows
+          : nextRevisionMonth
+            ? nextRecurringRows
+            : (currentRevisionMonth
               ? currentPackageOptionIds
               : currentPackageOptionIds.length > 0 ? currentPackageOptionIds : fallbackOwnedOptionIds)
               .map((optionId) => ({
@@ -966,6 +969,15 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 billing_cycle: '월 기간제',
                 payment_day: '매월 1일',
               }));
+        setNextMonthPackageSource(
+          nextMonthPlanPackageRows.length > 0
+            ? 'saved_month'
+            : nextRevisionMonth
+              ? 'saved_recurring'
+              : inheritedNextMonthRowsRaw.length > 0
+                ? 'preview'
+                : 'none',
+        );
         const inheritedNextMonthRows = Array.from(new Map(
           inheritedNextMonthRowsRaw
             .filter((plan) => Boolean(plan.package_option_id))
@@ -986,6 +998,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         setCurrentMonthClassIds([]);
         setNextMonthClassIds([]);
         setNextMonthPackages([]);
+        setNextMonthPackageSource('none');
       }
     } else {
       setEditingId(null);
@@ -1013,6 +1026,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setCurrentMonthClassIds([]);
       setNextMonthClassIds([]);
       setNextMonthPackages([]);
+      setNextMonthPackageSource('none');
       setClassAssignments([emptyAssignment()]);
     }
     setIsModalOpen(true);
@@ -1036,106 +1050,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     return data && data.length > 0 ? data[0].id : null;
   };
 
-  const ensurePersistedEditingStudent = async (): Promise<string> => {
-    if (!editingId) throw new Error('학생 선택 정보가 없습니다.');
-    if (!editingId.startsWith('child-')) return editingId;
-
-    const virtualStudent = students.find((student) => student.id === editingId);
-    if (!virtualStudent?.child_id) throw new Error('연결된 자녀 정보를 찾을 수 없습니다.');
-
-    const { data: existingStudent, error: lookupError } = await supabase
-      .from('academy_students')
-      .select('id')
-      .eq('child_id', virtualStudent.child_id)
-      .maybeSingle();
-    if (lookupError) throw lookupError;
-    if (existingStudent?.id) {
-      setEditingId(existingStudent.id);
-      return existingStudent.id;
-    }
-
-    const { data: createdStudent, error: createError } = await supabase
-      .from('academy_students')
-      .insert({
-        branch_id: selectedBranchId || virtualStudent.branch_id,
-        student_name: studentName.trim() || virtualStudent.student_name,
-        parent_name: parentName.trim() || virtualStudent.parent_name || null,
-        attendance_code: attendanceCode.trim() || virtualStudent.attendance_code,
-        mother_phone: motherPhone.trim() || virtualStudent.mother_phone || null,
-        father_phone: fatherPhone.trim() || virtualStudent.father_phone || null,
-        student_phone: studentPhone.trim() || virtualStudent.student_phone || null,
-        birth_date: birthDate || virtualStudent.birth_date || null,
-        school_name: schoolName.trim() || virtualStudent.school_name || null,
-        grade_level: gradeLevel.trim() || virtualStudent.grade_level || null,
-        address: address.trim() || virtualStudent.address || null,
-        admission_date: admissionDate || virtualStudent.admission_date || null,
-        memo: memo.trim() || virtualStudent.memo || null,
-        is_sms_enabled: isSmsEnabled,
-        parent_user_id: virtualStudent.child?.parent_id || virtualStudent.parent_user_id,
-        child_id: virtualStudent.child_id,
-      })
-      .select('id')
-      .single();
-    if (createError) throw createError;
-
-    setEditingId(createdStudent.id);
-    return createdStudent.id;
-  };
-
-  const handleSaveCurrentMonthBill = async () => {
-    if (!editingId) return;
-    if (currentMonthPackages.some((assignment) => !assignment.package_option_id)) {
-      alert('추가한 청구 항목의 이용권을 모두 선택해 주세요.');
-      return;
-    }
-
-    const optionIds = currentMonthPackages.map((assignment) => assignment.package_option_id);
-    if (new Set(optionIds).size !== optionIds.length) {
-      alert('동일한 이용권을 중복으로 청구할 수 없습니다.');
-      return;
-    }
-
-    const selectedOptions = packageOptions.filter((option) => optionIds.includes(option.id));
-    const totalAmount = selectedOptions.reduce((sum, option) => sum + option.price, 0);
-    const description = selectedOptions.length > 0
-      ? selectedOptions.map((option) => `${option.packages?.name || '이용권'} (${option.label})`).join(', ')
-      : '청구 없음';
-    const nextMonthNotice = applyCurrentClassesToNextMonth
-      ? `\n다음 달 수업 일정도 현재 선택으로 교체됩니다.`
-      : `\n다음 달에 저장된 별도 수업 일정은 유지됩니다.`;
-    if (!confirm(`${studentName} 원생의 ${monthLabel(0)} 수업·청구 예정 구성을 저장할까요?\n${description}\n예상 청구액 ${totalAmount.toLocaleString()}원\n저장 후 실제 앱의 남은 수업 일정과 수납 관리 청구대상에 반영됩니다.${nextMonthNotice}`)) return;
-
-    setCurrentMonthBillSaving(true);
-    try {
-      const persistedStudentId = await ensurePersistedEditingStudent();
-      const { data: saveResult, error: saveError } = await supabase.rpc(
-        'save_current_month_student_schedule_and_billing',
-        {
-          p_student_id: persistedStudentId,
-          p_schedule_ids: currentMonthClassIds,
-          p_apply_next_month: applyCurrentClassesToNextMonth,
-          p_package_option_ids: optionIds,
-        },
-      );
-      if (saveError) throw saveError;
-
-      const effectiveFrom = saveResult?.schedule?.current?.effective_from
-        ? new Date(`${saveResult.schedule.current.effective_from}T00:00:00`).toLocaleDateString('ko-KR')
-        : '오늘';
-      if (applyCurrentClassesToNextMonth) {
-        setNextMonthClassIds(currentMonthClassIds);
-      }
-      await loadData();
-      alert(optionIds.length > 0
-        ? `이번 달 수업과 청구 예정 이용권을 저장했습니다. 이용권은 변경하거나 해지할 때까지 다음 달에도 유지됩니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`
-        : `이번 달 수업 설정을 저장하고 이후 청구 이용권을 모두 해지했습니다. 실제 앱 수업은 ${effectiveFrom}부터 반영됩니다.${applyCurrentClassesToNextMonth ? ' 다음 달 수업도 동일하게 반영했습니다.' : ''}`);
-    } catch (error: unknown) {
-      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.current-plan.save' });
-    } finally {
-      setCurrentMonthBillSaving(false);
-    }
-  };
-
   const handleAddCurrentMonthAdditionalBill = async () => {
     if (!editingId || !additionalPackageOptionId) {
       alert('추가 청구할 이용권을 선택해 주세요.');
@@ -1143,6 +1057,14 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
     const option = packageOptions.find((item) => item.id === additionalPackageOptionId);
     if (!option) return;
+    if (currentMonthPackages.some((item) => item.package_option_id === additionalPackageOptionId)) {
+      await handleError(
+        { code: 'BILL_DUPLICATE_OPTION' },
+        'BILL_DUPLICATE_OPTION',
+        { operation: 'billing.additional-plan.duplicate' },
+      );
+      return;
+    }
     if (!confirm(`${studentName} 원생에게 ${option.packages?.name || '이용권'} · ${option.label} ${option.price.toLocaleString()}원을 추가 청구로 등록할까요? 기존 청구·갱신 완료 항목은 변경되지 않습니다.`)) return;
 
     setAdditionalBillSaving(true);
@@ -1156,8 +1078,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       const student = students.find((item) => item.id === editingId);
       if (student) await openModal(student);
       alert('추가 청구 항목을 등록했습니다. 수납 관리에서 별도 청구 대상으로 표시됩니다.');
-    } catch (error: any) {
-      alert(`추가 청구 등록 실패: ${error?.message || '알 수 없는 오류'}`);
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.additional-plan.add' });
     } finally {
       setAdditionalBillSaving(false);
     }
@@ -1179,6 +1101,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     if (assignmentsToValidate.some((assignment) => !assignment.package_option_id)) return alert('모든 수강 항목에 이용권 요금제를 지정해 주세요.');
     const assignmentKeys = assignmentsToValidate.map((assignment) => `${assignment.class_schedule_id || 'package-only'}:${assignment.package_option_id}`);
     if (new Set(assignmentKeys).size !== assignmentKeys.length) return alert('동일한 수업반과 이용권 조합이 중복되어 있습니다.');
+    if (isAppLinked) {
+      if (currentMonthPackages.some((assignment) => !assignment.package_option_id)) {
+        return alert('이번 달 청구 이용권을 모두 선택해 주세요.');
+      }
+      const currentOptionIds = currentMonthPackages.map((assignment) => assignment.package_option_id);
+      if (new Set(currentOptionIds).size !== currentOptionIds.length) {
+        return alert('이번 달에 동일한 이용권을 중복으로 청구할 수 없습니다.');
+      }
+      const summary = currentMonthBillingLocked
+        ? '학생 정보와 이번 달·다음 달 수업을 함께 저장합니다. 처리된 이번 달 청구 이용권은 변경하지 않습니다.'
+        : '학생 정보, 앱의 이번 달 수업, 수납관리 청구 이용권과 다음 달 계획을 함께 저장합니다.';
+      if (!confirm(`${studentName} 원생의 변경사항을 저장할까요?\n${summary}`)) return;
+    }
 
     setSaveLoading(true);
     try {
@@ -1298,24 +1233,30 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           }, { onConflict: 'child_id' });
         if (pickupSettingError) throw pickupSettingError;
 
-        // Class and package plans are committed together. A validation failure
-        // rolls back both so the two screens cannot disagree.
-        const { error: futurePlanError } = await supabase.rpc(
-          'save_future_month_student_schedule_and_billing',
+        // Current and next-month app schedules and billing instructions are
+        // committed by one RPC. A failure rolls all of them back together.
+        const { error: unifiedPlanError } = await supabase.rpc(
+          'save_student_schedule_and_billing_all_months',
           {
             p_student_id: studentId,
-            p_effective_month: nextMonthStart(),
-            p_schedule_ids: nextMonthClassIds,
-            p_package_option_ids: nextMonthPackages.map((assignment) => assignment.package_option_id),
+            p_current_schedule_ids: currentMonthClassIds,
+            p_current_package_option_ids: currentMonthPackages.map((assignment) => assignment.package_option_id),
+            p_apply_current_schedule_to_next: applyCurrentClassesToNextMonth,
+            p_next_effective_month: nextMonthStart(),
+            p_next_schedule_ids: nextMonthClassIds,
+            p_next_package_option_ids: nextMonthPackages.map((assignment) => assignment.package_option_id),
+            p_update_current_billing: !currentMonthBillingLocked,
           },
         );
-        if (futurePlanError) throw futurePlanError;
+        if (unifiedPlanError) throw unifiedPlanError;
       }
 
       setIsModalOpen(false);
       loadData();
     } catch (error: unknown) {
-      await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.save' });
+      await handleError(error, isAppLinked ? 'BILL_SETTING_FAILED' : 'UNKNOWN_ERROR', {
+        operation: isAppLinked ? 'student.schedule-billing.save' : 'student.save',
+      });
     } finally {
       setSaveLoading(false);
     }
@@ -2389,14 +2330,14 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                     <div className="space-y-3 rounded-2xl border border-blue-100 bg-white p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div><div className="text-[11px] font-black text-blue-700">이번 달 수업 선택</div><div className="text-[10px] font-medium text-slate-500">선택 {currentMonthClassIds.length}개</div></div>
-                        {currentMonthClassIds.length > 0 && <button type="button" disabled={currentMonthBillSaving} onClick={() => setCurrentMonthClassIds([])} className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 disabled:opacity-50">전체 해제</button>}
+                        {currentMonthClassIds.length > 0 && <button type="button" disabled={saveLoading} onClick={() => setCurrentMonthClassIds([])} className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 disabled:opacity-50">전체 해제</button>}
                       </div>
 
                       {currentMonthClassIds.length > 0 && (
                         <div className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto rounded-xl bg-blue-50 p-2">
                           {currentMonthClassIds.map((id) => {
                             const selected = classes.find((item) => item.id === id);
-                            return selected ? <button key={id} type="button" disabled={currentMonthBillSaving} onClick={() => setCurrentMonthClassIds((current) => current.filter((itemId) => itemId !== id))} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-blue-700 shadow-xs disabled:opacity-50">{normalizedWeekday(selected.day_of_week)} {selected.start_time?.slice(0, 5)} · {selected.target_class} ×</button> : null;
+                            return selected ? <button key={id} type="button" disabled={saveLoading} onClick={() => setCurrentMonthClassIds((current) => current.filter((itemId) => itemId !== id))} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-blue-700 shadow-xs disabled:opacity-50">{normalizedWeekday(selected.day_of_week)} {selected.start_time?.slice(0, 5)} · {selected.target_class} ×</button> : null;
                           })}
                         </div>
                       )}
@@ -2409,7 +2350,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         {visibleCurrentMonthClasses.map((schedule) => {
                           const checked = currentMonthClassIds.includes(schedule.id);
                           return <label key={schedule.id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition ${checked ? 'border-blue-300 bg-blue-50' : 'border-transparent bg-slate-50 hover:border-slate-200'}`}>
-                            <input type="checkbox" checked={checked} disabled={currentMonthBillSaving} onChange={(event) => setCurrentMonthClassIds((current) => event.target.checked ? Array.from(new Set([...current, schedule.id])) : current.filter((id) => id !== schedule.id))} className="h-4 w-4 shrink-0 accent-blue-600"/>
+                            <input type="checkbox" checked={checked} disabled={saveLoading} onChange={(event) => setCurrentMonthClassIds((current) => event.target.checked ? Array.from(new Set([...current, schedule.id])) : current.filter((id) => id !== schedule.id))} className="h-4 w-4 shrink-0 accent-blue-600"/>
                             <span className="min-w-0"><span className="block truncate text-xs font-black text-slate-800">{schedule.target_class}</span><span className="mt-0.5 block text-[10px] font-bold text-slate-500">{normalizedWeekday(schedule.day_of_week)}요일 · {schedule.start_time?.slice(0, 5) || '--:--'}~{schedule.end_time?.slice(0, 5) || '--:--'}</span></span>
                           </label>;
                         })}
@@ -2424,7 +2365,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                     <div className="border-t border-slate-100 pt-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div><div className="text-[11px] font-black text-emerald-700">현재 관리용 이용권 · 이번 달 청구 예정</div><div className="text-[10px] text-slate-500">이번 달 저장값이 없으면 지난달 구성을 기본으로 불러옵니다. 저장 시 청구대상 관리에 반영됩니다.</div></div>
-                        <button type="button" disabled={currentMonthBillSaving || currentMonthBillingLocked} onClick={() => setCurrentMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"><Plus size={12}/> 이용권 추가</button>
+                        <button type="button" disabled={saveLoading || currentMonthBillingLocked} onClick={() => setCurrentMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"><Plus size={12}/> 이용권 추가</button>
                       </div>
                       <div className={`mb-3 rounded-xl border px-3 py-2.5 text-[10px] font-bold leading-5 ${currentMonthPackageGuide.tone}`}>
                         <span className="mr-1">안내:</span>{currentMonthPackageGuide.text}
@@ -2433,12 +2374,12 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         {currentMonthPackages.map((assignment, index) => {
                           const selected = packageOptions.find((option) => option.id === assignment.package_option_id);
                           return <div key={index} className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/40 p-2">
-                            <select value={assignment.package_option_id} disabled={currentMonthBillSaving || currentMonthBillingLocked} onChange={(event) => setCurrentMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, package_option_id: event.target.value } : item))} className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none disabled:bg-slate-100">
+                            <select value={assignment.package_option_id} disabled={saveLoading || currentMonthBillingLocked} onChange={(event) => setCurrentMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, package_option_id: event.target.value } : item))} className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none disabled:bg-slate-100">
                               <option value="">이용권을 선택해 주세요</option>
                               {packageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}
                             </select>
                             {selected && <span className="hidden shrink-0 text-[10px] font-black text-emerald-700 sm:block">{selected.price.toLocaleString()}원</span>}
-                            <button type="button" disabled={currentMonthBillSaving || currentMonthBillingLocked} aria-label="이번 달 청구 이용권 삭제" onClick={() => setCurrentMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={14}/></button>
+                            <button type="button" disabled={saveLoading || currentMonthBillingLocked} aria-label="이번 달 청구 이용권 삭제" onClick={() => setCurrentMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={14}/></button>
                           </div>;
                         })}
                         {currentMonthPackages.length === 0 && <div className="rounded-xl bg-slate-50 py-4 text-center text-[11px] font-bold text-slate-400">이번 달 청구 이용권이 없습니다.</div>}
@@ -2455,7 +2396,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                       </div>}
                       <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3">
                         <span className="text-xs font-black text-slate-600">총 청구액 {packageOptions.filter((option) => currentMonthPackages.some((item) => item.package_option_id === option.id)).reduce((sum, option) => sum + option.price, 0).toLocaleString()}원</span>
-                        <button type="button" onClick={() => void handleSaveCurrentMonthBill()} disabled={currentMonthBillSaving} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{currentMonthBillSaving ? <Loader2 size={13} className="animate-spin"/> : <CheckCircle size={13}/>} {currentMonthBillingLocked ? '수업 저장' : '수업·청구 저장'}</button>
+                        <span className="text-[10px] font-bold text-violet-600">하단의 변경사항 저장 버튼으로 함께 반영됩니다.</span>
                       </div>
                     </div>
                   </div>
@@ -2503,14 +2444,19 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                     </div>
                   </div>
                 )}
-                {isModalAppLinked && <div className="flex items-center justify-between"><div><div className="text-[11px] font-black text-emerald-700">다음 달 청구 이용권</div><div className="text-[10px] text-slate-500">차량·단품을 포함해 여러 개 추가할 수 있습니다.</div></div><button type="button" onClick={() => setNextMonthPackages((current) => [...current, emptyAssignment()])} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white"><Plus size={12}/> 이용권 추가</button></div>}
+                {isModalAppLinked && <>
+                  <div className="flex items-center justify-between"><div><div className="text-[11px] font-black text-emerald-700">다음 달 청구 이용권</div><div className="text-[10px] text-slate-500">차량·단품을 포함해 여러 개 추가할 수 있습니다.</div></div><button type="button" onClick={() => { setNextMonthPackages((current) => [...current, emptyAssignment()]); setNextMonthPackageSource('edited'); }} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white"><Plus size={12}/> 이용권 추가</button></div>
+                  {nextMonthPackageSource === 'preview' && <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-bold leading-4 text-amber-800">현재 이용권을 기준으로 미리 채운 값이며 아직 다음 달 청구 대상으로 저장되지 않았습니다. 아래 전체 저장을 눌러야 수납관리에 반영됩니다.</div>}
+                  {nextMonthPackageSource === 'edited' && <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-bold leading-4 text-blue-700">변경한 내용은 아직 저장 전입니다. 아래 전체 저장을 누르면 다음 달 수납관리에 반영됩니다.</div>}
+                  {(nextMonthPackageSource === 'saved_month' || nextMonthPackageSource === 'saved_recurring') && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-bold leading-4 text-emerald-700">다음 달 청구 대상으로 저장된 구성입니다.</div>}
+                </>}
                 {(isModalAppLinked ? nextMonthPackages : classAssignments).map((assignment, index) => {
                   const selectablePackageOptions = isModalAppLinked
                     ? packageOptions
                     : packageOptions.filter((option) => (option.packages?.voucher_type || 'lesson') === 'lesson');
                   const selectedPackageOption = selectablePackageOptions.find((option) => option.id === assignment.package_option_id);
                   const updateAssignment = (values: Partial<ClassAssignment>) => isModalAppLinked
-                    ? setNextMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item))
+                    ? (setNextMonthPackages((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item)), setNextMonthPackageSource('edited'))
                     : setClassAssignments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...values } : item));
                   const itemCount = isModalAppLinked ? nextMonthPackages.length : classAssignments.length;
                   return (
@@ -2523,7 +2469,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                             {selectedPackageOption && <div className="mt-0.5 flex items-center gap-1.5 text-[10px] font-bold text-slate-500"><span className="rounded-full bg-white px-1.5 py-0.5 text-emerald-700">{voucherTypeLabel(selectedPackageOption.packages?.voucher_type)}</span><span>{selectedPackageOption.label}</span><span>·</span><span>{selectedPackageOption.price.toLocaleString()}원</span></div>}
                           </div>
                         </div>
-                        {(isModalAppLinked || itemCount > 1) && <button type="button" aria-label="이용권 삭제" onClick={() => isModalAppLinked ? setNextMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index)) : setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-400 transition hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>}
+                        {(isModalAppLinked || itemCount > 1) && <button type="button" aria-label="이용권 삭제" onClick={() => { if (isModalAppLinked) { setNextMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setNextMonthPackageSource('edited'); } else { setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index)); } }} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-400 transition hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>}
                       </div>
                       <div className={`grid grid-cols-1 gap-3 ${isModalAppLinked ? '' : 'sm:grid-cols-2'}`}>
                         {!isModalAppLinked && <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{modalBranchClasses.map((item) => <option key={item.id} value={item.id}>{scheduleLabel(item)}</option>)}</select></div>}
@@ -2666,7 +2612,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                   className={`flex ${editingId ? 'w-2/3' : 'w-full'} items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300 shadow-sm`}
                 >
                   {saveLoading ? <Loader2 size={16} className="animate-spin" /> : null}
-                  {editingId ? '학생 정보 수정 완료하기' : '학생 정보 등록하기'}
+                  {editingId ? (isModalAppLinked ? '변경사항 저장' : '학생 정보 수정 완료하기') : '학생 정보 등록하기'}
                 </button>
               </div>
             </form>
