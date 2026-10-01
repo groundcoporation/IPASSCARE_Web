@@ -405,7 +405,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
       // Query reservations for today's pickup/dropoff shuttle status
       let resQuery = supabase.from("reservations")
-        .select("child_id,schedule_id,status,pickup_shuttle_status,dropoff_shuttle_status,attendance_status,class_schedules(target_class,start_time,end_time)")
+        .select("child_id,schedule_id,status,pickup_shuttle_status,dropoff_shuttle_status,attendance_status,class_schedules(id,target_class,start_time,end_time)")
         .is("deleted_at", null)
         .eq("class_date", selectedAttendanceDate);
       if (selectedBranch) resQuery = resQuery.eq("branch_id", selectedBranch);
@@ -1436,6 +1436,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           ride_out: '하차',
           is_absent: '결석'
         };
+        if (actionType === 'check_in' || actionType === 'check_out') {
+          const usageResult = await supabase.rpc('process_lesson_check_in', {
+            p_reservation_id: null,
+            p_child_id: targetChildId,
+            p_branch_id: targetBranch,
+            p_class_date: selectedAttendanceDate,
+          });
+          if (usageResult.error) throw usageResult.error;
+        }
         const payload: any = {
           child_id: targetChildId,
           date: selectedAttendanceDate,
@@ -1555,6 +1564,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       });
 
       for (const payload of payloads) {
+        if (actionType === 'check_in' || actionType === 'check_out') {
+          const usageResult = await supabase.rpc('process_lesson_check_in', {
+            p_reservation_id: null,
+            p_child_id: payload.child_id,
+            p_branch_id: payload.branch_id,
+            p_class_date: payload.date,
+          });
+          if (usageResult.error) throw usageResult.error;
+        }
         if (actionType === 'ride_in' || actionType === 'ride_out' || actionType === 'check_in' || actionType === 'check_out' || actionType === 'is_absent') {
           const reservationPatch = actionType === 'ride_in'
             ? { pickup_shuttle_status: 'boarded' }
@@ -1694,6 +1712,41 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     return Boolean(reservationKey) && todayReservationChildIds.includes(reservationKey);
   }, [todayReservationChildIds]);
 
+  // 출결 화면의 수업 정보는 원생에게 등록된 전체 시간표의 첫 항목이 아니라,
+  // 선택한 날짜에 실제 생성된 예약이 가리키는 시간표를 기준으로 표시한다.
+  const attendanceSchedulesByStudentId = useMemo(() => {
+    const schedulesByStudent = new Map<string, any[]>();
+    todayReservations.forEach((reservation) => {
+      if (!reservation?.child_id) return;
+      const schedule = firstJoined(reservation.class_schedules);
+      if (!schedule) return;
+      const schedules = schedulesByStudent.get(reservation.child_id) || [];
+      if (!schedules.some((item) => item.id === schedule.id)) schedules.push(schedule);
+      schedulesByStudent.set(reservation.child_id, schedules);
+    });
+    schedulesByStudent.forEach((schedules) => schedules.sort((left, right) => (
+      String(left?.start_time || '99:99').localeCompare(String(right?.start_time || '99:99'))
+    )));
+    return schedulesByStudent;
+  }, [todayReservations]);
+
+  const getAttendanceSchedules = useCallback((student: any) => {
+    const reservationKey = student?.child_id || student?.id;
+    const reservationSchedules = reservationKey ? attendanceSchedulesByStudentId.get(reservationKey) : undefined;
+    if (reservationSchedules?.length) return reservationSchedules;
+
+    // 앱 자녀는 날짜별 예약이 없으면 다른 요일의 수업을 대신 표시하지 않는다.
+    if (student?.child_id) return [];
+
+    // 앱 계정과 연결되지 않은 기존 원생만 선택 요일의 학원 시간표를 보조값으로 사용한다.
+    return (student?.academy_student_classes || [])
+      .map((item: any) => firstJoined(item?.class_schedules))
+      .filter((schedule: any) => schedule && (
+        schedule.day_of_week === currentDayShort || schedule.day_of_week === currentDayFull
+      ))
+      .sort((left: any, right: any) => String(left?.start_time || '99:99').localeCompare(String(right?.start_time || '99:99')));
+  }, [attendanceSchedulesByStudentId, currentDayFull, currentDayShort]);
+
   // Attendance filter counts
   const scheduledCount = useMemo(() => {
     return (todayAttendanceStudents || []).filter(s => isStudentScheduledOnDate(s)).length;
@@ -1756,11 +1809,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       if (!matchesSearch) return false;
 
       // 2. Class Filter
-      const targetClass = (student.child_id
-        ? student.app_schedule_classes?.[0]
-        : student.academy_student_classes?.[0]?.class_schedules
-      )?.target_class || '미배정';
-      if (selectedAttendanceClassFilter !== 'all' && targetClass !== selectedAttendanceClassFilter) {
+      const attendanceSchedules = getAttendanceSchedules(student);
+      if (selectedAttendanceClassFilter !== 'all' && !attendanceSchedules.some((schedule: any) => (
+        schedule?.target_class === selectedAttendanceClassFilter
+      ))) {
         return false;
       }
 
@@ -1782,27 +1834,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       }
       return true;
     }).sort((left, right) => {
-      const leftClass = left.child_id
-        ? left.app_schedule_classes?.[0]
-        : left.academy_student_classes?.[0]?.class_schedules;
-      const rightClass = right.child_id
-        ? right.app_schedule_classes?.[0]
-        : right.academy_student_classes?.[0]?.class_schedules;
+      const leftClass = getAttendanceSchedules(left)[0];
+      const rightClass = getAttendanceSchedules(right)[0];
       const timeDiff = String(leftClass?.start_time || '99:99').localeCompare(String(rightClass?.start_time || '99:99'));
       if (timeDiff !== 0) return timeDiff;
       const classDiff = String(leftClass?.target_class || '미배정').localeCompare(String(rightClass?.target_class || '미배정'), 'ko-KR');
       if (classDiff !== 0) return classDiff;
       return String(left.student_name || '').localeCompare(String(right.student_name || ''), 'ko-KR');
     });
-  }, [todayAttendanceStudents, search, selectedAttendanceClassFilter, todayAttendanceRecords, attendanceViewFilter, isStudentScheduledOnDate]);
+  }, [todayAttendanceStudents, search, selectedAttendanceClassFilter, todayAttendanceRecords, attendanceViewFilter, isStudentScheduledOnDate, getAttendanceSchedules]);
 
   const uniqueClasses = useMemo(() => {
-    return Array.from(new Set((todayAttendanceStudents || []).map((student) => (
-      student?.child_id
-        ? student?.app_schedule_classes?.[0]?.target_class
-        : student?.academy_student_classes?.[0]?.class_schedules?.target_class
+    return Array.from(new Set((todayAttendanceStudents || []).flatMap((student) => (
+      getAttendanceSchedules(student).map((schedule: any) => schedule?.target_class)
     )).filter(Boolean)));
-  }, [todayAttendanceStudents]);
+  }, [todayAttendanceStudents, getAttendanceSchedules]);
 
   // Calendar Grid Day Generator for attendanceCalendarMonth (YYYY-MM)
   const calendarDays = useMemo(() => {
@@ -2552,13 +2598,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                         {filteredAttendanceStudents.length > 0 ? (
                           filteredAttendanceStudents.map((s, idx) => {
                             const record = todayAttendanceRecords[s.id];
-                            const firstClass = s.child_id
-                              ? s.app_schedule_classes?.[0]
-                              : s.academy_student_classes?.[0]?.class_schedules;
-                            const currentClassName = firstClass?.target_class || '미배정';
-                            const classTime = (firstClass?.start_time && firstClass?.end_time) 
-                              ? `${firstClass.start_time.slice(0, 5)}~${firstClass.end_time.slice(0, 5)}`
-                              : null;
+                            const attendanceSchedules = getAttendanceSchedules(s);
+                            const currentClassName = Array.from(new Set(attendanceSchedules
+                              .map((schedule: any) => schedule?.target_class)
+                              .filter(Boolean)
+                            )).join(', ') || (isStudentScheduledOnDate(s) ? '예약 수업' : '미배정');
+                            const classTime = Array.from(new Set(attendanceSchedules
+                              .filter((schedule: any) => schedule?.start_time && schedule?.end_time)
+                              .map((schedule: any) => `${schedule.start_time.slice(0, 5)}~${schedule.end_time.slice(0, 5)}`)
+                            )).join(', ') || null;
                             const isSelected = selectedStudentIds.includes(s.id);
                             const isScheduled = isStudentScheduledOnDate(s);
 
@@ -3053,11 +3101,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                           {detailedAttendanceStudents.length > 0 ? (
                             detailedAttendanceStudents.map((s, idx) => {
                               const record = todayAttendanceRecords[s.id];
-                              const reservationKey = s.child_id || s.id;
-                              const studentReservations = todayReservations.filter((reservation) => reservation.child_id === reservationKey);
-                              const reservationSchedules = studentReservations
-                                .map((reservation) => firstJoined(reservation.class_schedules))
-                                .filter(Boolean) as Array<{ target_class: string; start_time: string; end_time: string }>;
+                              const reservationSchedules = getAttendanceSchedules(s);
                               const currentClassName = Array.from(new Set(reservationSchedules.map((schedule) => schedule.target_class))).join(', ') || '예약 수업';
                               const classTime = Array.from(new Set(reservationSchedules
                                 .filter((schedule) => schedule.start_time && schedule.end_time)

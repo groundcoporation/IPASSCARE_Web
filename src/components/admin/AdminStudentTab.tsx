@@ -108,6 +108,7 @@ interface ClassSchedule {
 
 interface PackageOption {
   id: string;
+  package_id: string;
   label: string;
   price: number;
   branch_id: string;
@@ -236,6 +237,15 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [currentMonthClassDay, setCurrentMonthClassDay] = useState('전체');
   const [applyCurrentClassesToNextMonth, setApplyCurrentClassesToNextMonth] = useState(true);
   const [currentPackageLabels, setCurrentPackageLabels] = useState<string[]>([]);
+  const [currentBillingPlanMismatches, setCurrentBillingPlanMismatches] = useState<Array<{
+    planId: string;
+    plannedOptionId: string;
+    plannedLabel: string;
+    userPackageId: string;
+    actualOptionId: string;
+    actualLabel: string;
+  }>>([]);
+  const [billingPlanCorrectionSaving, setBillingPlanCorrectionSaving] = useState(false);
   const [currentEditingStudent, setCurrentEditingStudent] = useState<Student | null>(null);
 
   // 🚀 Top View Tab: 'active' (재원생 명부) | 'withdrawn' (퇴원·탈퇴 회원)
@@ -276,6 +286,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       const flattenedOptions = ((packageData || []) as any[]).flatMap((pkg) =>
         (pkg.package_options || []).map((option: any) => ({
           ...option,
+          package_id: pkg.id,
           branch_id: option.branch_id || pkg.branch_id,
           packages: {
             name: pkg.name,
@@ -718,6 +729,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     setDropoffSpotId('');
     setPickupDetailLocation('');
     setDropoffDetailLocation('');
+    setCurrentBillingPlanMismatches([]);
     if (student) {
       setEditingId(student.id);
       setSelectedBranchId(student.branch_id);
@@ -788,7 +800,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         ] = await Promise.all([
           supabase
             .from('user_packages')
-            .select('option_id, package_name, status, remaining_count, valid_from, valid_until, expiry_date')
+            .select('id, package_id, option_id, package_name, status, remaining_count, valid_from, valid_until, expiry_date')
             .eq('child_id', student.child_id)
             .eq('status', 'active'),
           supabase
@@ -839,6 +851,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         if (recurringPlanError) throw recurringPlanError;
         const today = new Date().toISOString().slice(0, 10);
         const ownedRows = ((owned || []) as Array<{
+          id: string;
+          package_id: string | null;
           option_id: string | null;
           package_name: string | null;
           remaining_count: number | null;
@@ -858,7 +872,36 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         }>;
         const currentPlanRows = (currentPlans || []) as any[];
         const [currentBillYear, currentBillMonthNumber] = currentBillMonth().split('-').map(Number);
+        const mismatchMonthStart = `${currentBillMonth()}-01`;
         const currentMonthEnd = new Date(Date.UTC(currentBillYear, currentBillMonthNumber, 0)).toISOString().slice(0, 10);
+        const mismatchRows = currentPlanRows
+          .filter((plan) => plan.item_type === 'package' && plan.package_option_id)
+          .flatMap((plan) => {
+            const plannedOption = packageOptions.find((option) => option.id === plan.package_option_id);
+            if (!plannedOption) return [];
+            const overlappingOwned = ownedRows.filter((row) => (
+              Boolean(row.option_id)
+              && row.package_id === plannedOption.package_id
+              && (!row.valid_from || row.valid_from <= currentMonthEnd)
+              && (!(row.valid_until || row.expiry_date) || (row.valid_until || row.expiry_date)! >= mismatchMonthStart)
+            ));
+            if (overlappingOwned.some((row) => row.option_id === plan.package_option_id)) return [];
+            const distinctActualOptionIds = [...new Set(overlappingOwned.map((row) => row.option_id).filter(Boolean))];
+            if (distinctActualOptionIds.length !== 1) return [];
+            const actualOwned = overlappingOwned.find((row) => row.option_id === distinctActualOptionIds[0]);
+            if (!actualOwned?.option_id) return [];
+            const actualOption = packageOptions.find((option) => option.id === actualOwned.option_id);
+            if (!actualOption) return [];
+            return [{
+              planId: plan.id,
+              plannedOptionId: plannedOption.id,
+              plannedLabel: `${plannedOption.packages?.name || '이용권'} · ${plannedOption.label}`,
+              userPackageId: actualOwned.id,
+              actualOptionId: actualOption.id,
+              actualLabel: `${actualOption.packages?.name || '이용권'} · ${actualOption.label}`,
+            }];
+          });
+        setCurrentBillingPlanMismatches(mismatchRows);
         const hasCurrentMonthIssuedPackage = ownedRows.some((row) => (
           (!row.valid_from || row.valid_from.slice(0, 10) <= currentMonthEnd)
           && (!row.valid_until && !row.expiry_date || (row.valid_until || row.expiry_date)!.slice(0, 10) >= `${currentBillMonth()}-01`)
@@ -1082,6 +1125,29 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.additional-plan.add' });
     } finally {
       setAdditionalBillSaving(false);
+    }
+  };
+
+  const handleCorrectCurrentBillingPlan = async (mismatch: typeof currentBillingPlanMismatches[number]) => {
+    if (!editingId || billingPlanCorrectionSaving) return;
+    if (!confirm(
+      `관리용 청구 계획을 '${mismatch.plannedLabel}'에서 실제 지급된 '${mismatch.actualLabel}'으로 정정할까요?\n\n결제금액·결제내역·앱 이용권은 변경되지 않습니다.`,
+    )) return;
+    setBillingPlanCorrectionSaving(true);
+    try {
+      const { error } = await supabase.rpc('correct_billing_plan_to_owned_package', {
+        p_plan_id: mismatch.planId,
+        p_user_package_id: mismatch.userPackageId,
+      });
+      if (error) throw error;
+      await loadData();
+      const student = students.find((item) => item.id === editingId);
+      if (student) await openModal(student);
+      alert('실제 지급된 이용권 기준으로 관리용 청구 계획을 정정했습니다. 결제내역과 앱 이용권은 변경하지 않았습니다.');
+    } catch (error: unknown) {
+      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.plan.correct-to-entitlement' });
+    } finally {
+      setBillingPlanCorrectionSaving(false);
     }
   };
 
@@ -2361,7 +2427,20 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         <span><span className="block font-black">다음 달에도 같은 수업 시간표 적용</span><span className="mt-0.5 block text-[10px] font-medium text-violet-700">체크하면 다음 달에 저장된 수업 일정은 현재 선택으로 교체됩니다. 이용권·청구는 변경되지 않습니다.</span></span>
                       </label>
                     </div>
-                    <div><div className="mb-1.5 text-[11px] font-black text-slate-500">실제 지급 이용권(참고)</div><div className="flex flex-wrap gap-1.5">{currentPackageLabels.length > 0 ? currentPackageLabels.map((label) => <span key={label} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">{label}</span>) : <span className="text-xs font-bold text-slate-400">지급된 이용권 없음</span>}</div><div className="mt-1 text-[10px] font-bold text-rose-500">아래 관리용 이용권을 수정해도 실제 지급 이용권은 생성·변경되지 않습니다.</div></div>
+                    <div>
+                      <div className="mb-1.5 text-[11px] font-black text-slate-500">실제 지급 이용권(참고)</div>
+                      <div className="flex flex-wrap gap-1.5">{currentPackageLabels.length > 0 ? currentPackageLabels.map((label) => <span key={label} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">{label}</span>) : <span className="text-xs font-bold text-slate-400">지급된 이용권 없음</span>}</div>
+                      <div className="mt-1 text-[10px] font-bold text-rose-500">아래 관리용 이용권을 수정해도 실제 지급 이용권은 생성·변경되지 않습니다.</div>
+                      {currentBillingPlanMismatches.map((mismatch) => (
+                        <div key={mismatch.planId} className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                          <div className="text-[11px] font-black text-rose-700">관리용 이용권과 실제 지급 이용권이 다릅니다.</div>
+                          <div className="mt-1 text-[10px] font-bold leading-5 text-rose-600">관리용: {mismatch.plannedLabel}<br/>실제 지급: {mismatch.actualLabel}</div>
+                          <button type="button" onClick={() => void handleCorrectCurrentBillingPlan(mismatch)} disabled={billingPlanCorrectionSaving || saveLoading} className="mt-2 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-[10px] font-black text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50">
+                            {billingPlanCorrectionSaving ? '정정 중...' : '실제 이용권으로 정정'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                     <div className="border-t border-slate-100 pt-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div><div className="text-[11px] font-black text-emerald-700">현재 관리용 이용권 · 이번 달 청구 예정</div><div className="text-[10px] text-slate-500">이번 달 저장값이 없으면 지난달 구성을 기본으로 불러옵니다. 저장 시 청구대상 관리에 반영됩니다.</div></div>

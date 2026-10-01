@@ -230,27 +230,7 @@ export const AdminShuttleTab: React.FC<{
     }
     setSaving(true);
     try {
-      const payload = {
-        branch_id: activeBranchId,
-        name: routeForm.name.trim(),
-        day_of_week: routeForm.day_of_week,
-        direction: firstStudent.direction,
-        class_schedule_id: firstStudent.class_schedule_id,
-        center_address: routeForm.center_address.trim() || null,
-        center_lat: centerLat,
-        center_lng: centerLng,
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      };
-      const result = routeForm.id
-        ? await supabase.from('shuttle_routes').update(payload).eq('id', routeForm.id).select('id').single()
-        : await supabase.from('shuttle_routes').insert(payload).select('id').single();
-      if (result.error) throw result.error;
-      const routeId = result.data.id;
-      const { error: deleteError } = await supabase.from('shuttle_route_assignments').delete().eq('route_id', routeId);
-      if (deleteError) throw deleteError;
       const assignmentRows = routeForm.selected_students.map((student, index) => ({
-        route_id: routeId,
         child_id: student.child_id,
         class_schedule_id: student.class_schedule_id,
         direction: student.direction,
@@ -258,8 +238,19 @@ export const AdminShuttleTab: React.FC<{
         custom_time: student.custom_time || null,
         display_order: index,
       }));
-      const { error: assignmentError } = await supabase.from('shuttle_route_assignments').upsert(assignmentRows, { onConflict: 'child_id,class_schedule_id,direction' });
-      if (assignmentError) throw assignmentError;
+      const { error: saveError } = await supabase.rpc('save_shuttle_route_with_assignments', {
+        p_route_id: routeForm.id || null,
+        p_branch_id: activeBranchId,
+        p_name: routeForm.name.trim(),
+        p_day_of_week: routeForm.day_of_week,
+        p_direction: firstStudent.direction,
+        p_class_schedule_id: firstStudent.class_schedule_id,
+        p_center_address: routeForm.center_address.trim() || null,
+        p_center_lat: centerLat,
+        p_center_lng: centerLng,
+        p_assignments: assignmentRows,
+      });
+      if (saveError) throw saveError;
       setRouteForm(null);
       await loadData();
     } catch (error: unknown) {
@@ -456,7 +447,6 @@ const RouteAssignmentEditor = ({ route, branchId, spots, onClose, onChanged }: {
   const [schedules, setSchedules] = useState<any[]>([]);
   const [eligibleByChild, setEligibleByChild] = useState<Record<string, string[]>>({});
   const [pickupSettings, setPickupSettings] = useState<Record<string, any>>({});
-  const [initialIds, setInitialIds] = useState<string[]>([]);
   const [assignments, setAssignments] = useState<StudentRouteAssignment[]>([]);
 
   useEffect(() => {
@@ -499,7 +489,6 @@ const RouteAssignmentEditor = ({ route, branchId, spots, onClose, onChanged }: {
           custom_time: item.custom_time ? String(item.custom_time).slice(0, 5) : '',
         }));
         setAssignments(nextAssignments);
-        setInitialIds(nextAssignments.map((item: StudentRouteAssignment) => item.id).filter(Boolean) as string[]);
       } catch (cause: any) {
         if (!cancelled) setError(cause?.message || '학생 배정 정보를 불러오지 못했습니다.');
       } finally {
@@ -546,41 +535,40 @@ const RouteAssignmentEditor = ({ route, branchId, spots, onClose, onChanged }: {
 
   const save = async () => {
     if (assignments.some(item => !item.class_schedule_id)) { window.alert('모든 학생의 수업을 선택해 주세요.'); return; }
+    if (assignments.some(item => !item.pickup_spot_id)) { window.alert('모든 학생의 승차·하차 정류장을 지정해 주세요.'); return; }
+    if (!assignments.length) { window.alert('노선에 탑승할 학생을 1명 이상 배정해 주세요.'); return; }
     setSaving(true);
     setError('');
     try {
-      if (assignments.length) {
-        const rows = assignments.map((item, index) => ({
-          ...(item.id ? { id: item.id } : {}),
-          route_id: route.id,
+      const firstAssignment = assignments[0];
+      const rows = assignments.map((item, index) => ({
           child_id: item.child_id,
           class_schedule_id: item.class_schedule_id,
           direction: item.direction,
           pickup_spot_id: item.pickup_spot_id || null,
           custom_time: item.custom_time || null,
           display_order: index,
-        }));
-        const existingRows = rows.filter(row => 'id' in row);
-        const newRows = rows.filter(row => !('id' in row));
-        if (existingRows.length) {
-          const { error: updateError } = await supabase.from('shuttle_route_assignments').upsert(existingRows, { onConflict: 'id' });
-          if (updateError) throw updateError;
-        }
-        if (newRows.length) {
-          const { error: insertError } = await supabase.from('shuttle_route_assignments').upsert(newRows, { onConflict: 'child_id,class_schedule_id,direction' });
-          if (insertError) throw insertError;
-        }
-      }
-      const retainedIds = new Set(assignments.map(item => item.id).filter(Boolean));
-      const removedIds = initialIds.filter(id => !retainedIds.has(id));
-      if (removedIds.length) {
-        const { error: deleteError } = await supabase.from('shuttle_route_assignments').delete().in('id', removedIds);
-        if (deleteError) throw deleteError;
-      }
+      }));
+      const centerLat = route.center_lat == null || route.center_lat === '' ? null : Number(route.center_lat);
+      const centerLng = route.center_lng == null || route.center_lng === '' ? null : Number(route.center_lng);
+      const { error: saveError } = await supabase.rpc('save_shuttle_route_with_assignments', {
+        p_route_id: route.id,
+        p_branch_id: branchId,
+        p_name: route.name || '셔틀 노선',
+        p_day_of_week: route.day_of_week,
+        p_direction: firstAssignment.direction,
+        p_class_schedule_id: firstAssignment.class_schedule_id,
+        p_center_address: route.center_address || null,
+        p_center_lat: Number.isFinite(centerLat) ? centerLat : null,
+        p_center_lng: Number.isFinite(centerLng) ? centerLng : null,
+        p_assignments: rows,
+      });
+      if (saveError) throw saveError;
       onChanged();
       onClose();
-    } catch (cause: any) {
-      setError(cause?.message || '학생 배정을 저장하지 못했습니다.');
+    } catch (cause: unknown) {
+      setError('학생 배정을 저장하지 못했습니다. 최신 노선 정보를 다시 확인해 주세요.');
+      await handleError(cause, 'SHUTTLE_ROUTE_SAVE_FAILED', { operation: 'shuttle.route.assignment.save' });
     } finally {
       setSaving(false);
     }

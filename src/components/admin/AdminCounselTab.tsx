@@ -43,7 +43,7 @@ const COUNSEL_CATEGORIES = [
   { id: '기타', label: '📌 기타메모', color: 'bg-slate-100 text-slate-700 border-slate-200' },
 ];
 
-export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId, profile }) => {
+export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId, branches, profile }) => {
   const [students, setStudents] = useState<any[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [counselLogs, setCounselLogs] = useState<CounselLog[]>([]);
@@ -708,6 +708,9 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                             </span>
                             <span className="text-[11px] text-slate-500 font-medium">
                               (상담자: {log.counselor_name})
+                            </span>
+                            <span className="rounded-lg bg-indigo-50 px-2 py-1 text-[10px] font-black text-indigo-700">
+                              {branches.find((branch) => branch.id === log.branch_id)?.name || '지점 미지정'}
                             </span>
                           </div>
 
