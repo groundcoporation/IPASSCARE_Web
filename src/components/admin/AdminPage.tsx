@@ -183,6 +183,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [paymentMonth, setPaymentMonth] = useState(() => localDate(new Date()).slice(0, 7));
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchFilter, setBranchFilter] = useState("all");
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -1286,7 +1287,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     const url = URL.createObjectURL(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = kind === "payments" ? `결제내역_${new Date().toISOString().slice(0, 10)}.xlsx` : `출결표_${month}.xlsx`;
+    anchor.download = kind === "payments" ? `결제내역_${paymentMonth}.xlsx` : `출결표_${month}.xlsx`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -1687,20 +1688,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   const shownAttendance = useMemo(() => attendance.filter((item) => `${item.childName} ${item.parentName} ${item.packageName}`.toLowerCase().includes(search.trim().toLowerCase())), [attendance, search]);
 
-  const shownPayments = useMemo(() => payments.filter((item) => {
+  const monthlyPayments = useMemo(() => payments.filter((item) => kstDateKey(item.created_at).slice(0, 7) === paymentMonth), [paymentMonth, payments]);
+
+  const shownPayments = useMemo(() => monthlyPayments.filter((item) => {
     const target = `${item.users?.name ?? ""} ${item.users?.email ?? ""} ${item.pg_tid ?? ""} ${item.id} ${item.products.map((product) => product.package_name).join(" ")}`.toLowerCase();
     return (statusFilter === "all" || item.status === statusFilter) && target.includes(search.trim().toLowerCase());
-  }), [payments, search, statusFilter]);
+  }), [monthlyPayments, search, statusFilter]);
 
   const stats = useMemo(() => {
-    const paid = payments.filter((item) => ["paid", "success"].includes(item.status ?? ""));
+    const paid = monthlyPayments.filter((item) => ["paid", "success"].includes(item.status ?? ""));
     return {
       revenue: paid.reduce((sum, item) => sum + (item.final_amount ?? item.total_amount ?? 0), 0),
       paid: paid.length,
-      pending: payments.filter((item) => ["pending_payment", "scheduled"].includes(item.status ?? "")).length,
-      failed: payments.filter((item) => ["failed", "cancelled", "canceled"].includes(item.status ?? "")).length
+      pending: monthlyPayments.filter((item) => ["pending_payment", "scheduled"].includes(item.status ?? "")).length,
+      failed: monthlyPayments.filter((item) => ["failed", "cancelled", "canceled"].includes(item.status ?? "")).length
     };
-  }, [payments]);
+  }, [monthlyPayments]);
 
   // Selected Day computation & scheduled check (Must be before conditional returns)
   const currentDayShort = getShortDayOfWeek(selectedAttendanceDate || new Date().toISOString().slice(0, 10));
@@ -3420,6 +3423,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
                 <Toolbar search={search} setSearch={setSearch} placeholder="회원명, 이메일, 거래번호 검색">
                   <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={setBranchFilter} />
+                  <div className="flex items-center rounded-xl border border-slate-200 bg-white">
+                    <button aria-label="이전 결제 월" onClick={() => setPaymentMonth((current) => moveMonth(current, -1))} className="p-3 text-slate-600 hover:text-slate-950"><ChevronLeft size={18} /></button>
+                    <input aria-label="결제 월 선택" type="month" value={paymentMonth} onChange={(e) => e.target.value && setPaymentMonth(e.target.value)} className="min-w-[145px] border-x border-slate-200 px-3 py-2.5 text-center text-sm font-black outline-none" />
+                    <button aria-label="다음 결제 월" onClick={() => setPaymentMonth((current) => moveMonth(current, 1))} className="p-3 text-slate-600 hover:text-slate-950"><ChevronRight size={18} /></button>
+                  </div>
                   <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold">
                     <option value="all">전체 상태</option>
                     <option value="paid">결제 완료</option>
