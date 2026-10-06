@@ -43,6 +43,9 @@ export const errorMessages = {
   PAYMENT_SAVE_FAILED: "수납 등록 결과를 확인하지 못했습니다. 결제 내역을 먼저 확인하고 중복 등록하지 마세요.",
   PAYMENT_CONFIRM_PENDING: "결제 예정 내역은 등록됐지만 수납 완료 결과를 확인하지 못했습니다. 기존 내역을 확인하고 새 결제를 등록하지 마세요.",
   PAYMENT_PACKAGE_PENDING: "수납은 완료됐지만 이용권 지급을 확인하지 못했습니다. 다시 결제하지 말고 지급 내역을 확인해 주세요.",
+  PACKAGE_CATALOG_ACTION_FAILED: "이용권의 판매 상태를 변경하지 못했습니다. 최신 상품과 청구 연결 상태를 확인해 주세요.",
+  PACKAGE_CATALOG_NOT_FOUND: "이용권 정보를 찾을 수 없습니다. 목록을 새로 불러와 주세요.",
+  PACKAGE_OPTION_IN_USE: "청구·결제·지급 내역에 사용된 옵션은 삭제할 수 없습니다. 옵션은 그대로 두고 이름·가격·횟수만 수정해 주세요.",
 } as const;
 
 export type AppErrorCode = keyof typeof errorMessages;

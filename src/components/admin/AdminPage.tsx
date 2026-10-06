@@ -1691,7 +1691,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const monthlyPayments = useMemo(() => payments.filter((item) => kstDateKey(item.created_at).slice(0, 7) === paymentMonth), [paymentMonth, payments]);
 
   const shownPayments = useMemo(() => monthlyPayments.filter((item) => {
-    const target = `${item.users?.name ?? ""} ${item.users?.email ?? ""} ${item.pg_tid ?? ""} ${item.id} ${item.products.map((product) => product.package_name).join(" ")}`.toLowerCase();
+    const target = `${item.users?.name ?? ""} ${item.users?.email ?? ""} ${(item.childrenNames ?? []).join(" ")} ${item.pg_tid ?? ""} ${item.id} ${item.products.map((product) => product.package_name).join(" ")}`.toLowerCase();
     return (statusFilter === "all" || item.status === statusFilter) && target.includes(search.trim().toLowerCase());
   }), [monthlyPayments, search, statusFilter]);
 
@@ -3421,7 +3421,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                   <Stat label="실패·취소" value={`${stats.failed}건`} icon={<ShieldAlert />} color="rose" />
                 </section>
 
-                <Toolbar search={search} setSearch={setSearch} placeholder="회원명, 이메일, 거래번호 검색">
+                <Toolbar search={search} setSearch={setSearch} placeholder="회원명, 자녀명, 이메일, 거래번호 검색">
                   <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={setBranchFilter} />
                   <div className="flex items-center rounded-xl border border-slate-200 bg-white">
                     <button aria-label="이전 결제 월" onClick={() => setPaymentMonth((current) => moveMonth(current, -1))} className="p-3 text-slate-600 hover:text-slate-950"><ChevronLeft size={18} /></button>

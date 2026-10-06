@@ -520,6 +520,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         branch_id,
         package_options(id, label, price)
       `);
+      billingPackagesQuery = billingPackagesQuery.eq('is_active', true);
       if (activeBranchId && activeBranchId !== 'all') {
         billingPackagesQuery = billingPackagesQuery.eq('branch_id', activeBranchId);
       }

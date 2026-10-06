@@ -279,6 +279,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         branch_id,
         package_options(id, label, price, branch_id)
       `);
+      packagesQuery = packagesQuery.eq('is_active', true);
       if (activeBranchId && activeBranchId !== 'all') {
         packagesQuery = packagesQuery.eq('branch_id', activeBranchId);
       }
