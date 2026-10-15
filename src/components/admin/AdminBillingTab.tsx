@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { AppError, formatError, normalizeError, logError } from '../../errors/appError';
 import { handleError } from '../../errors/handleError';
-import { discountedBillAmount, normalizeDiscountPercent } from '../../utils/billingAmount';
+import { allocateDiscountedBillAmounts, discountedBillAmount, normalizeDiscountPercent } from '../../utils/billingAmount';
 import { CheckCircle2, AlertCircle, BellRing, FileText, Loader2, ArrowRight, Search, Trash2 } from 'lucide-react';
 
 interface Bill {
@@ -168,12 +168,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [billingPackageOptions, setBillingPackageOptions] = useState<BillingPackageOption[]>([]);
   const [packageOptionToAddByStudent, setPackageOptionToAddByStudent] = useState<Record<string, string>>({});
   const [targetBillStatuses, setTargetBillStatuses] = useState<Record<string, TargetBillStatus>>({});
-  const [selectedBillingStudentIds, setSelectedBillingStudentIds] = useState<Set<string>>(new Set());
+  // Bills are created per voucher option, not per student. Keeping the
+  // selection at this granularity makes a manually entered final amount
+  // unambiguous when one student has multiple vouchers.
+  const [selectedBillingTargetIds, setSelectedBillingTargetIds] = useState<Set<string>>(new Set());
   const [billingSearch, setBillingSearch] = useState('');
   const [billingSummaryFilter, setBillingSummaryFilter] = useState<BillingSummaryFilter>('all');
   const [previewDiscountMode, setPreviewDiscountMode] = useState<'none' | '5percent' | '10percent' | 'custom_percent' | 'custom_amount'>('none');
   const [previewDiscountPercent, setPreviewDiscountPercent] = useState('');
-  const [previewFinalAmount, setPreviewFinalAmount] = useState('');
+  const [previewFinalAmounts, setPreviewFinalAmounts] = useState<Record<string, string>>({});
   const [previewAdjustmentReason, setPreviewAdjustmentReason] = useState('');
 
   // Tab 2: Invoices data
@@ -241,6 +244,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const billStatusKey = (target: OwnedPackageTarget, month = selectedMonth) =>
     `${target.studentId}:${target.optionId || 'none'}:${month}`;
 
+  const billingTargetKey = (target: OwnedPackageTarget) =>
+    `${target.studentId}:${target.userPackageId}:${target.optionId || 'none'}`;
+
   const isActiveBillStatus = (status?: string | null) => Boolean(
     status && !['cancelled', 'canceled', 'void', 'deleted'].includes(status),
   );
@@ -301,34 +307,45 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     return counts;
   }, [billingTargetStudents, targetBillStatuses, selectedMonth]);
 
-  const selectableBillingStudents = visibleBillingTargetStudents.filter((student) => (
-    !isStudentAlreadyBilled(student)
-    && !student.packages.some((target) => target.entitlementMismatch)
-  ));
+  const isSelectableBillingTarget = (target: OwnedPackageTarget) => (
+    !target.hasTargetMonthPackage
+    && !target.entitlementMismatch
+    && !isActiveBillStatus(targetBillStatuses[billStatusKey(target)]?.status)
+  );
+
+  const selectableBillingTargets = visibleBillingTargetStudents
+    .flatMap((student) => student.packages)
+    .filter(isSelectableBillingTarget);
+
+  const selectedBillingTargets = useMemo(() => billingTargets.filter((target) => (
+    selectedBillingTargetIds.has(billingTargetKey(target))
+    && isSelectableBillingTarget(target)
+  )), [billingTargets, selectedBillingTargetIds, targetBillStatuses, selectedMonth]);
+
+  const selectedBillingStudentCount = useMemo(() => new Set(
+    selectedBillingTargets.map((target) => target.studentId),
+  ).size, [selectedBillingTargets]);
 
   useEffect(() => {
-    const availableIds = new Set(selectableBillingStudents.map((student) => student.studentId));
-    setSelectedBillingStudentIds((previous) => {
+    const availableIds = new Set(
+      billingTargets.filter(isSelectableBillingTarget).map((target) => billingTargetKey(target)),
+    );
+    setSelectedBillingTargetIds((previous) => {
       const next = new Set(Array.from(previous).filter((id) => availableIds.has(id)));
       if (next.size === previous.size && Array.from(next).every((id) => previous.has(id))) {
         return previous;
       }
       return next;
     });
-  }, [visibleBillingTargetStudents, targetBillStatuses, selectedMonth]);
+  }, [billingTargets, targetBillStatuses, selectedMonth]);
 
-  const allBillingStudentsSelected = selectableBillingStudents.length > 0
-    && selectableBillingStudents.every((student) => selectedBillingStudentIds.has(student.studentId));
+  const allBillingTargetsSelected = selectableBillingTargets.length > 0
+    && selectableBillingTargets.every((target) => selectedBillingTargetIds.has(billingTargetKey(target)));
   const allAutoBillingStudentsSelected = visibleBillingTargetStudents.length > 0
     && visibleBillingTargetStudents.every((student) => autoBillingTargetStudentIds.has(student.studentId));
 
   const billingAmountPreview = useMemo(() => {
-    const selectedTargets = billingTargets.filter((target) =>
-      selectedBillingStudentIds.has(target.studentId)
-      && !target.hasTargetMonthPackage
-      && !target.entitlementMismatch
-      && !isActiveBillStatus(targetBillStatuses[billStatusKey(target)]?.status),
-    );
+    const selectedTargets = selectedBillingTargets;
     const originalAmount = selectedTargets.reduce((sum, target) => sum + Number(target.price || 0), 0);
     const percent = previewDiscountMode === '5percent'
       ? 5
@@ -338,10 +355,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           ? normalizeDiscountPercent(Number(previewDiscountPercent))
           : 0;
     const calculatedAmount = previewDiscountMode === 'custom_amount'
-      ? selectedTargets.length === 1
-        ? Math.max(0, Number(previewFinalAmount.replace(/[^0-9]/g, '')) || 0)
-        : originalAmount
-      : selectedTargets.reduce((sum, target) => sum + discountedBillAmount(Number(target.price || 0), percent), 0);
+      ? selectedTargets.reduce((sum, target) => {
+        const input = previewFinalAmounts[billingTargetKey(target)] ?? String(target.price || 0);
+        return sum + Math.max(0, Number(input.replace(/[^0-9]/g, '')) || 0);
+      }, 0)
+      : discountedBillAmount(originalAmount, percent);
     const finalAmount = selectedTargets.length > 0 ? calculatedAmount : 0;
     return {
       targetCount: selectedTargets.length,
@@ -349,24 +367,24 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       discountAmount: originalAmount - finalAmount,
       finalAmount,
     };
-  }, [billingTargets, previewDiscountMode, previewDiscountPercent, previewFinalAmount, selectedBillingStudentIds]);
+  }, [selectedBillingTargets, previewDiscountMode, previewDiscountPercent, previewFinalAmounts]);
 
-  const toggleBillingStudent = (studentId: string) => {
-    const student = billingTargetStudents.find((item) => item.studentId === studentId);
-    if (!student || isStudentAlreadyBilled(student) || student.packages.some((target) => target.entitlementMismatch)) return;
-    setSelectedBillingStudentIds((previous) => {
+  const toggleBillingTarget = (target: OwnedPackageTarget) => {
+    if (!isSelectableBillingTarget(target)) return;
+    const targetKey = billingTargetKey(target);
+    setSelectedBillingTargetIds((previous) => {
       const next = new Set(previous);
-      if (next.has(studentId)) next.delete(studentId);
-      else next.add(studentId);
+      if (next.has(targetKey)) next.delete(targetKey);
+      else next.add(targetKey);
       return next;
     });
   };
 
-  const toggleAllBillingStudents = () => {
-    setSelectedBillingStudentIds(
-      allBillingStudentsSelected
+  const toggleAllBillingTargets = () => {
+    setSelectedBillingTargetIds(
+      allBillingTargetsSelected
         ? new Set()
-        : new Set(selectableBillingStudents.map((student) => student.studentId)),
+        : new Set(selectableBillingTargets.map((target) => billingTargetKey(target))),
     );
   };
 
@@ -1238,22 +1256,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   // Generate Invoices for all active students in the selected month
   const handleGenerateBills = async (targetMonth: string) => {
-    const selectedTargets = billingTargets.filter((target) =>
-      selectedBillingStudentIds.has(target.studentId)
-      && !target.hasTargetMonthPackage
-      && !isActiveBillStatus(targetBillStatuses[billStatusKey(target)]?.status),
-    );
+    const selectedTargets = selectedBillingTargets;
 
-    if (selectedBillingStudentIds.size === 0) {
-      alert('고지서를 발행할 원생을 한 명 이상 선택해 주세요.');
-      return;
-    }
-    if (previewDiscountMode === 'custom_amount' && selectedTargets.length !== 1) {
-      alert('최종 청구 금액 직접 입력은 청구 대상 1건을 선택했을 때만 사용할 수 있습니다. 여러 건에는 할인율을 적용해 주세요.');
-      return;
-    }
-    if (previewDiscountMode === 'custom_amount' && previewFinalAmount.trim() === '') {
-      alert('최종 청구 금액을 입력해 주세요.');
+    if (selectedTargets.length === 0) {
+      alert('청구할 이용권을 한 건 이상 선택해 주세요.');
       return;
     }
     if (previewDiscountMode === 'custom_percent' && previewDiscountPercent.trim() === '') {
@@ -1264,9 +1270,16 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       alert('[BILL_DISCOUNT_INVALID] 할인율은 0~100 사이로 입력해 주세요.');
       return;
     }
-    if (previewDiscountMode === 'custom_amount' && (!Number.isSafeInteger(Number(previewFinalAmount)) || Number(previewFinalAmount) > 2147483647)) {
-      alert('[BILL_AMOUNT_INVALID] 청구 금액을 확인해 주세요.');
-      return;
+    if (previewDiscountMode === 'custom_amount') {
+      const hasInvalidAmount = selectedTargets.some((target) => {
+        const input = previewFinalAmounts[billingTargetKey(target)] ?? String(target.price || 0);
+        const amount = Number(input.replace(/[^0-9]/g, ''));
+        return input.trim() === '' || !Number.isSafeInteger(amount) || amount > 2147483647;
+      });
+      if (hasInvalidAmount) {
+        alert('[BILL_AMOUNT_INVALID] 선택한 모든 이용권의 최종 청구 금액을 확인해 주세요.');
+        return;
+      }
     }
 
     const discountPercent = previewDiscountMode === '5percent'
@@ -1276,8 +1289,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         : previewDiscountMode === 'custom_percent'
           ? normalizeDiscountPercent(Number(previewDiscountPercent))
           : 0;
-    const directFinalAmount = Math.max(0, Number(previewFinalAmount.replace(/[^0-9]/g, '')) || 0);
-
+    const allocatedPercentFinalAmounts = previewDiscountMode === 'custom_amount'
+      ? []
+      : allocateDiscountedBillAmounts(
+        selectedTargets.map((target) => Number(target.price || 0)),
+        discountPercent,
+      );
     const branchName = activeBranchId && activeBranchId !== 'all' 
       ? branches.find(b => b.id === activeBranchId)?.name || '해당'
       : '전체';
@@ -1286,7 +1303,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     const validityEnd = new Date(
       Date.UTC(Number(targetMonth.slice(0, 4)), Number(targetMonth.slice(5, 7)), 0),
     ).toISOString().slice(0, 10);
-    if (!confirm(`${branchName} 지점에서 선택한 원생 ${selectedBillingStudentIds.size}명에게 [${targetMonth}월분] 청구 고지서를 발행하시겠습니까?\n기본 청구액: ${billingAmountPreview.originalAmount.toLocaleString()}원\n금액 조정: ${billingAmountPreview.discountAmount >= 0 ? '-' : '+'}${Math.abs(billingAmountPreview.discountAmount).toLocaleString()}원\n최종 청구액: ${billingAmountPreview.finalAmount.toLocaleString()}원\n이용권 사용기간: ${validityStart} ~ ${validityEnd}\n선택한 원생이 보유한 이용권별로 생성되며, 이미 발행된 고지서는 건너뜁니다.`)) {
+    if (!confirm(`${branchName} 지점에서 선택한 원생 ${selectedBillingStudentCount}명 · 이용권 ${selectedTargets.length}건에 [${targetMonth}월분] 청구 고지서를 발행하시겠습니까?\n기본 청구액: ${billingAmountPreview.originalAmount.toLocaleString()}원\n금액 조정: ${billingAmountPreview.discountAmount >= 0 ? '-' : '+'}${Math.abs(billingAmountPreview.discountAmount).toLocaleString()}원\n최종 청구액: ${billingAmountPreview.finalAmount.toLocaleString()}원\n이용권 사용기간: ${validityStart} ~ ${validityEnd}\n선택한 이용권별로 청구서가 생성되며, 이미 발행된 고지서는 건너뜁니다.`)) {
       return;
     }
 
@@ -1305,11 +1322,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       let failCount = 0;
       let lastErrMsg = '';
 
-      for (const target of selectedTargets) {
+      for (const [targetIndex, target] of selectedTargets.entries()) {
         const originalAmount = Number(target.price || 0);
         const finalAmount = previewDiscountMode === 'custom_amount'
-          ? directFinalAmount
-          : discountedBillAmount(originalAmount, discountPercent);
+          ? Math.max(0, Number((previewFinalAmounts[billingTargetKey(target)] ?? String(originalAmount)).replace(/[^0-9]/g, '')) || 0)
+          : allocatedPercentFinalAmounts[targetIndex];
         const persistedDiscountType = previewDiscountMode === 'custom_amount'
           ? 'final_amount'
           : discountPercent > 0
@@ -1365,7 +1382,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         alert(`청구서 처리 완료!\n- 새로 발행된 청구서: ${createdCount}건\n- 이미 발행되어 건너뜀: ${alreadyCount}건\n\n[청구내역 조회] 탭으로 자동 이동합니다.`);
         setPreviewDiscountMode('none');
         setPreviewDiscountPercent('');
-        setPreviewFinalAmount('');
+        setPreviewFinalAmounts({});
         setPreviewAdjustmentReason('');
       }
 
@@ -1891,7 +1908,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               <button
                 type="button"
                 onClick={() => handleGenerateBills(selectedMonth)}
-                disabled={actionLoading || selectedBillingStudentIds.size === 0}
+                disabled={actionLoading || selectedBillingTargets.length === 0}
                 className="flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2 text-xs font-black shadow-sm shrink-0"
               >
                 {actionLoading ? <Loader2 size={12} className="animate-spin" /> : null}
@@ -1904,10 +1921,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             <div className="flex flex-col gap-1 border-b border-violet-100 bg-violet-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className="text-sm font-black text-slate-900">🎁 청구 금액 조정</h3>
-                <p className="mt-1 text-[11px] font-medium text-slate-500">선택한 청구 대상의 할인율 또는 최종 청구액을 미리 확인합니다.</p>
+                <p className="mt-1 text-[11px] font-medium text-slate-500">선택한 이용권별 청구 금액을 조정하고 미리 확인합니다.</p>
               </div>
               <span className="mt-2 self-start rounded-full bg-white px-3 py-1 text-[10px] font-black text-violet-700 sm:mt-0">
-                선택 {selectedBillingStudentIds.size}명 · 청구 {billingAmountPreview.targetCount}건
+                선택 {selectedBillingStudentCount}명 · 이용권 {billingAmountPreview.targetCount}건
               </span>
             </div>
 
@@ -1940,12 +1957,32 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   </div>
                 )}
                 {previewDiscountMode === 'custom_amount' && (
-                  <div className="mt-4 max-w-xs">
-                    <div className="flex items-center gap-2">
-                      <input type="text" inputMode="numeric" disabled={billingAmountPreview.targetCount !== 1} value={previewFinalAmount} onChange={(event) => setPreviewFinalAmount(event.target.value.replace(/[^0-9]/g, ''))} placeholder="최종 청구 금액" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 disabled:cursor-not-allowed disabled:opacity-50" />
-                      <span className="text-sm font-black text-slate-500">원</span>
-                    </div>
-                    {billingAmountPreview.targetCount !== 1 && <p className="mt-1.5 text-[10px] font-bold text-rose-500">최종 금액 직접 입력은 청구 1건 선택 시 사용할 수 있습니다.</p>}
+                  <div className="mt-4 max-w-lg space-y-2">
+                    {selectedBillingTargets.length === 0 ? (
+                      <p className="text-[10px] font-bold text-rose-500">먼저 청구할 이용권을 선택해 주세요.</p>
+                    ) : selectedBillingTargets.map((target) => {
+                      const targetKey = billingTargetKey(target);
+                      const value = previewFinalAmounts[targetKey] ?? String(target.price || 0);
+                      return (
+                        <label key={targetKey} className="flex items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+                          <span className="min-w-0 flex-1 truncate text-[11px] font-black text-slate-700">
+                            {target.studentName} · {target.packageName} ({target.optionLabel})
+                          </span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={value}
+                            onChange={(event) => setPreviewFinalAmounts((current) => ({
+                              ...current,
+                              [targetKey]: event.target.value.replace(/[^0-9]/g, ''),
+                            }))}
+                            aria-label={`${target.studentName} ${target.packageName} 최종 청구 금액`}
+                            className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right text-sm font-black text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                          />
+                          <span className="text-xs font-black text-slate-500">원</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1960,11 +1997,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                   />
                 )}
 
-                <p className="mt-4 text-[10px] font-bold text-emerald-600">청구서 발행 시 할인 전 금액과 조정 내역이 함께 저장됩니다.</p>
+                <p className="mt-4 text-[10px] font-bold text-emerald-600">할인율은 선택한 이용권의 총 청구액에서 계산한 뒤, 이용권별 청구서에 합계가 맞도록 배분해 저장됩니다.</p>
               </div>
 
               <div className="rounded-2xl bg-slate-950 p-4 text-white">
-                <p className="mb-2 text-[11px] text-slate-300">할인율은 소수 둘째 자리까지 적용하며, 청구 건별 원 미만은 버립니다. 0원 건은 청구내역에서 ‘무료 처리’로 이용권을 지급해 주세요.</p>
+                <p className="mb-2 text-[11px] text-slate-300">할인율은 총 청구액 기준으로 소수 둘째 자리까지 적용합니다. 배분 과정의 원 단위 차이는 이용권별 청구액에 반영되며, 합계는 최종 청구액과 일치합니다.</p>
                 <div className="flex items-center justify-between text-xs"><span className="font-bold text-slate-400">기본 청구액</span><span className="font-black">{billingAmountPreview.originalAmount.toLocaleString()}원</span></div>
                 <div className="mt-3 flex items-center justify-between text-xs">
                   <span className={`font-bold ${billingAmountPreview.discountAmount < 0 ? 'text-sky-300' : 'text-rose-300'}`}>{billingAmountPreview.discountAmount < 0 ? '추가 금액' : '할인 금액'}</span>
@@ -2019,10 +2056,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                         <span>이번 청구</span>
                         <input
                           type="checkbox"
-                          checked={allBillingStudentsSelected}
-                          onChange={toggleAllBillingStudents}
-                          disabled={selectableBillingStudents.length === 0}
-                          aria-label="청구 대상 전체 선택"
+                          checked={allBillingTargetsSelected}
+                          onChange={toggleAllBillingTargets}
+                          disabled={selectableBillingTargets.length === 0}
+                          aria-label="청구 이용권 전체 선택"
                           className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600"
                         />
                       </div>
@@ -2062,7 +2099,6 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     </tr>
                   ) : visibleBillingTargetStudents.length > 0 ? (
                     visibleBillingTargetStudents.map((student) => {
-                      const alreadyBilled = isStudentAlreadyBilled(student);
                       const billingPlanLocked = isStudentBillingPlanLocked(student);
                       const studentState = getStudentBillingState(student);
                       const studentStateMeta = {
@@ -2079,16 +2115,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       return (
                       <React.Fragment key={student.studentId}>
                         <tr className={`border-t border-slate-200 ${studentStateMeta.row}`}>
-                          <td className="px-4 py-2.5 text-center">
-                            <input
-                              type="checkbox"
-                              checked={selectedBillingStudentIds.has(student.studentId)}
-                              onChange={() => toggleBillingStudent(student.studentId)}
-                              disabled={alreadyBilled || student.packages.some((target) => target.entitlementMismatch)}
-                              aria-label={`${student.studentName} 청구 대상 선택`}
-                              className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-                            />
-                          </td>
+                          <td className="px-4 py-2.5 text-center text-[10px] font-bold text-slate-400">이용권별</td>
                           <td className="px-3 py-2.5 text-center">
                             <input
                               type="checkbox"
@@ -2217,7 +2244,16 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           };
                           return (
                             <tr key={ownedPackage.userPackageId} className={`font-bold text-slate-700 transition whitespace-nowrap ${rowStyle}`}>
-                              <td className="px-4 py-3" aria-hidden="true" />
+                              <td className="px-4 py-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedBillingTargetIds.has(billingTargetKey(ownedPackage))}
+                                  onChange={() => toggleBillingTarget(ownedPackage)}
+                                  disabled={!isSelectableBillingTarget(ownedPackage)}
+                                  aria-label={`${student.studentName} ${packageName} 청구 이용권 선택`}
+                                  className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                />
+                              </td>
                               <td className="px-3 py-3" aria-hidden="true" />
                               <td className="px-4 py-3"><div className="flex max-w-xs flex-wrap gap-1">{ownedPackage.isShared ? <span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-black text-amber-700">가족 공용</span> : ownedPackage.classNames.length > 0 ? ownedPackage.classNames.map((className) => <span key={className} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600 font-bold">{className}</span>) : <span className="text-[10px] text-slate-400">연결 수업 없음</span>}</div></td>
                               <td className="px-4 py-3"><div className="flex items-center gap-1.5"><span className="text-xs font-black text-slate-900">{packageName}</span><span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{voucherTypeLabel}</span></div><div className="text-[10px] text-slate-400 font-medium">{packageLabel}</div></td>
