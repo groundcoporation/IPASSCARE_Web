@@ -26,6 +26,8 @@ interface Bill {
   memo: string | null;
   payment_request_id?: string | null;
   app_sent_at?: string | null;
+  reminder_count?: number;
+  last_reminded_at?: string | null;
   academy_students: {
     student_name: string;
     parent_user_id: string | null;
@@ -79,6 +81,23 @@ interface AppPaymentRequest {
   beneficiary_name: string | null;
   created_at: string;
   closed_at: string | null;
+  reminder_count?: number;
+  last_reminded_at?: string | null;
+}
+
+function ReminderDate({ count, sentAt }: { count?: number; sentAt?: string | null }) {
+  if (!sentAt) return null;
+  const date = new Date(sentAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return (
+    <div className="mt-1 text-[10px] font-bold text-amber-700">
+      <div>(재발송){Number(count) > 1 ? ` ${count}회` : ''}</div>
+      <time dateTime={sentAt}>{date.toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      })}</time>
+    </div>
+  );
 }
 
 interface OwnedPackageTarget {
@@ -1182,24 +1201,38 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       }
 
       const { data, error } = await query.order('created_at', { ascending: false });
+      if (error) throw error;
+      const linkedIds = Array.from(new Set((data || [])
+        .map((bill: any) => bill.payment_request_id as string | null)
+        .filter((id): id is string => Boolean(id))));
+      const reminders = new Map<string, { reminder_count: number; last_reminded_at: string | null }>();
+      // Batch reads avoid a separate request for each bill and oversized URL filters.
+      for (let offset = 0; offset < linkedIds.length; offset += 100) {
+        const { data: requests, error: reminderError } = await supabase
+          .from('payment_requests')
+          .select('id, reminder_count, last_reminded_at')
+          .in('id', linkedIds.slice(offset, offset + 100));
+        if (reminderError) throw reminderError;
+        for (const request of requests || []) reminders.set(request.id, request);
+      }
 
-      if (!error && data) {
+      if (data) {
         const activeStudentBills = (data as any[]).filter((bill) => {
           const student = bill.academy_students;
           return student
             && (!student.child_id || student.child?.deleted_at == null)
             && (!student.parent_user_id || student.parent?.status !== 'deleted');
         });
-        setBills(activeStudentBills as Bill[]);
-      } else {
-        console.error('Error loading bills query:', error);
-        setBills([]);
+        setBills(activeStudentBills.map((bill) => ({
+          ...bill,
+          ...reminders.get(bill.payment_request_id),
+        })) as Bill[]);
       }
 
       const period = billingMonthPeriod(selectedMonth);
       let appRequestQuery = supabase
         .from('payment_requests')
-        .select('id, parent_id, parent_name, branch_id, final_amount, total_amount, status, request_title, request_type, issued_source, beneficiary_name, created_at, closed_at')
+        .select('id, parent_id, parent_name, branch_id, final_amount, total_amount, status, request_title, request_type, issued_source, beneficiary_name, created_at, closed_at, reminder_count, last_reminded_at')
         .eq('issued_source', 'admin_app')
         .gte('created_at', `${period.start}T00:00:00+09:00`)
         .lte('created_at', `${period.end}T23:59:59+09:00`)
@@ -1214,10 +1247,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         .filter(Boolean));
       setAppPaymentRequests(((appRequests || []) as AppPaymentRequest[])
         .filter((request) => !linkedRequestIds.has(request.id)));
-    } catch (err) {
-      console.error('Error loading bills:', err);
+    } catch (err: unknown) {
       setBills([]);
       setAppPaymentRequests([]);
+      await handleError(normalizeError(err, 'BILL_LOAD_FAILED'), 'BILL_LOAD_FAILED', { operation: 'billing.load' });
     } finally {
       setLoading(false);
     }
@@ -2471,7 +2504,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 )}
                               </td>
                               <td className="px-4 py-3 text-slate-800 font-bold text-right">{isPaid ? `${bill.amount_paid.toLocaleString()}원` : '-'}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-600 text-center">{billDateText}</td>
+                              <td className="px-4 py-3 text-xs font-medium text-slate-600 text-center">
+                                {billDateText}
+                                <ReminderDate count={bill.reminder_count} sentAt={bill.last_reminded_at} />
+                              </td>
                               <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
                               <td className="px-4 py-3 text-xs font-medium text-slate-500 text-center">{bill.payment_date ? new Date(bill.payment_date).toLocaleDateString('ko-KR') : '-'}</td>
                               <td className="px-4 py-3 text-center">
@@ -2541,7 +2577,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
                             : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
                     const canDeleteRequest = request.status !== 'paid';
-                    return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}</td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount ?? request.total_amount ?? 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
+return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}<ReminderDate count={request.reminder_count} sentAt={request.last_reminded_at} /></td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount ?? request.total_amount ?? 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
                   }) : <tr><td colSpan={7} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
                 </tbody>
               </table>
