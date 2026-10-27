@@ -1,4 +1,10 @@
 import { supabase } from '../../lib/supabaseClient';
+import { environmentConfig } from '../../lib/environment';
+import { AppError, normalizeError } from '../../errors/appError';
+
+function assertPaymentEnabled() {
+  if (environmentConfig.databaseTarget === 'local') throw new AppError('LOCAL_EXTERNAL_DISABLED');
+}
 
 export interface KSPayPaymentRequest {
   branchId: string;
@@ -146,6 +152,7 @@ export class KSPayWebService {
    * Loads jQuery dependency required by KSNET WebHost
    */
   static async loadJQuery(): Promise<void> {
+    assertPaymentEnabled();
     if ((window as any).$ && (window as any).jQuery) return;
 
     return new Promise((resolve, reject) => {
@@ -171,6 +178,7 @@ export class KSPayWebService {
    * Loads KSNET PC Web SSL script dynamically
    */
   static async loadKSPayScript(): Promise<void> {
+    assertPaymentEnabled();
     // 1. Ensure jQuery is available
     await this.loadJQuery();
 
@@ -206,16 +214,15 @@ export class KSPayWebService {
     onSuccess: (result: KSPayPaymentResult) => void,
     onCancel?: () => void
   ): Promise<void> {
+    assertPaymentEnabled();
     const orderNumber = this.generateOrderNumber();
     const goodName = this.formatGoodName(req.goodName || `iPoint ${req.amount.toLocaleString()}P`);
     const mid = await this.getBranchMid(req.branchId);
 
     try {
       await this.loadKSPayScript();
-    } catch (err: any) {
-      alert(`결제 모듈 로드 오류: ${err.message}`);
-      if (onCancel) onCancel();
-      return;
+    } catch (error: unknown) {
+      throw normalizeError(error, 'PAYMENT_START_FAILED');
     }
 
     // 1. Remove any old KSPayWeb forms

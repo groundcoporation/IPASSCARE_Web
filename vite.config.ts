@@ -1,12 +1,36 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
+import { fileURLToPath } from 'node:url'
+import { resolveEnvironment } from './config/environment.cjs'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
-export default defineConfig({
+const environmentDirectory = fileURLToPath(new URL('./environments', import.meta.url))
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, environmentDirectory, 'VITE_')
+  const environment = resolveEnvironment({
+    environment: env.VITE_APP_ENV,
+    projectRef: env.VITE_SUPABASE_PROJECT_REF,
+    supabaseUrl: env.VITE_SUPABASE_URL,
+    supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY,
+  }, mode)
+  return {
+  define: { __IPASSCARE_ENVIRONMENT__: JSON.stringify(environment) },
+  envDir: environmentDirectory,
+  server: environment.databaseTarget === 'local' ? { host: '127.0.0.1' } : undefined,
   plugins: [
     react(),
     tailwindcss(),
+    ...(environment.databaseTarget === 'local' ? [{
+      name: 'local-external-request-guard',
+      transformIndexHtml() {
+        return [{ tag: 'meta', injectTo: 'head-prepend' as const,
+          attrs: { 'http-equiv': 'Content-Security-Policy', content:
+            `default-src 'self'; connect-src 'self' ${environment.supabaseUrl} ws://127.0.0.1:* ws://localhost:*; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ${environment.supabaseUrl}; font-src 'self' data:; frame-src 'none'; form-action 'self'; object-src 'none'; base-uri 'self'` }
+        }];
+      }
+    }] : []),
     {
       name: 'kspay-wh-rcv-handler',
       configureServer(server) {
@@ -76,4 +100,5 @@ export default defineConfig({
       }
     }
   ],
+  }
 })

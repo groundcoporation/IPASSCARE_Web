@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabaseClient';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { KSPayWebService } from '../../services/payment/KSPayWebService';
 import { SmsGatewayService } from '../../services/sms/SmsGatewayService';
+import { handleError } from '../../errors/handleError';
 import { 
   Send, Search, Smartphone, Clock, History, BookmarkPlus, 
   Trash2, X, RefreshCw, ChevronLeft, ChevronRight, 
@@ -715,6 +716,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
 
   // Real DB Charge Action via KSPay Web Service
   const handleSimulateCharge = async () => {
+    if (chargeLoading) return;
     if (!targetBranchId) {
       alert('소속 지점 정보가 확인되지 않습니다.');
       return;
@@ -744,8 +746,8 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
           alert(errMsg || '❌ 결제가 취소되었거나 정상적으로 완료되지 않았습니다.');
         }
       );
-    } catch (err: any) {
-      alert(`i-Point 충전 중 에러 발생: ${err.message}`);
+    } catch (error: unknown) {
+      await handleError(error, 'PAYMENT_START_FAILED', { operation: 'sms.charge_start' });
     } finally {
       setChargeLoading(false);
     }
@@ -753,6 +755,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
 
   // Real DB Send Message Action (실시간 차감 및 로그 저장)
   const handleSendMessage = async () => {
+    if (sending) return;
     if (recipients.length === 0) {
       alert('문자를 수신할 대상을 1명 이상 추가해 주세요!');
       return;
@@ -862,8 +865,8 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
       setMessageContent('');
       setAttachedImage(null);
       setIsReserved(false);
-    } catch (err: any) {
-      alert(`문자 발송 처리 중 오류가 발생했습니다: ${err.message}`);
+    } catch (error: unknown) {
+      await handleError(error, 'SMS_SEND_FAILED', { operation: 'sms.send' });
     } finally {
       setSending(false);
     }

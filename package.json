@@ -4,7 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --mode production",
+    "dev:production": "vite --mode production",
+    "dev:local": "vite --mode development",
+    "dev:preview": "vite --mode preview",
+    "build:preview": "vite build --mode preview",
+    "build:local": "vite build --mode development --outDir dist-local",
+    "test:environment": "node --test tests/environment.test.mjs",
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview"

@@ -1,36 +1,188 @@
-# IPASSCARE SMS Relay
+# 아이패스케어 문자 중계 서버 운영 안내
 
-The relay keeps the Bizgo API key and Supabase service-role key out of the browser.
-It accepts authenticated requests from the IPASSCARE web app and sends SMS/LMS
-through the Bizgo OMNI API from the Lightsail static IPv4 address.
+## 1. 이 서버는 어떤 역할인가요?
 
-## Runtime configuration
+관리자 웹에서 요청한 문자를 받아 비즈고(Bizgo OMNI)에 전달하는 서버입니다.
+비즈고 API 키와 Supabase의 관리자용 비밀 키(`service-role`)가 브라우저에 노출되지 않도록 서버에서만 사용합니다.
 
-Copy `.env.example` to `/etc/ipasscare-sms-relay.env` on the server and replace
-every placeholder. Never commit the real environment file.
+```text
+관리자 웹 → HTTPS / Nginx → 문자 중계 서버 → 비즈고 → 수신자
+                              └─ Supabase 로그인·직원 권한 확인
+```
 
-The Node process binds to `127.0.0.1:3000` by default. Do not expose port 3000
-in the Lightsail firewall. Publish only ports 80/443 through Nginx and HTTPS.
+Lightsail은 이 서버를 실행하는 AWS 가상 서버입니다. 비즈고의 접속 허용 목록(ACL)에 등록할 **고정 IPv4 주소**가 필요합니다.
+Supabase DB 자체를 이 서버에서 실행하는 것은 아닙니다.
 
-## Production network setup
+> 이 문서는 저장소의 코드와 설정 예제를 기준으로 작성했습니다. 실제 운영 서버에 아래 설정이 모두 적용되어 있다는 뜻은 아닙니다.
+> 배포 명령은 서버 상태와 기존 설정을 확인한 담당자가 실행합니다. 도메인·IP·키는 현재 환경에 맞게 확인해야 합니다.
 
-1. Register the Lightsail static IPv4 `43.202.8.154` in the Bizgo ACL.
-2. Point a DNS A record such as `sms-api.example.com` to that static IPv4.
-3. Copy `nginx.conf.example`, replace its `server_name`, and enable it in Nginx.
-4. Issue a TLS certificate with Certbot. The production web app must call HTTPS;
-   an HTTPS page cannot call a plain HTTP relay.
-5. Set the web hosting environment variable to
-   `VITE_SMS_RELAY_URL=https://sms-api.example.com` and rebuild the web app.
+## 2. 현재 지원하는 기능
 
-## Endpoints
+| 항목 | 지원 범위 |
+| --- | --- |
+| 단문 SMS | 본문 최대 90바이트 |
+| 장문 LMS | 본문 최대 2,000바이트 |
+| 수신자 수 | 요청 한 번당 1~200명 |
+| 발송 시점 | 즉시 발송 |
+| 인증 | Supabase 로그인 토큰과 직원 역할 확인 |
+| 지점 제한 | 일반 직원은 자신의 지점만 요청 가능. `admin`·`master`는 코드상 별도 예외 |
 
-- `GET /health`
-- `POST /v1/messages/send` (Supabase access token required)
+본문 길이는 현재 코드에서 ASCII 문자는 1바이트, 그 외 문자는 2바이트로 계산합니다. 글자 수와 같지 않으며, 이모지 등은 제공자 처리 결과까지 확인해야 합니다.
 
-## Supported in the first release
+예약 발송과 이미지 MMS는 현재 지원하지 않습니다. 별도 예약 작업자나 이미지 업로드 처리가 필요합니다.
+성공 응답은 **비즈고 발송 접수** 기준이며, 수신자의 휴대폰 도착을 보장하는 결과는 아닙니다.
 
-- Immediate SMS (up to 90 bytes)
-- Immediate LMS (up to 2,000 bytes)
-- Up to 200 recipients per request
+## 3. 실행 환경과 파일
 
-Scheduled delivery and image MMS require separate worker/image-upload support.
+- Node.js 20 이상이 필요합니다.
+- 실행 명령은 `npm start`이며, 내부적으로 `node src/server.mjs`를 실행합니다.
+- 기본 내부 주소는 `127.0.0.1:3000`입니다.
+- 운영 설정 예제는 Ubuntu 계열 서버의 Nginx와 systemd 사용을 전제로 합니다.
+
+| 파일 | 역할 |
+| --- | --- |
+| [src/server.mjs](src/server.mjs) | 로그인 확인·요청 검증·비즈고 전달 |
+| [.env.example](.env.example) | 환경변수 작성 예제. 실제 비밀 값 저장용이 아님 |
+| [nginx.conf.example](nginx.conf.example) | 외부 요청을 내부 3000번 포트로 전달하는 설정 예제 |
+| [ipasscare-sms-relay.service](ipasscare-sms-relay.service) | 서버 자동 실행·재시작을 위한 systemd 설정 |
+
+## 4. 환경변수 설정
+
+서버에서 `.env.example`을 참고해 `/etc/ipasscare-sms-relay.env`를 작성합니다.
+예제 값을 그대로 사용하지 말고 **Supabase 프로젝트·비즈고 환경·웹 도메인이 서로 맞는지** 확인합니다.
+`.env.example`의 Supabase 주소도 환경에 맞는지 반드시 확인해야 합니다.
+
+| 변수 | 의미·설정 방법 |
+| --- | --- |
+| `HOST` | 기본 `127.0.0.1`. Nginx를 통해서만 접근하도록 유지 |
+| `PORT` | 기본 `3000`. Nginx 전달 주소와 일치해야 함 |
+| `ALLOWED_ORIGINS` | 문자 요청을 허용할 웹 주소. 여러 개면 쉼표로 구분. 운영에서는 필요한 주소만 등록 |
+| `SUPABASE_URL` | 사용할 Supabase 프로젝트 주소 |
+| `SUPABASE_ANON_KEY` | 같은 프로젝트의 공개 API 키 |
+| `SUPABASE_SERVICE_ROLE_KEY` | 같은 프로젝트의 관리자용 비밀 키. 서버에만 저장 |
+| `BIZGO_API_URL` | 비즈고 API 주소. 예제는 운영 주소이므로 실제 발송·과금에 주의 |
+| `BIZGO_API_KEY` | 해당 비즈고 환경에 맞는 인증 값 |
+| `BIZGO_SENDER_PHONE` | 비즈고에 등록된 발신번호 |
+
+비밀 파일은 Git에 올리거나 채팅·스크린샷·브라우저 환경변수에 복사하지 않습니다.
+서버에서 최소한의 접근 권한으로 관리합니다. 현재 코드는 `.env` 파일을 자동으로 읽지 않으므로, 운영에서는 아래 systemd의 `EnvironmentFile`로 주입합니다.
+
+## 5. 배포 순서
+
+### 5-1. 고정 IP와 외부 접속 준비
+
+1. Lightsail 인스턴스에 연결된 **현재 고정 IPv4 주소**를 확인합니다.
+2. 비즈고 ACL에 그 주소를 등록합니다. 서버 이전 시 새 주소를 먼저 허용해야 합니다.
+3. 예를 들어 `sms-api.example.com`의 DNS A 레코드를 해당 고정 IPv4로 연결합니다. 이 도메인은 예시입니다.
+4. 외부 웹 접속은 80/443번 포트를 사용하고, 내부 3000번 포트는 방화벽에서 공개하지 않습니다. SSH 관리 접속은 별도로 필요한 범위만 허용합니다.
+
+### 5-2. 코드와 자동 실행 설정
+
+서비스 예제는 다음 경로를 사용합니다. 실제 서버의 사용자·경로·Node 실행 위치와 맞는지 먼저 확인합니다.
+
+- 실행 사용자: `ubuntu`
+- 코드 경로: `/opt/ipasscare-sms-relay`
+- Node 경로: `/usr/bin/node`
+- 환경 파일: `/etc/ipasscare-sms-relay.env`
+
+코드와 환경 파일을 준비한 뒤 서비스 파일을 등록합니다. 아래 명령은 Linux 서버에서 실행하는 예시이며 Windows 개발 PC용이 아닙니다.
+기존 서비스 파일이 있다면 덮어쓰기 전에 차이와 복구본을 확인합니다.
+
+```bash
+cd /opt/ipasscare-sms-relay
+sudo cp ipasscare-sms-relay.service /etc/systemd/system/ipasscare-sms-relay.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ipasscare-sms-relay
+sudo systemctl status ipasscare-sms-relay --no-pager
+```
+
+환경변수나 코드를 변경한 뒤에는 점검 시간을 정해 서비스를 재시작하고 상태를 확인합니다. 단일 프로세스 재시작 중에는 요청이 실패할 수 있습니다.
+
+### 5-3. Nginx와 HTTPS 설정
+
+1. `nginx.conf.example`의 `server_name`을 실제 문자 API 도메인으로 바꿔 Nginx에 등록합니다.
+2. `proxy_pass`가 내부 서버 주소 `http://127.0.0.1:3000`을 가리키는지 확인합니다.
+3. `sudo nginx -t`로 설정 오류를 검사하고, 성공한 뒤 설정을 적용합니다.
+4. Certbot 등으로 실제 도메인의 TLS 인증서를 발급하고 HTTPS 및 자동 갱신을 설정합니다. **예제 파일 자체에는 HTTPS 설정이 없습니다.**
+5. 인증서 만료 감시와 갱신 점검도 준비합니다. 발급 명령은 서버 OS·Nginx 설치 방식에 맞춰 선택합니다.
+
+운영 웹이 HTTPS이면 문자 API도 HTTPS여야 합니다. HTTP 주소를 사용하면 브라우저가 혼합 콘텐츠로 차단할 수 있습니다.
+
+### 5-4. 웹 연결
+
+웹 호스팅의 환경변수에 다음 값을 설정합니다. 실제 도메인으로 교체해야 합니다.
+
+```text
+VITE_SMS_RELAY_URL=https://sms-api.example.com
+```
+
+이 값은 웹 빌드 시 반영되므로 설정 변경 후 **웹을 다시 빌드·배포**합니다.
+웹 주소가 서버의 `ALLOWED_ORIGINS`에도 등록되어 있는지 확인합니다.
+비즈고 키나 `SUPABASE_SERVICE_ROLE_KEY`를 `VITE_` 변수에 넣으면 안 됩니다.
+
+## 6. 정상 동작 확인
+
+### 서버 상태 확인 — 문자 발송 없음
+
+서버 내부에서:
+
+```bash
+curl http://127.0.0.1:3000/health
+```
+
+외부에서 실제 도메인으로:
+
+```bash
+curl https://sms-api.example.com/health
+```
+
+`ok: true`와 환경 표시를 확인합니다. `/health`는 프로세스 응답만 확인하며 Supabase 인증·비즈고 접수·실제 문자 도착까지 검사하지 않습니다.
+
+### 실제 발송 확인 — 과금 가능
+
+로그인한 관리자 웹에서 허용된 테스트 수신자 1명에게 먼저 발송합니다.
+접수 건수·실패 건수와 비즈고 측 결과를 함께 확인합니다. 이 테스트는 실제 문자 발송과 과금이 발생할 수 있습니다.
+
+| 경로 | 용도 |
+| --- | --- |
+| `GET /health` | 기본 서버 응답 확인 |
+| `POST /v1/messages/send` | 문자 발송 요청. `Authorization: Bearer <Supabase 로그인 토큰>` 필요 |
+
+## 7. 오류가 발생했을 때
+
+| 증상 | 우선 확인할 부분 |
+| --- | --- |
+| 내부 `/health`도 응답 없음 | systemd 상태, 필수 환경변수 누락, Node 경로·실행 사용자·포트 |
+| 내부는 정상, 외부 접속 실패 | DNS, Lightsail 방화벽, Nginx, TLS 인증서 |
+| 웹에서만 차단 | `ALLOWED_ORIGINS`, 실제 웹 도메인, HTTPS, 웹 재빌드 여부 |
+| `401` | 로그인 만료, 토큰 전달, Supabase 프로젝트/키 일치 여부 |
+| `403` | 허용 출처, 직원 역할, 삭제 상태, 지점 접근 범위 |
+| `400` | 요청 형식, 수신자 수, 번호 형식, 본문 길이. 다른 처리 예외도 이 코드로 반환될 수 있음 |
+| `502` 또는 접수 실패 | 비즈고 API 환경·인증·ACL·발신번호·잔액/계약 상태, 제공자 응답 |
+| 접수 성공인데 문자 미도착 | 비즈고의 최종 발송 결과와 통신사/수신 단말 상태 |
+
+서버 상태와 최근 로그를 확인하는 명령:
+
+```bash
+sudo systemctl status ipasscare-sms-relay --no-pager
+sudo journalctl -u ipasscare-sms-relay -n 100 --no-pager
+sudo nginx -t
+```
+
+로그·응답에 개인정보나 제공자 오류 원문이 포함될 수 있으므로 그대로 외부에 공유하지 않습니다.
+특히 응답이 끊겼다고 즉시 재발송하지 않습니다. 기존 요청 ID와 비즈고 접수 결과를 먼저 확인해야 중복 발송·중복 과금을 줄일 수 있습니다.
+현재 코드는 `clientRequestId`가 없으면 새 ID를 생성하므로, 단순히 다시 요청하면 같은 요청으로 인식되지 않을 수 있습니다.
+
+## 8. 운영 전 점검표
+
+- [ ] 운영/테스트 Supabase 및 비즈고 환경이 의도대로 연결되어 있다.
+- [ ] 비밀 값이 브라우저·Git·일반 로그에 노출되지 않는다.
+- [ ] 실제 고정 IP가 비즈고 ACL에 등록되어 있다.
+- [ ] 외부 3000번 포트는 닫혀 있고 HTTPS로만 웹에서 호출한다.
+- [ ] systemd 자동 시작·재시작, Nginx, 인증서 갱신을 확인했다.
+- [ ] 허용 웹 도메인·직원 권한·지점 범위를 확인했다.
+- [ ] 승인된 테스트 발송으로 접수와 실제 도착을 구분해 확인했다.
+- [ ] 응답 유실·부분 실패 시 결과 확인 및 재발송 절차가 있다.
+- [ ] 상태 감시·장애 담당자·요금/발송량 확인 절차가 있다.
+
+자동 재시도·발송 대기열·최종 결과 추적·서버 측 속도 제한은 이 문서에서 구현 완료로 간주하지 않습니다. 현재 배포본을 확인한 뒤 필요한 보완 작업을 별도로 진행해야 합니다.

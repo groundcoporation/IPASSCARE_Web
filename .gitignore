@@ -10,10 +10,12 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-local/
 *.local
 .env
 .env.*
 !.env.example
+!environments/.env.*.example
 server/sms-relay/.env
 
 # Editor directories and files

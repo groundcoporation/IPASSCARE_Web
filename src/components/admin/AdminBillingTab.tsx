@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabaseClient';
 import { AppError, formatError, normalizeError, logError } from '../../errors/appError';
 import { handleError } from '../../errors/handleError';
 import { allocateDiscountedBillAmounts, discountedBillAmount, normalizeDiscountPercent } from '../../utils/billingAmount';
+import { withBillingReminder } from '../../utils/billingReminder';
 import { CheckCircle2, AlertCircle, BellRing, FileText, Loader2, ArrowRight, Search, Trash2 } from 'lucide-react';
 
 interface Bill {
@@ -1241,10 +1242,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             && (!student.child_id || student.child?.deleted_at == null)
             && (!student.parent_user_id || student.parent?.status !== 'deleted');
         });
-        setBills(activeStudentBills.map((bill) => ({
-          ...bill,
-          ...reminders.get(bill.payment_request_id),
-        })) as Bill[]);
+        setBills(activeStudentBills.map((bill) =>
+          withBillingReminder(bill, reminders.get(bill.payment_request_id)),
+        ) as Bill[]);
       }
 
       const period = billingMonthPeriod(selectedMonth);

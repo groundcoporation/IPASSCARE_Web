@@ -1,5 +1,9 @@
 /** Shared error contract. Keep app/web copies identical; never show raw server messages. */
 export const errorMessages = {
+  CONFIG_INVALID: "실행 환경 설정이 없거나 서로 일치하지 않습니다. 환경별 설정을 확인해 주세요.",
+  LOCAL_EXTERNAL_DISABLED: "로컬 테스트에서는 실제 결제·외부 전송을 차단합니다. 테스트 전용 mock으로 검증해 주세요.",
+  PAYMENT_START_FAILED: "결제창을 준비하지 못했습니다. 기존 결제 내역을 확인한 후 다시 시도해 주세요.",
+  SMS_SEND_FAILED: "문자 처리 결과를 확인하지 못했습니다. 발송 이력을 확인하고 즉시 다시 발송하지 마세요.",
   SHUTTLE_TRACKING_FAILED: "위치 전송 상태를 확인하지 못했습니다. 네트워크와 위치 권한을 확인해 주세요.",
   SHUTTLE_TRACKING_NOT_READY: "백그라운드 위치 추적을 준비하지 못했습니다. 위치 항상 허용과 운행 상태를 확인한 후 다시 시도해 주세요.",
   SHUTTLE_ROUTE_SAVE_FAILED: "셔틀 노선을 저장하지 못했습니다. 수업 일정과 최신 저장 상태를 확인해 주세요.",

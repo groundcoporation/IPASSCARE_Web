@@ -1,4 +1,6 @@
 import { supabase } from '../../lib/supabaseClient';
+import { environmentConfig } from '../../lib/environment';
+import { AppError, normalizeError } from '../../errors/appError';
 
 export type SmsMessageType = 'SMS' | 'LMS';
 
@@ -46,42 +48,47 @@ export class SmsGatewayError extends Error {
 
 export const SmsGatewayService = {
   async send(request: SendSmsRequest): Promise<SendSmsResponse> {
-    if (!relayUrl) {
-      throw new SmsGatewayError('문자 중계 서버 주소(VITE_SMS_RELAY_URL)가 설정되지 않았습니다.');
+    try {
+      if (environmentConfig.databaseTarget === 'local') throw new AppError('LOCAL_EXTERNAL_DISABLED');
+      if (!relayUrl) {
+        throw new SmsGatewayError('문자 중계 서버 주소(VITE_SMS_RELAY_URL)가 설정되지 않았습니다.');
+      }
+
+      const { data, error } = await supabase.auth.getSession();
+      if (error || !data.session?.access_token) {
+        throw new SmsGatewayError('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.', 401);
+      }
+
+      const response = await fetch(`${relayUrl}/v1/messages/send`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${data.session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...request,
+          clientRequestId: crypto.randomUUID(),
+        }),
+      });
+
+      const payload = await response.json().catch(() => null) as
+        | (SendSmsResponse & { error?: string })
+        | null;
+
+      if (!response.ok) {
+        throw new SmsGatewayError(
+          '문자 중계 서버 요청에 실패했습니다.',
+          response.status,
+        );
+      }
+
+      if (!payload) {
+        throw new SmsGatewayError('문자 중계 서버가 올바른 응답을 반환하지 않았습니다.');
+      }
+
+      return payload;
+    } catch (error: unknown) {
+      throw normalizeError(error, 'SMS_SEND_FAILED');
     }
-
-    const { data, error } = await supabase.auth.getSession();
-    if (error || !data.session?.access_token) {
-      throw new SmsGatewayError('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.', 401);
-    }
-
-    const response = await fetch(`${relayUrl}/v1/messages/send`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${data.session.access_token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        ...request,
-        clientRequestId: crypto.randomUUID(),
-      }),
-    });
-
-    const payload = await response.json().catch(() => null) as
-      | (SendSmsResponse & { error?: string })
-      | null;
-
-    if (!response.ok) {
-      throw new SmsGatewayError(
-        payload?.error || `문자 중계 서버 요청에 실패했습니다. (${response.status})`,
-        response.status,
-      );
-    }
-
-    if (!payload) {
-      throw new SmsGatewayError('문자 중계 서버가 올바른 응답을 반환하지 않았습니다.');
-    }
-
-    return payload;
   },
 };
