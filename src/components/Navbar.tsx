@@ -71,7 +71,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
               맞춤 가이드
             </a>
             <a href="#calculator" className="text-sm font-bold text-slate-700 hover:text-blue-600 transition-colors whitespace-nowrap flex items-center gap-1.5">
-              <span>도입 효과 계산기</span>
+              <span>이용 요금</span>
               <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">HOT</span>
             </a>
             <a href="#manuals" className="text-sm font-bold text-slate-700 hover:text-blue-600 transition-colors whitespace-nowrap">
@@ -211,7 +211,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenInquiry, onOpenLogin, user
               onClick={() => setMobileMenuOpen(false)}
               className="text-base font-bold text-slate-800 hover:text-blue-600 px-2 py-1.5 rounded-md hover:bg-slate-50 flex items-center justify-between"
             >
-              <span>도입 효과 계산기</span>
+              <span>이용 요금</span>
               <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">HOT</span>
             </a>
             <a 

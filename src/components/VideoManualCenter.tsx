@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Video, X, Lock, KeyRound } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
+import { isCurrentPublicManual } from '../data/publicManuals';
 
 interface VideoManual {
   id: string;
@@ -64,16 +65,15 @@ const STATIC_MANUAL_DATA: VideoManual[] = [
     id: 'm3',
     category: 'parent',
     categoryLabel: '학부모 매뉴얼',
-    title: '적립 포인트 조회 및 VOG SPORTS 제휴 쇼핑몰 전환',
-    duration: '2분 05초',
-    description: '결제 및 추천 이벤트로 적립된 마일리지 포인트를 쇼핑몰 포인트로 1:1 전환하는 상세 과정입니다.',
+    title: '학습·상담일지에서 아이의 학원 생활 기록 확인',
+    duration: '사용 가이드',
+    description: '학원에서 공유한 학습 내용과 상담 기록을 종류별로 확인하는 방법입니다.',
     steps: [
-      '마이페이지 > [포인트 관리] 메뉴 진입',
-      '전환할 포인트 금액 입력 후 [쇼핑몰 포인트 전환] 터치',
-      'VOG SPORTS / 영카트 쇼핑몰 결제 시 즉시 현금처럼 사용'
+      '홈 화면에서 [학습·상담일지] 메뉴 선택',
+      '[전체]·[학습일지]·[상담일지]에서 원하는 종류 선택',
+      '일지의 날짜와 제목, 학습 또는 상담 내용 확인'
     ],
-    thumbnailBg: 'from-emerald-600 to-teal-700',
-    youtubeId: 'dQw4w9WgXcQ'
+    thumbnailBg: 'from-emerald-600 to-teal-700'
   },
   {
     id: 'm4',
@@ -181,9 +181,12 @@ export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfil
     };
   }, [selectedManual, restrictedNoticeManual]);
 
-  const filteredManuals = activeCategory === 'all' 
-    ? manualsList 
-    : manualsList.filter(m => m.category === activeCategory);
+  // Retired storefront guides must not reappear from previously registered DB content.
+  // Leave the registered records untouched; this is a public presentation filter only.
+  const publicManuals = manualsList.filter(isCurrentPublicManual);
+  const filteredManuals = activeCategory === 'all'
+    ? publicManuals
+    : publicManuals.filter(m => m.category === activeCategory);
 
   return (
     <section id="manuals" className="py-24 bg-slate-50 relative">
@@ -308,7 +311,7 @@ export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfil
                     </div>
 
                     <div className="z-10 text-[11px] text-slate-100 font-bold drop-shadow">
-                      {isLocked ? '🔒 관리자 로그인 후 시청 가능' : '클릭 시 영상 재생 & 상세 가이드 보기'}
+                      {isLocked ? '🔒 관리자 로그인 후 시청 가능' : ytId ? '클릭 시 영상 재생 & 상세 가이드 보기' : '클릭 시 상세 가이드 보기'}
                     </div>
                   </div>
 
@@ -324,7 +327,7 @@ export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfil
 
                 <div className={`px-6 py-4 border-t flex items-center justify-between text-xs font-bold ${isLocked ? 'bg-amber-50/70 border-amber-100 text-amber-700' : 'bg-slate-50 border-slate-100 text-blue-600'}`}>
                   <span>{isLocked ? '🔒 코치/관리자 권한 가이드' : `단계별 주요 설명 (${manual.steps.length}단계)`}</span>
-                  <span className="group-hover:translate-x-1 transition-transform">{isLocked ? '로그인 필요 🔒' : '영상 재생 \u2192'}</span>
+                  <span className="group-hover:translate-x-1 transition-transform">{isLocked ? '로그인 필요 🔒' : ytId ? '영상 재생 →' : '가이드 보기 →'}</span>
                 </div>
               </div>
             );
@@ -369,7 +372,7 @@ export const VideoManualCenter: React.FC<VideoManualCenterProps> = ({ userProfil
                     </div>
                     <div className="text-sm font-bold">{selectedManual.title}</div>
                     <div className="text-xs text-slate-400">
-                      (공식 매뉴얼 고화질 동영상 가이드 재생중)
+                      별도 영상 없이 아래의 단계별 가이드로 확인할 수 있습니다.
                     </div>
                   </div>
                 )}

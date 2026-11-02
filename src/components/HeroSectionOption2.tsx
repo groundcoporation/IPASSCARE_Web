@@ -41,7 +41,7 @@ export const HeroSectionOption2: React.FC<HeroSectionOption2Props> = ({ onOpenIn
           </h1>
 
           <p className="text-base sm:text-xl text-slate-300 max-w-2xl mx-auto font-normal leading-relaxed">
-            실시간 GPS 셔틀 관제부터 원터치 키패드 출결, KSPay 원비 수납, VOG SPORTS 쇼핑몰 마일리지 혜택까지. 학원과 학부모를 가장 완벽하게 연결하는 대표 솔루션.
+            실시간 차량 위치·승하차 알림·운행 관리가 핵심입니다. 아이의 이동은 안심하게, 학원 운영은 더 편리하게 연결하세요.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
@@ -233,11 +233,11 @@ export const HeroSectionOption2: React.FC<HeroSectionOption2Props> = ({ onOpenIn
 
                       <div className="bg-white p-3.5 rounded-2xl shadow-sm border border-slate-200 flex justify-between items-center text-xs">
                         <div>
-                          <div className="font-bold text-slate-900">VOG SPORTS 마일리지</div>
-                          <div className="text-[10px] text-indigo-600 font-bold">24,500 P 적립중</div>
+                          <div className="font-bold text-slate-900">학습·상담일지</div>
+                          <div className="text-[10px] text-indigo-600 font-bold">아이의 학원 생활 기록</div>
                         </div>
                         <span className="text-xs text-blue-600 font-bold underline cursor-pointer">
-                          쇼핑몰 전환
+                          일지 확인
                         </span>
                       </div>
                     </div>

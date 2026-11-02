@@ -871,6 +871,9 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           amount_paid: number | null;
           status: string | null;
         }>;
+        const activeCurrentBillRows = currentBillRows.filter((bill) =>
+          !['cancelled', 'void', 'deleted'].includes(bill.status || 'unpaid')
+        );
         const currentPlanRows = (currentPlans || []) as any[];
         const [currentBillYear, currentBillMonthNumber] = currentBillMonth().split('-').map(Number);
         const mismatchMonthStart = `${currentBillMonth()}-01`;
@@ -908,7 +911,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           && (!row.valid_until && !row.expiry_date || (row.valid_until || row.expiry_date)!.slice(0, 10) >= `${currentBillMonth()}-01`)
         ));
         setCurrentMonthBillingLocked(
-          currentBillRows.length > 0
+          activeCurrentBillRows.length > 0
           || currentPlanRows.some((plan) => plan.item_type === 'package' && plan.status === 'applied')
           || hasCurrentMonthIssuedPackage,
         );
@@ -917,7 +920,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           .filter((plan) => plan.item_type === 'package')
           .map((plan) => plan.package_option_id)
           .filter(Boolean) as string[];
-        const currentBillPackageIds = currentBillRows
+        const currentBillPackageIds = activeCurrentBillRows
           .map((bill) => bill.package_option_id)
           .filter(Boolean) as string[];
         const previousPlanPackageIds = (previousPlans || [])

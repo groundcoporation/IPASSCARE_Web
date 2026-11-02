@@ -21,7 +21,7 @@ export const Footer: React.FC = () => {
 
             <p className="text-xs text-slate-400 leading-relaxed max-w-md">
               아이패스케어(IPASSCARE)는 실시간 셔틀 GPS 관제, 안심 출결,<br className="hidden sm:inline" />
-              모바일 원비 수납, VOG SPORTS 마일리지 포인트 전환까지<br className="hidden sm:inline" />
+              승하차 알림과 편리한 셔틀 운행 관리까지<br className="hidden sm:inline" />
               모두 포함된 통합 안심 케어 플랫폼입니다.
             </p>
 
@@ -47,7 +47,7 @@ export const Footer: React.FC = () => {
             <ul className="space-y-2 text-xs">
               <li><a href="#features" className="hover:text-white transition-colors">주요 4대 기능</a></li>
               <li><a href="#roles" className="hover:text-white transition-colors">학부모/학원장/기사님 가이드</a></li>
-              <li><a href="#calculator" className="hover:text-white transition-colors">실시간 ROI 계산기</a></li>
+              <li><a href="#calculator" className="hover:text-white transition-colors">이용 요금 안내</a></li>
               <li><a href="#manuals" className="hover:text-white transition-colors">사용법 동영상 매뉴얼</a></li>
             </ul>
           </div>

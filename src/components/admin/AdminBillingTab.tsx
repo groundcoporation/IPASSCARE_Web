@@ -1460,7 +1460,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     if (error) throw error;
   };
 
-  const handleAddBillingPackage = async (student: BillingTargetStudent) => {
+  const handleAddBillingPackage = async (
+    student: BillingTargetStudent,
+    asAdditionalCharge = false,
+  ) => {
     const optionId = packageOptionToAddByStudent[student.studentId];
     if (!optionId || actionLoading || billingBusyRef.current) return;
     const currentOptionIds = standardOptionIdsForStudent(student);
@@ -1476,15 +1479,41 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       );
       return;
     }
+    if (!selectedOption) return;
+    if (asAdditionalCharge && selectedMonth !== billingMonthByOffset(0)) {
+      alert('추가 청구는 현재 월에만 등록할 수 있습니다. 과거 또는 다음 달은 기본 청구 계획에서 관리해 주세요.');
+      return;
+    }
+    if (asAdditionalCharge && !confirm(
+      `${student.studentName} 원생에게 ${selectedOption.packageName} · ${selectedOption.label} ${selectedOption.price.toLocaleString()}원을 추가 청구로 등록할까요?\n\n기존 청구·결제·갱신 내역은 변경되지 않습니다.`,
+    )) return;
+
     billingBusyRef.current = true;
     setActionLoading(true);
     try {
-      await saveBillingPackageSet(student, [...currentOptionIds, optionId]);
+      if (asAdditionalCharge) {
+        const { error } = await supabase.rpc(
+          'add_current_month_student_additional_billing_plan',
+          {
+            p_student_id: student.studentId,
+            p_package_option_id: optionId,
+          },
+        );
+        if (error) throw error;
+      } else {
+        await saveBillingPackageSet(student, [...currentOptionIds, optionId]);
+      }
       setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: '' }));
       await loadBillingTargets();
-      alert('청구 예정 이용권을 추가했습니다.');
+      alert(asAdditionalCharge
+        ? '추가 청구 항목을 등록했습니다. 기존 청구와 별도로 청구할 수 있습니다.'
+        : '청구 예정 이용권을 추가했습니다.');
     } catch (error: unknown) {
-      await handleError(error, 'BILL_SETTING_FAILED', { operation: 'billing.current-plan.add' });
+      await handleError(error, 'BILL_SETTING_FAILED', {
+        operation: asAdditionalCharge
+          ? 'billing.additional-plan.add'
+          : 'billing.current-plan.add',
+      });
     } finally {
       billingBusyRef.current = false;
       setActionLoading(false);
@@ -2170,15 +2199,21 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                   이용권 {student.packages.length}개
                                 </span>
                               </div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center justify-end gap-2">
+                                {billingPlanLocked && (
+                                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700">
+                                    기존 청구 잠김 · 추가 청구만 가능
+                                  </span>
+                                )}
                                 <select
                                   value={packageOptionToAddByStudent[student.studentId] || ''}
                                   onChange={(event) => setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: event.target.value }))}
-                                  disabled={billingPlanLocked || actionLoading || activeBranchId === 'all'}
-                                  aria-label={`${student.studentName} 청구 이용권 선택`}
-                                  className="max-w-[230px] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                  disabled={actionLoading || activeBranchId === 'all' || (billingPlanLocked && selectedMonth !== billingMonthByOffset(0))}
+                                  aria-label={`${student.studentName} ${billingPlanLocked ? '추가 청구' : '청구'} 이용권 선택`}
+                                  title={billingPlanLocked && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
+                                  className={`max-w-[230px] rounded-lg border bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 ${billingPlanLocked ? 'border-amber-300' : 'border-slate-200'}`}
                                 >
-                                  <option value="">청구 이용권 추가…</option>
+                                  <option value="">{billingPlanLocked ? '추가 청구 이용권 선택…' : '청구 이용권 추가…'}</option>
                                   {billingPackageOptions
                                     .filter((option) => !student.packages.some((item) =>
                                       item.optionId === option.id
@@ -2188,11 +2223,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 </select>
                                 <button
                                   type="button"
-                                  onClick={() => void handleAddBillingPackage(student)}
-                                  disabled={billingPlanLocked || actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId]}
-                                  className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[10px] font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                                  onClick={() => void handleAddBillingPackage(student, billingPlanLocked)}
+                                  disabled={actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (billingPlanLocked && selectedMonth !== billingMonthByOffset(0))}
+                                  title={billingPlanLocked && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
+                                  className={`rounded-lg px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${billingPlanLocked ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
                                 >
-                                  + 추가
+                                  {billingPlanLocked ? '+ 추가 청구' : '+ 추가'}
                                 </button>
                                 <span className="text-xs font-black text-slate-800">
                                   예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원

@@ -96,16 +96,16 @@ export const FeatureBentoGridOption2: React.FC = () => {
                 <Gift className="w-7 h-7" />
               </div>
               <h3 className="text-2xl sm:text-3xl font-extrabold text-white">
-                VOG SPORTS 제휴 쇼핑몰 포인트 전환 & 다단계 추천
+                아이의 학원 생활을 전하는 학습·상담일지
               </h3>
               <p className="text-slate-300 text-sm sm:text-base max-w-xl leading-relaxed">
-                원비 결제 마일리지 포인트를 VOG SPORTS / 영카트 쇼핑몰에서 1:1 현금처럼 사용하거나 출금 가능. 학부모 지인 추천 시 1대/2대/3대 자동 포인트 정산으로 학원 신규 유입 증대.
+                학원에서 공유한 학습 내용과 상담 기록을 한눈에 확인하세요. 학습일지와 상담일지를 구분해 아이의 학원 생활을 살펴볼 수 있습니다.
               </p>
             </div>
 
             <div className="mt-8 bg-amber-950/40 border border-amber-800/60 p-4 rounded-2xl flex items-center justify-between text-xs text-amber-300">
-              <span className="font-bold">보유 포인트 쇼핑몰 1:1 현금성 전환</span>
-              <span className="font-extrabold text-white bg-amber-600 px-3 py-1 rounded-xl">24,500 P</span>
+              <span className="font-bold">학습 내용과 상담 기록을 한곳에서</span>
+              <span className="font-extrabold text-white bg-amber-600 px-3 py-1 rounded-xl">학습·상담일지</span>
             </div>
           </div>
 

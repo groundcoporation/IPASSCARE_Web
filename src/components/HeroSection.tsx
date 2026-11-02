@@ -57,7 +57,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
 
             <p className="text-base sm:text-lg text-slate-600 max-w-2xl font-medium leading-relaxed">
               실시간 GPS 셔틀 관제, 원터치 출결 알림, 모바일 원비 결제,<br className="hidden sm:inline" />
-              그리고 어플 수강료 차감·자사몰·VOG SPORTS 쇼핑몰 전용 포인트 전환까지!<br className="hidden sm:inline" />
+              그리고 어플 수강료 차감 포인트 혜택까지!<br className="hidden sm:inline" />
               아이패스케어(IPASSCARE) 모바일 앱으로 구현한 올인원 솔루션을 경험해 보세요.
             </p>
 
@@ -84,16 +84,16 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
             <div className="pt-4 w-full">
               <div className="bg-white/80 backdrop-blur-md p-4 rounded-2xl border border-slate-200/90 shadow-sm grid grid-cols-3 gap-3 text-center">
                 <div className="border-r border-slate-100 pr-2">
-                  <div className="text-base sm:text-xl font-black text-blue-600">0.1초</div>
-                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">실시간 출결 알림</div>
+                  <div className="text-base sm:text-xl font-black text-blue-600">실시간 위치</div>
+                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">운행 차량 지도 확인</div>
                 </div>
                 <div className="border-r border-slate-100 px-2">
-                  <div className="text-base sm:text-xl font-black text-indigo-600">모바일 결제</div>
-                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">원비 간편 수납</div>
+                  <div className="text-base sm:text-xl font-black text-indigo-600">승하차 알림</div>
+                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">자녀의 이동 소식 확인</div>
                 </div>
                 <div className="pl-2">
-                  <div className="text-base sm:text-xl font-black text-slate-800">포인트 전환</div>
-                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">앱결제·자사몰·쇼핑몰</div>
+                  <div className="text-base sm:text-xl font-black text-slate-800">운행 관리</div>
+                  <div className="text-[11px] sm:text-xs text-slate-500 font-bold mt-0.5">노선·탑승 원생 관리</div>
                 </div>
               </div>
 
@@ -265,7 +265,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenInquiry }) => {
                           </div>
                           <div className="text-[9.5px] text-slate-600 leading-tight">
                             • 어플 내 수강료 수납 시 차감결제 가능<br />
-                            • 앱에서 자사몰 & 쇼핑몰 포인트 간편 전환
+                            • 이용권과 납부 내역을 한곳에서 확인
                           </div>
                         </div>
                       </div>

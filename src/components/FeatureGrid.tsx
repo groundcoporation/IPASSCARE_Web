@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigation, Bell, CreditCard, Gift, Zap } from 'lucide-react';
+import { Navigation, Bell, Bus, NotebookPen, Zap } from 'lucide-react';
 
 export const FeatureGrid: React.FC = () => {
   return (
@@ -12,11 +12,11 @@ export const FeatureGrid: React.FC = () => {
             <span>차별화된 핵심 경쟁력</span>
           </div>
           <h2 className="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-            기존 정적인 B2B 시스템과의 격차,<br />
-            <span className="gradient-text">아이패스케어 핵심 4대 솔루션</span>
+            아이의 이동은 안심하게,<br />
+            <span className="gradient-text">학원 운영은 더 편리하게</span>
           </h2>
           <p className="text-slate-600 mt-3 text-base sm:text-lg">
-            단순 셔틀 조회를 넘어 원비 수납, 출결, 다양한 마일리지 포인트 활용 혜택까지<br className="hidden sm:inline" /> 하나의 앱으로 완성했습니다.
+            실시간 차량 위치·승하차 알림·운행 관리가 핵심입니다.<br className="hidden sm:inline" /> 학습·상담일지로 학원 생활의 기록도 함께 확인하세요.
           </p>
         </div>
 
@@ -29,14 +29,14 @@ export const FeatureGrid: React.FC = () => {
                 <Navigation className="w-7 h-7" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-blue-600 transition-colors">
-                실시간 GPS 셔틀 관제
+                실시간 차량 위치
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                차량의 실시간 위치와 정류장별 예상 도착 시간을 지도에 노출하며,<br className="hidden sm:inline" /> 도착 전 안심 알림을 발송합니다.
+                운행 중인 셔틀의 현재 위치를 지도에서 확인하세요.<br className="hidden sm:inline" /> 차량이 어디쯤 왔는지 앱에서 살펴볼 수 있습니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-blue-600 gap-1">
-              <span>도착 전 안심 알림 지원</span>
+              <span>운행 중인 셔틀을 지도에서 확인</span>
             </div>
           </div>
 
@@ -47,14 +47,14 @@ export const FeatureGrid: React.FC = () => {
                 <Bell className="w-7 h-7" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-emerald-600 transition-colors">
-                원터치 안심 등하원 출결
+                승하차 알림
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                태블릿 키패드 입력만으로 실시간 출결 완료.<br className="hidden sm:inline" /> 자녀의 등하원 시각을 학부모 스마트폰으로 0.1초 만에 알림 발송합니다.
+                자녀의 셔틀 승차·하차 소식을 앱 알림으로 확인하세요.<br className="hidden sm:inline" /> 등하원 기록까지 함께 확인해 안심을 더합니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-emerald-600 gap-1">
-              <span>NFC & 키패드 연동</span>
+              <span>이동 소식과 출결 기록 확인</span>
             </div>
           </div>
 
@@ -62,17 +62,17 @@ export const FeatureGrid: React.FC = () => {
             <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/10 rounded-bl-full transition-transform group-hover:scale-110 pointer-events-none" />
             <div>
               <div className="w-14 h-14 rounded-2xl bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold mb-6 group-hover:scale-110 transition-transform">
-                <CreditCard className="w-7 h-7" />
+                <Bus className="w-7 h-7" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-indigo-600 transition-colors">
-                수강권 & 원스톱 원비 결제
+                운행 관리
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                모바일 원비 청구서 일괄 발행 및 간편 수납 지원.<br className="hidden sm:inline" /> 번거로운 전화 독촉 없이 미납 수납율이 획기적으로 상승합니다.
+                셔틀 노선과 탑승 원생, 운행 현황을 확인하세요.<br className="hidden sm:inline" /> 기사님과 학원의 셔틀 관리 업무를 연결합니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-indigo-600 gap-1">
-              <span>수강권 자동 분할 결제</span>
+              <span>노선·탑승 원생·운행 현황 관리</span>
             </div>
           </div>
 
@@ -80,17 +80,17 @@ export const FeatureGrid: React.FC = () => {
             <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/10 rounded-bl-full transition-transform group-hover:scale-110 pointer-events-none" />
             <div>
               <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center font-bold mb-6 group-hover:scale-110 transition-transform">
-                <Gift className="w-7 h-7" />
+                <NotebookPen className="w-7 h-7" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-amber-600 transition-colors">
-                어플결제 · 자사몰 · 제휴 쇼핑몰 포인트
+                학습·상담일지
               </h3>
               <p className="text-slate-600 text-sm leading-relaxed">
-                적립된 포인트를 <strong>어플 내 수강료 바로 차감 결제</strong>에 사용하거나<br className="hidden sm:inline" /> <strong>자사몰 & VOG SPORTS 제휴 쇼핑몰</strong> 포인트로 1:1 간편 전환하여 사용이 가능합니다.
+                아이의 학습 내용과 상담 기록을 한눈에 확인하세요.<br className="hidden sm:inline" /> 학습일지와 상담일지를 구분해 필요한 기록을 찾아볼 수 있습니다.
               </p>
             </div>
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center text-xs font-bold text-amber-600 gap-1">
-              <span>3가지 방식의 차원 다른 포인트 사용</span>
+              <span>학원 생활의 기록을 한곳에서 확인</span>
             </div>
           </div>
 

@@ -4,7 +4,7 @@ import { HeroSection } from './components/HeroSection';
 import { IntroVideoSection } from './components/IntroVideoSection';
 import { FeatureGrid } from './components/FeatureGrid';
 import { RoleTabSwitcher } from './components/RoleTabSwitcher';
-import { RoiCalculator } from './components/RoiCalculator';
+import { PricingSection } from './components/PricingSection';
 import { VideoManualCenter } from './components/VideoManualCenter';
 import { GroundCorpSection } from './components/GroundCorpSection';
 import { FaqSection } from './components/FaqSection';
@@ -106,8 +106,8 @@ export function App() {
         {/* 3. Role-based Interactive Demo Switcher */}
         <RoleTabSwitcher onOpenInquiry={handleScrollToInquiry} />
 
-        {/* 4. Real-time ROI Calculator (Lite 99,000 / Pro 118,000 Rates Integrated) */}
-        <RoiCalculator onOpenInquiry={handleScrollToInquiry} />
+        {/* 4. Service plans and operating-cost simulation */}
+        <PricingSection onOpenInquiry={handleScrollToInquiry} />
 
         {/* 5. Video Manual Center (Restricted Access Permission Support) */}
         <VideoManualCenter 

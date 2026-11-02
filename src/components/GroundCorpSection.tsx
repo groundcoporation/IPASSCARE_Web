@@ -25,7 +25,7 @@ export const GroundCorpSection: React.FC = () => {
             </p>
 
             <p className="text-slate-600 text-sm leading-relaxed">
-              단순 학원 관리를 넘어, 제휴 스포츠 용품 쇼핑몰(VOG SPORTS) 마일리지 적립 혜택과<br className="hidden sm:inline" /> 아카데미 네트워크를 결합하여 학원과 학부모 모두에게 실질적인 리워드 가치를 제공합니다.
+              실시간 차량 위치·승하차 알림·운행 관리로 아이의 이동을 연결하고,<br className="hidden sm:inline" /> 학습·상담일지로 학원과 학부모가 아이의 일상을 함께 확인하도록 돕습니다.
             </p>
 
             {/* Core Values Bullets */}
@@ -40,7 +40,7 @@ export const GroundCorpSection: React.FC = () => {
               </div>
               <div className="flex items-center gap-2.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200/60">
                 <HeartHandshake className="w-5 h-5 text-emerald-600 shrink-0" />
-                <span className="text-xs font-bold text-slate-800">VOG SPORTS 마일리지</span>
+                <span className="text-xs font-bold text-slate-800">학원·학부모 소통</span>
               </div>
               <div className="flex items-center gap-2.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200/60">
                 <Globe className="w-5 h-5 text-sky-600 shrink-0" />
@@ -77,24 +77,24 @@ export const GroundCorpSection: React.FC = () => {
                 </div>
 
                 <h3 className="text-xl sm:text-2xl font-black text-white leading-snug">
-                  "안전한 셔틀 케어부터 수강료 수납, 스포츠 혜택까지 하나로 연결되는 세상"
+                  "아이의 이동부터 학원 생활까지, 안심과 편리함을 연결합니다"
                 </h3>
 
                 <div className="space-y-3.5 pt-2 text-xs">
                   <div className="p-4 bg-slate-900/90 rounded-2xl border border-slate-800 flex justify-between items-center">
                     <div>
                       <div className="font-black text-sm text-white">아이패스케어 (IPASSCARE)</div>
-                      <div className="text-xs text-slate-400 mt-0.5">학원 통합 등하원 & 셔틀 GPS & 수강권 결제 앱</div>
+                      <div className="text-xs text-slate-400 mt-0.5">실시간 차량 위치·승하차 알림·운행 관리</div>
                     </div>
                     <span className="text-blue-400 font-black text-sm shrink-0 ml-2">Main Service</span>
                   </div>
 
                   <div className="p-4 bg-slate-900/90 rounded-2xl border border-slate-800 flex justify-between items-center">
                     <div>
-                      <div className="font-black text-sm text-white">VOG SPORTS 몰 / 영카트</div>
-                      <div className="text-xs text-slate-400 mt-0.5">학부모 및 원생 마일리지 제휴 스포츠 쇼핑몰</div>
+                      <div className="font-black text-sm text-white">학원 생활 기록</div>
+                      <div className="text-xs text-slate-400 mt-0.5">앱에서 확인하는 학습일지·상담일지</div>
                     </div>
-                    <span className="text-emerald-400 font-black text-sm shrink-0 ml-2">Reward Partner</span>
+                    <span className="text-emerald-400 font-black text-sm shrink-0 ml-2">Learning Record</span>
                   </div>
                 </div>
 

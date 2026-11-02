@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Users, Shield, Car, MapPin, BellRing, Wallet, Smartphone, LineChart, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Users, Shield, Car, MapPin, BellRing, NotebookPen, Smartphone, LineChart, Sparkles, CheckCircle2 } from 'lucide-react';
 
 interface RoleTabSwitcherProps {
   onOpenInquiry?: () => void;
@@ -105,11 +105,11 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
 
                   <div className="flex items-start gap-3.5">
                     <div className="p-2 rounded-xl bg-indigo-100 text-indigo-600 font-bold shrink-0 mt-0.5">
-                      <Wallet className="w-5 h-5" />
+                      <NotebookPen className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold text-slate-900 text-base">수강권 간편 결제 & 포인트 전환 혜택</h4>
-                      <p className="text-slate-500 text-xs sm:text-sm">모바일 원비를 앱에서 간편 수납하고, 적립된 포인트를 어플 결제 차감 및 제휴 쇼핑몰에서 활용합니다.</p>
+                      <h4 className="font-bold text-slate-900 text-base">학습·상담일지로 학원 생활 확인</h4>
+                      <p className="text-slate-500 text-xs sm:text-sm">아이의 학습 내용과 상담 기록을 구분해 보고, 학원에서 공유한 내용을 앱에서 확인합니다.</p>
                     </div>
                   </div>
                 </div>
@@ -146,11 +146,11 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
 
                   <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-4 rounded-2xl shadow-sm flex items-center justify-between">
                     <div>
-                      <div className="text-[11px] text-blue-100">보유 마일리지</div>
-                      <div className="text-lg font-black text-white">24,500 P</div>
+                      <div className="text-[11px] text-blue-100">학습·상담일지</div>
+                      <div className="text-lg font-black text-white">오늘의 학습 기록</div>
                     </div>
                     <span className="bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-xl hover:bg-white/30 cursor-pointer">
-                      앱 내 전환
+                      기록 확인
                     </span>
                   </div>
 
@@ -168,7 +168,7 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
                   학원장 / 관리자 (Directors)
                 </div>
                 <h3 className="text-2xl sm:text-3xl font-bold text-slate-900">
-                  "학원 행정 업무 시간 단축, 미납 원비 자동 회수로 수납율 급증"
+                  "셔틀 운행부터 원생 관리까지, 학원 업무를 한눈에"
                 </h3>
                 <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
                   원생 출결 관리, 미납 청구서 일괄 발행, 셔틀 노선 지정 및 정산까지<br className="hidden sm:inline" /> 학원 운영에 필요한 모든 기능을 하나의 통합 관리자 대시보드에서 처리하세요.
@@ -200,8 +200,8 @@ export const RoleTabSwitcher: React.FC<RoleTabSwitcherProps> = () => {
                       <Sparkles className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold text-slate-900 text-base">지인 추천 포인트 리워드 솔루션</h4>
-                      <p className="text-slate-500 text-xs sm:text-sm">기존 학부모가 학원을 지인에게 추천 시 포인트 적립 혜택이 부여되어 신규 수강생 유입을 지속 유도합니다.</p>
+                      <h4 className="font-bold text-slate-900 text-base">셔틀 운행 현황과 탑승 원생 관리</h4>
+                      <p className="text-slate-500 text-xs sm:text-sm">차량 위치와 노선별 탑승 원생을 확인하고, 승하차 기록으로 운행 상황을 살펴보세요.</p>
                     </div>
                   </div>
                 </div>

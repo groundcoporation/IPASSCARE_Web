@@ -7,7 +7,7 @@ import {
   ChevronRight,
   CircleUserRound,
   Images,
-  ShoppingBag,
+  NotebookPen,
   TicketCheck,
   TicketPlus,
   UserPlus,
@@ -18,13 +18,13 @@ import {
   X,
 } from 'lucide-react';
 
-type MockupScreen = 'home' | 'pickup' | 'realtime' | 'attendance' | 'purchase' | 'passes';
+type MockupScreen = 'home' | 'pickup' | 'realtime' | 'attendance' | 'purchase' | 'passes' | 'journal';
 
 const quickMenus = [
   { label: '수업 시간표', icon: CalendarClock, color: '#FF4B4B', bg: '#FFF0F0', screen: 'home' as const },
   { label: '이용권 구매', icon: TicketPlus, color: '#FF9F43', bg: '#FFF5EA', screen: 'purchase' as const },
   { label: '이용권 확인', icon: TicketCheck, color: '#EAB308', bg: '#FFFBE6', screen: 'passes' as const },
-  { label: '쇼핑몰', icon: ShoppingBag, color: '#6BCB77', bg: '#EFFAF1' },
+  { label: '학습·상담일지', icon: NotebookPen, color: '#6BCB77', bg: '#EFFAF1', screen: 'journal' as const },
   { label: '갤러리', icon: Images, color: '#4D96FF', bg: '#EEF5FF' },
   { label: '픽업', icon: Bus, color: '#3D56B2', bg: '#F0F2FB', screen: 'pickup' as const },
   { label: '출석확인', icon: BadgeCheck, color: '#917FB3', bg: '#F6F1FA', screen: 'attendance' as const },
@@ -33,9 +33,14 @@ const quickMenus = [
 
 export function AppHomeMockup() {
   const [screen, setScreen] = useState<MockupScreen>('home');
+  const [journalFilter, setJournalFilter] = useState<'all' | 'study' | 'counsel'>('all');
+  const journalEntries = [
+    { id: 'study-example', type: 'study', label: '학습일지', date: '2026.08.19', title: '오늘의 학습 기록', content: '기본 동작을 배우고 친구들과 함께 연습했어요.', homework: '배운 동작을 한 번 더 연습해 보세요.' },
+    { id: 'counsel-example', type: 'counsel', label: '상담일지', date: '2026.08.18', title: '학원 생활 상담', content: '수업 참여 모습과 학습 방향을 함께 이야기했어요.', homework: '' },
+  ];
 
   return (
-    <div className="phone-mockup-container relative z-10" aria-label="아이패스케어 실제 앱 홈 화면 미리보기">
+    <div className="phone-mockup-container relative z-10" aria-label="아이패스케어 앱 화면 예시">
       <div className="phone-mockup">
         <div className="phone-notch" />
 
@@ -48,7 +53,7 @@ export function AppHomeMockup() {
             ) : (
               <button type="button" onClick={() => setScreen('home')} className="flex items-center gap-2 text-[13px] font-extrabold text-slate-900">
                 {screen === 'purchase' ? <X className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4" />}
-                {screen === 'pickup' ? '셔틀 관제' : screen === 'realtime' ? '실시간 셔틀 위치' : screen === 'attendance' ? '출석 및 동선 확인' : screen === 'purchase' ? '시흥본점 이용권' : '내 이용권 확인'}
+                {screen === 'pickup' ? '셔틀 관제' : screen === 'realtime' ? '실시간 셔틀 위치' : screen === 'attendance' ? '출석 및 동선 확인' : screen === 'purchase' ? '시흥본점 이용권' : screen === 'journal' ? '학습·상담일지' : '내 이용권 확인'}
               </button>
             )}
             {screen === 'home' ? (
@@ -180,6 +185,30 @@ export function AppHomeMockup() {
                 <div className="mt-4 rounded-xl bg-slate-100 p-3"><div className="text-[9px] font-extrabold text-slate-700">📌 꼭 확인해주세요!</div><div className="mt-2 text-[7px] leading-relaxed text-slate-500">• 다자녀의 경우 자녀 수만큼 이용권을 각각 구매해 주세요.<br />• 카드사 할인 및 할부는 결제창에서 확인 가능합니다.</div></div>
               </div>
               <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-6px_16px_rgba(15,23,42,0.08)]"><div className="flex items-center gap-2"><ShoppingCart className="h-4 w-4 text-slate-400" /><span className="text-[9px] font-extrabold text-slate-500">상품을 선택해주세요</span></div><span className="rounded-xl bg-slate-200 px-3 py-2 text-[8px] font-extrabold text-slate-400">주문서 확인</span></div>
+            </div>
+          ) : screen === 'journal' ? (
+            <div className="flex-1 bg-slate-50 px-4 py-4">
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                <div className="text-[12px] font-extrabold text-slate-800">아이의 학원 생활 기록</div>
+                <p className="mt-1 text-[9px] leading-relaxed text-slate-500">학습 내용과 상담 기록을 한눈에 확인하세요.</p>
+              </div>
+              <div className="my-3 flex gap-2" aria-label="일지 종류">
+                {([{ value: 'all', label: '전체' }, { value: 'study', label: '학습일지' }, { value: 'counsel', label: '상담일지' }] as const).map(filter => (
+                  <button type="button" key={filter.value} aria-pressed={journalFilter === filter.value} onClick={() => setJournalFilter(filter.value)} className={`rounded-full px-3 py-2 text-[9px] font-bold ${journalFilter === filter.value ? 'bg-indigo-600 text-white' : 'border border-slate-200 bg-white text-slate-600'}`}>{filter.label}</button>
+                ))}
+              </div>
+              <div className="space-y-3">
+                {journalEntries.filter(entry => journalFilter === 'all' || entry.type === journalFilter).map(entry => (
+                  <article key={entry.id} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <div className="flex items-center justify-between"><span className="rounded bg-indigo-50 px-2 py-1 text-[8px] font-bold text-indigo-600">{entry.label}</span><time className="text-[8px] text-slate-400">{entry.date}</time></div>
+                    <h4 className="mt-2 text-[11px] font-extrabold text-slate-800">{entry.title}</h4>
+                    <div className="mt-2 text-[8px] font-bold text-slate-500">{entry.type === 'study' ? '학습 내용' : '상담 내용'}</div>
+                    <p className="mt-1 text-[9px] leading-relaxed text-slate-600">{entry.content}</p>
+                    {entry.homework && <p className="mt-2 rounded-lg bg-slate-50 p-2 text-[8px] text-slate-500">과제: {entry.homework}</p>}
+                  </article>
+                ))}
+              </div>
+              <p className="mt-3 text-center text-[8px] text-slate-400">이해를 돕기 위한 예시 기록입니다.</p>
             </div>
           ) : screen === 'attendance' ? (
             <div className="flex-1 bg-white">

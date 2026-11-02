@@ -53,7 +53,7 @@ export const PartnerMarquee: React.FC = () => {
         {/* Refined Trust Label */}
         <div className="flex items-center gap-1.5 shrink-0 text-slate-400 font-semibold text-xs select-none">
           <span className="w-1 h-1 rounded-full bg-slate-400 shrink-0" />
-          <span>함께하는 안심 케어 도입 교육원</span>
+          <span>함께하는 안심 케어 도입 기관</span>
           <span className="text-slate-300 ml-0.5">➔</span>
         </div>
 
