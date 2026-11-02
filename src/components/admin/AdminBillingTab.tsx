@@ -1509,6 +1509,36 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         ? '추가 청구 항목을 등록했습니다. 기존 청구와 별도로 청구할 수 있습니다.'
         : '청구 예정 이용권을 추가했습니다.');
     } catch (error: unknown) {
+      const normalized = normalizeError(error, 'BILL_SETTING_FAILED');
+      if (!asAdditionalCharge && normalized.code === 'BILL_PLAN_LOCKED') {
+        if (selectedMonth !== billingMonthByOffset(0)) {
+          alert('이미 확정된 청구의 추가 청구는 현재 월에서만 등록할 수 있습니다. 현재 월을 선택한 후 다시 시도해 주세요.');
+          return;
+        }
+        if (!confirm(
+          `${student.studentName} 원생의 기존 청구가 이미 확정되어 있습니다.\n${selectedOption.packageName} · ${selectedOption.label} ${selectedOption.price.toLocaleString()}원을 별도 추가 청구로 등록할까요?`,
+        )) return;
+
+        try {
+          const { error: additionalError } = await supabase.rpc(
+            'add_current_month_student_additional_billing_plan',
+            {
+              p_student_id: student.studentId,
+              p_package_option_id: optionId,
+            },
+          );
+          if (additionalError) throw additionalError;
+          setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: '' }));
+          await loadBillingTargets();
+          alert('추가 청구 항목을 등록했습니다. 기존 청구와 별도로 청구할 수 있습니다.');
+          return;
+        } catch (additionalError: unknown) {
+          await handleError(additionalError, 'BILL_SETTING_FAILED', {
+            operation: 'billing.additional-plan.locked-fallback',
+          });
+          return;
+        }
+      }
       await handleError(error, 'BILL_SETTING_FAILED', {
         operation: asAdditionalCharge
           ? 'billing.additional-plan.add'
@@ -2163,6 +2193,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     visibleBillingTargetStudents.map((student) => {
                       const billingPlanLocked = isStudentBillingPlanLocked(student);
                       const studentState = getStudentBillingState(student);
+                      const additionalChargeRequired = billingPlanLocked
+                        || !['none', 'pending'].includes(studentState);
                       const studentStateMeta = {
                         none: { label: '청구 대상 없음', row: 'bg-amber-50/50', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
                         mismatch: { label: '이용권 불일치', row: 'bg-rose-50/80', badge: 'border-rose-200 bg-rose-100 text-rose-700' },
@@ -2200,7 +2232,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 </span>
                               </div>
                               <div className="flex flex-wrap items-center justify-end gap-2">
-                                {billingPlanLocked && (
+                                {additionalChargeRequired && (
                                   <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700">
                                     기존 청구 잠김 · 추가 청구만 가능
                                   </span>
@@ -2208,12 +2240,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 <select
                                   value={packageOptionToAddByStudent[student.studentId] || ''}
                                   onChange={(event) => setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: event.target.value }))}
-                                  disabled={actionLoading || activeBranchId === 'all' || (billingPlanLocked && selectedMonth !== billingMonthByOffset(0))}
-                                  aria-label={`${student.studentName} ${billingPlanLocked ? '추가 청구' : '청구'} 이용권 선택`}
-                                  title={billingPlanLocked && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
-                                  className={`max-w-[230px] rounded-lg border bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 ${billingPlanLocked ? 'border-amber-300' : 'border-slate-200'}`}
+                                  disabled={actionLoading || activeBranchId === 'all' || (additionalChargeRequired && selectedMonth !== billingMonthByOffset(0))}
+                                  aria-label={`${student.studentName} ${additionalChargeRequired ? '추가 청구' : '청구'} 이용권 선택`}
+                                  title={additionalChargeRequired && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
+                                  className={`max-w-[230px] rounded-lg border bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 ${additionalChargeRequired ? 'border-amber-300' : 'border-slate-200'}`}
                                 >
-                                  <option value="">{billingPlanLocked ? '추가 청구 이용권 선택…' : '청구 이용권 추가…'}</option>
+                                  <option value="">{additionalChargeRequired ? '추가 청구 이용권 선택…' : '청구 이용권 추가…'}</option>
                                   {billingPackageOptions
                                     .filter((option) => !student.packages.some((item) =>
                                       item.optionId === option.id
@@ -2223,12 +2255,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 </select>
                                 <button
                                   type="button"
-                                  onClick={() => void handleAddBillingPackage(student, billingPlanLocked)}
-                                  disabled={actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (billingPlanLocked && selectedMonth !== billingMonthByOffset(0))}
-                                  title={billingPlanLocked && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
-                                  className={`rounded-lg px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${billingPlanLocked ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                                  onClick={() => void handleAddBillingPackage(student, additionalChargeRequired)}
+                                  disabled={actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (additionalChargeRequired && selectedMonth !== billingMonthByOffset(0))}
+                                  title={additionalChargeRequired && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
+                                  className={`rounded-lg px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${additionalChargeRequired ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
                                 >
-                                  {billingPlanLocked ? '+ 추가 청구' : '+ 추가'}
+                                  {additionalChargeRequired ? '+ 추가 청구' : '+ 추가'}
                                 </button>
                                 <span className="text-xs font-black text-slate-800">
                                   예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원
