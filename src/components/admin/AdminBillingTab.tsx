@@ -1480,8 +1480,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       return;
     }
     if (!selectedOption) return;
-    if (asAdditionalCharge && selectedMonth !== billingMonthByOffset(0)) {
-      alert('추가 청구는 현재 월에만 등록할 수 있습니다. 과거 또는 다음 달은 기본 청구 계획에서 관리해 주세요.');
+    const additionalChargeMonthAllowed = [billingMonthByOffset(0), billingMonthByOffset(1)].includes(selectedMonth);
+    if (asAdditionalCharge && !additionalChargeMonthAllowed) {
+      alert('추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.');
       return;
     }
     if (asAdditionalCharge && !confirm(
@@ -1493,10 +1494,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     try {
       if (asAdditionalCharge) {
         const { error } = await supabase.rpc(
-          'add_current_month_student_additional_billing_plan',
+          'add_student_additional_billing_plan',
           {
             p_student_id: student.studentId,
             p_package_option_id: optionId,
+            p_effective_month: `${selectedMonth}-01`,
           },
         );
         if (error) throw error;
@@ -1511,8 +1513,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     } catch (error: unknown) {
       const normalized = normalizeError(error, 'BILL_SETTING_FAILED');
       if (!asAdditionalCharge && normalized.code === 'BILL_PLAN_LOCKED') {
-        if (selectedMonth !== billingMonthByOffset(0)) {
-          alert('이미 확정된 청구의 추가 청구는 현재 월에서만 등록할 수 있습니다. 현재 월을 선택한 후 다시 시도해 주세요.');
+        if (![billingMonthByOffset(0), billingMonthByOffset(1)].includes(selectedMonth)) {
+          alert('이미 확정된 청구의 추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.');
           return;
         }
         if (!confirm(
@@ -1521,10 +1523,11 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
         try {
           const { error: additionalError } = await supabase.rpc(
-            'add_current_month_student_additional_billing_plan',
+            'add_student_additional_billing_plan',
             {
               p_student_id: student.studentId,
               p_package_option_id: optionId,
+              p_effective_month: `${selectedMonth}-01`,
             },
           );
           if (additionalError) throw additionalError;
@@ -2195,6 +2198,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       const studentState = getStudentBillingState(student);
                       const additionalChargeRequired = billingPlanLocked
                         || !['none', 'pending'].includes(studentState);
+                      const additionalChargeMonthAllowed = [billingMonthByOffset(0), billingMonthByOffset(1)]
+                        .includes(selectedMonth);
                       const studentStateMeta = {
                         none: { label: '청구 대상 없음', row: 'bg-amber-50/50', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
                         mismatch: { label: '이용권 불일치', row: 'bg-rose-50/80', badge: 'border-rose-200 bg-rose-100 text-rose-700' },
@@ -2240,9 +2245,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 <select
                                   value={packageOptionToAddByStudent[student.studentId] || ''}
                                   onChange={(event) => setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: event.target.value }))}
-                                  disabled={actionLoading || activeBranchId === 'all' || (additionalChargeRequired && selectedMonth !== billingMonthByOffset(0))}
+                                  disabled={actionLoading || activeBranchId === 'all' || (additionalChargeRequired && !additionalChargeMonthAllowed)}
                                   aria-label={`${student.studentName} ${additionalChargeRequired ? '추가 청구' : '청구'} 이용권 선택`}
-                                  title={additionalChargeRequired && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
+                                  title={additionalChargeRequired && !additionalChargeMonthAllowed ? '추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.' : undefined}
                                   className={`max-w-[230px] rounded-lg border bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 ${additionalChargeRequired ? 'border-amber-300' : 'border-slate-200'}`}
                                 >
                                   <option value="">{additionalChargeRequired ? '추가 청구 이용권 선택…' : '청구 이용권 추가…'}</option>
@@ -2256,8 +2261,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                                 <button
                                   type="button"
                                   onClick={() => void handleAddBillingPackage(student, additionalChargeRequired)}
-                                  disabled={actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (additionalChargeRequired && selectedMonth !== billingMonthByOffset(0))}
-                                  title={additionalChargeRequired && selectedMonth !== billingMonthByOffset(0) ? '추가 청구는 현재 월에만 등록할 수 있습니다.' : undefined}
+                                  disabled={actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (additionalChargeRequired && !additionalChargeMonthAllowed)}
+                                  title={additionalChargeRequired && !additionalChargeMonthAllowed ? '추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.' : undefined}
                                   className={`rounded-lg px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${additionalChargeRequired ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
                                 >
                                   {additionalChargeRequired ? '+ 추가 청구' : '+ 추가'}
