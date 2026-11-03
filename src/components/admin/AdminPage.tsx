@@ -1162,7 +1162,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       setPayments(prev => prev.map(p => p.id === cancelTarget.id ? { ...p, status: "cancelled" } : p));
 
       alert(isEdgeSuccess
-        ? (isOfflinePayment ? "현장결제 취소 및 이용권·포인트 회수가 정상 완료되었습니다." : "카드사 승인 취소 및 어플 이용권 회수가 정상 완료되었습니다.")
+        ? (isOfflinePayment ? "현장결제 취소 및 미사용 이용권 회수가 정상 완료되었습니다." : "카드사 승인 취소 및 어플 이용권 회수가 정상 완료되었습니다.")
         : "결제 취소 처리가 완료되었습니다.\n(어플 내 수강권 및 결제 상태가 취소로 안전하게 동기화되었습니다.)"
       );
       setCancelTarget(null);

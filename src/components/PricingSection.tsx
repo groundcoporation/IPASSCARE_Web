@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRight, Bus, MapPin, BellRing, Calculator } from 'lucide-react';
+import { ArrowRight, Bus, MapPin, BellRing, Calculator, Users } from 'lucide-react';
 import { coreServiceFeatures, servicePlans } from '../data/servicePlans';
 import { calculateServiceSimulation, simulationDefaults, type SimulationInput } from '../data/serviceSimulation';
 
@@ -26,6 +26,13 @@ export function PricingSection({ onOpenInquiry }: { onOpenInquiry: () => void })
             <article key={plan.id} className={`flex flex-col rounded-3xl border p-7 shadow-sm ${plan.id === input.planId ? 'border-blue-400 bg-blue-50 ring-2 ring-blue-100' : 'border-slate-200 bg-white'}`}>
               <h3 className="text-lg font-black text-slate-900">{plan.name}</h3>
               <p className="mt-2 min-h-16 text-sm font-bold text-slate-500">{plan.description}</p>
+              <div className="min-h-24 border-t border-slate-200/80 pt-4">
+                <p className="mb-3 text-xs font-extrabold text-slate-400">추천 운영 규모</p>
+                <div className="flex flex-col items-start gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-extrabold text-slate-700"><Users className="h-3.5 w-3.5 text-blue-600" />원생 {plan.recommendation.students}</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-extrabold text-slate-700"><Bus className="h-3.5 w-3.5 text-indigo-600" />차량 {plan.recommendation.shuttles}</span>
+                </div>
+              </div>
               <div className="my-7"><span className="text-3xl font-black tracking-tight text-blue-700">{plan.monthlyPrice.toLocaleString('ko-KR')}원</span><span className="ml-1 text-sm text-slate-500">/ 월</span></div>
               <p className="mb-5 text-xs font-bold text-slate-500">VAT 별도</p>
               <button type="button" aria-label={`${plan.name} 선택`} aria-pressed={input.planId === plan.id} onClick={() => setInput(previous => ({ ...previous, planId: plan.id }))} className="btn-primary mt-auto justify-center text-sm">요금제 선택</button>
@@ -84,7 +91,7 @@ export function PricingSection({ onOpenInquiry }: { onOpenInquiry: () => void })
         <div className="mt-8 flex flex-wrap justify-center gap-x-8 gap-y-3">
           {coreServiceFeatures.map((label, i) => { const Icon = icons[i]; return <span key={label} className="flex items-center gap-2 text-sm font-bold text-slate-700"><Icon className="h-5 w-5 text-indigo-600" />{label}</span>; })}
         </div>
-        <p className="mt-5 text-center text-xs leading-relaxed text-slate-500">표시 요금은 VAT 별도이며 시뮬레이션은 VAT 포함 월 이용료를 차감합니다. 엔터프라이즈는 기본 월 이용료 기준이며 커스텀 케어의 세부 범위와 추가 비용은 별도 협의합니다.<br />요금 납부는 자동이체·신용카드 정기결제 등 별도 합의된 방식에 따릅니다.</p>
+        <p className="mt-5 text-center text-xs leading-relaxed text-slate-500">표시 요금은 VAT 별도이며 시뮬레이션은 VAT 포함 월 이용료를 차감합니다.<br />요금 납부는 자동이체·신용카드 정기결제 등 별도 합의된 방식에 따릅니다.</p>
       </div>
     </section>
   );

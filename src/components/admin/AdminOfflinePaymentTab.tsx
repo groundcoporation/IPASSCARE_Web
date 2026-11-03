@@ -99,7 +99,7 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
   }, [payments, search]);
 
   const confirmPayment = async (payment: OfflinePayment) => {
-    if (!confirm(`${payment.user_name}님의 현장결제를 실제로 수납했습니까?\n완료하면 포인트와 이용권이 반영됩니다.`)) return;
+    if (!confirm(`${payment.user_name}님의 현장결제를 실제로 수납했습니까?\n완료하면 이용권이 반영되며 포인트는 적립되지 않습니다.`)) return;
     setProcessingId(payment.id);
     try {
       const { error } = await supabase.rpc('confirm_offline_payment', {
@@ -118,7 +118,7 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
   const cancelPayment = async (payment: OfflinePayment) => {
     const isPaid = payment.status === 'paid';
     if (!confirm(isPaid
-      ? `${payment.user_name}님의 수납 완료 현장결제를 취소할까요?\n미사용 이용권과 적립 포인트가 함께 회수됩니다.`
+      ? `${payment.user_name}님의 수납 완료 현장결제를 취소할까요?\n미사용 이용권이 회수됩니다.`
       : `${payment.user_name}님의 현장결제 요청을 취소할까요?`)) return;
     setProcessingId(payment.id);
     try {
@@ -128,7 +128,7 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
       });
       if (error) throw error;
       if (!data?.success) throw new Error('현장결제 취소 결과를 확인할 수 없습니다.');
-      alert(isPaid ? '현장결제 취소와 이용권·포인트 회수가 완료되었습니다.' : '현장결제 요청이 취소되었습니다.');
+      alert(isPaid ? '현장결제 취소와 미사용 이용권 회수가 완료되었습니다.' : '현장결제 요청이 취소되었습니다.');
       await loadPayments();
     } catch (error: any) {
       alert(error?.message || '현장결제 요청 취소에 실패했습니다.');

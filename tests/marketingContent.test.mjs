@@ -37,7 +37,14 @@ test('published plans match the confirmed monthly prices', () => {
     ['Lite (베이직)', 39900], ['Lite (라이트)', 69900], ['Pro (프로)', 99000], ['Enterprise (엔터프라이즈)', 119900],
   ]);
   assert.equal(servicePlans[0].description, '전용 단말기(태블릿) 미포함');
-  assert.equal(servicePlans[2].description, '전용 단말기(태블릿) 1대 제공');
+  assert.equal(servicePlans[2].description, '전용 단말기(태블릿) 미포함');
+  assert.equal(servicePlans[3].description, '전용 단말기(태블릿) 제공');
+  assert.deepEqual(servicePlans.map(({ recommendation }) => recommendation), [
+    { students: '30명 이하', shuttles: '1대' },
+    { students: '50명 이하', shuttles: '1대' },
+    { students: '50명 초과', shuttles: '1대 이상' },
+    { students: '50명 초과', shuttles: '3대 이상' },
+  ]);
   assert.deepEqual(coreServiceFeatures, ['실시간 차량 위치', '승하차 알림', '운행 관리']);
 });
 
@@ -82,9 +89,9 @@ test('simulation handles all student counts, zero shuttles, negative value and i
 test('pricing renders four current plans with VAT and device terms', () => {
   const { PricingSection } = loadComponent('src/components/PricingSection.tsx');
   const html = renderToStaticMarkup(React.createElement(PricingSection, { onOpenInquiry() {} }));
-  for (const text of ['Lite (베이직)', 'Lite (라이트)', 'Pro (프로)', 'Enterprise (엔터프라이즈)', '39,900원', '69,900원', '99,000원', '119,900원', 'VAT 별도', 'VAT 포함', '태블릿) 1대 제공', '자동이체', '별도 협의', ...coreServiceFeatures]) assert.ok(html.includes(text), text);
+  for (const text of ['Lite (베이직)', 'Lite (라이트)', 'Pro (프로)', 'Enterprise (엔터프라이즈)', '39,900원', '69,900원', '99,000원', '119,900원', 'VAT 별도', 'VAT 포함', '추천 운영 규모', '원생 30명 이하', '원생 50명 이하', '원생 50명 초과', '차량 1대', '차량 1대 이상', '차량 3대 이상', '태블릿) 제공', '자동이체', ...coreServiceFeatures]) assert.ok(html.includes(text), text);
   assert.equal((html.match(/<article/g) || []).length, 4);
-  assert.doesNotMatch(html, /118,000|프라임|30명까지 무료|약정|자동 회수/);
+  assert.doesNotMatch(html, /118,000|프라임|30명까지 무료|약정|자동 회수|커스텀 케어|태블릿\) 1대 제공/);
   const app = read('src/App.tsx');
   assert.match(app, /<PricingSection /);
   assert.doesNotMatch(app, /RoiCalculator/);
