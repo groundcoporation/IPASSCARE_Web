@@ -64,11 +64,11 @@ try {
 
   const pricing = page.locator('#calculator');
   assert.equal(await pricing.locator('article').count(), 4);
-  for (const text of ['Lite (베이직)', 'Lite (라이트)', 'Pro (프로)', 'Enterprise (엔터프라이즈)', '39,900원', '69,900원', '99,000원', '119,900원', 'VAT 별도', 'VAT 포함']) assert.ok((await pricing.innerText()).includes(text), text);
+  for (const text of ['Basic (베이직)', 'Lite (라이트)', 'Pro (프로)', 'Enterprise (엔터프라이즈)', '39,900원', '69,900원', '99,000원', '119,900원', 'VAT 별도', 'VAT 포함']) assert.ok((await pricing.innerText()).includes(text), text);
   await pricing.screenshot({ path: join(output, 'pricing-desktop.png') });
   await page.getByText('승하차 알림 확인 가이드', { exact: true }).waitFor();
   assert.doesNotMatch(await page.locator('body').innerText(), /쇼핑몰|VOG SPORTS/);
-  await pricing.getByRole('button', { name: 'Lite (베이직) 선택', exact: true }).click();
+  await pricing.getByRole('button', { name: 'Basic (베이직) 선택', exact: true }).click();
   assert.match(await pricing.getByTestId('monthly-net-value').innerText(), /514,110원/);
   await pricing.getByRole('button', { name: 'Lite (라이트) 선택', exact: true }).click();
   assert.match(await pricing.getByTestId('monthly-net-value').innerText(), /481,110원/);

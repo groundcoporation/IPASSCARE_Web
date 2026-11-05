@@ -34,7 +34,7 @@ function loadComponent(relative) {
 
 test('published plans match the confirmed monthly prices', () => {
   assert.deepEqual(servicePlans.map(({ name, monthlyPrice }) => [name, monthlyPrice]), [
-    ['Lite (베이직)', 39900], ['Lite (라이트)', 69900], ['Pro (프로)', 99000], ['Enterprise (엔터프라이즈)', 119900],
+    ['Basic (베이직)', 39900], ['Lite (라이트)', 69900], ['Pro (프로)', 99000], ['Enterprise (엔터프라이즈)', 119900],
   ]);
   assert.equal(servicePlans[0].description, '전용 단말기(태블릿) 미포함');
   assert.equal(servicePlans[2].description, '전용 단말기(태블릿) 미포함');
@@ -89,7 +89,7 @@ test('simulation handles all student counts, zero shuttles, negative value and i
 test('pricing renders four current plans with VAT and device terms', () => {
   const { PricingSection } = loadComponent('src/components/PricingSection.tsx');
   const html = renderToStaticMarkup(React.createElement(PricingSection, { onOpenInquiry() {} }));
-  for (const text of ['Lite (베이직)', 'Lite (라이트)', 'Pro (프로)', 'Enterprise (엔터프라이즈)', '39,900원', '69,900원', '99,000원', '119,900원', 'VAT 별도', 'VAT 포함', '추천 운영 규모', '원생 30명 이하', '원생 50명 이하', '원생 50명 초과', '차량 1대', '차량 1대 이상', '차량 3대 이상', '태블릿) 제공', '자동이체', ...coreServiceFeatures]) assert.ok(html.includes(text), text);
+  for (const text of ['Basic (베이직)', 'Lite (라이트)', 'Pro (프로)', 'Enterprise (엔터프라이즈)', '39,900원', '69,900원', '99,000원', '119,900원', 'VAT 별도', 'VAT 포함', '추천 운영 규모', '원생 30명 이하', '원생 50명 이하', '원생 50명 초과', '차량 1대', '차량 1대 이상', '차량 3대 이상', '태블릿) 제공', '자동이체', ...coreServiceFeatures]) assert.ok(html.includes(text), text);
   assert.equal((html.match(/<article/g) || []).length, 4);
   assert.doesNotMatch(html, /118,000|프라임|30명까지 무료|약정|자동 회수|커스텀 케어|태블릿\) 1대 제공/);
   const app = read('src/App.tsx');
