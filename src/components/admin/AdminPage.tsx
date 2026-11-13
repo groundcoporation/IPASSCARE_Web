@@ -32,6 +32,20 @@ type PaymentOrderItem = { package_id?: string | null; option_id?: string | null;
 type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; order_items?: PaymentOrderItem[] | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[]; isIpointCharge?: boolean };
 type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[]; withdrawalStatus?: 'pending' | 'completed' | null };
 type ClassSchedule = { id: string; branch_id: string | null; target_class: string; day_of_week: string; start_time: string; end_time: string; max_people: number | null; branches: { name: string } | null };
+type AttendanceSchedule = {
+  id: string;
+  target_class: string | null;
+  day_of_week?: string | null;
+  start_time: string | null;
+  end_time: string | null;
+};
+type AttendanceScheduleStudent = {
+  id: string;
+  child_id?: string | null;
+  academy_student_classes?: Array<{
+    class_schedules?: AttendanceSchedule | AttendanceSchedule[] | null;
+  }> | null;
+};
 type ScheduleReservation = { id: string; schedule_id: string; class_date: string; status: string | null; attendance_status: string | null; child_id: string | null; user_id: string | null; children: { child_name: string | null } | null; users: { name: string | null; phone: string | null } | null };
 
 const won = new Intl.NumberFormat("ko-KR");
@@ -1538,7 +1552,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       return next;
     });
 
-    const statusMap: Record<string, string> = {
+    const statusMap: Record<BatchAttendanceAction, string> = {
       ride_in: '승차',
       check_in: '등원',
       check_out: '하원',
@@ -1555,7 +1569,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           child_id: targetChildId,
           date: selectedAttendanceDate,
           branch_id: targetBranch,
-          status: statusMap[actionType] || '등원'
+          status: statusMap[actionType]
         };
         if (actionType === 'ride_in') row.shuttle_ride_time = nowIso;
         else if (actionType === 'check_in') row.check_in = nowIso;
@@ -1579,11 +1593,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             ? { pickup_shuttle_status: 'boarded' }
             : actionType === 'ride_out'
               ? { dropoff_shuttle_status: 'dropped_off' }
-              : actionType === 'check_in'
-                ? { attendance_status: '등원' }
-                : actionType === 'check_out'
-                  ? { attendance_status: '하원' }
-                  : { attendance_status: '결석' };
+              : { attendance_status: statusMap[actionType] };
           const reservationResult = await supabase.from("reservations").update(reservationPatch).eq("child_id", payload.child_id).eq("class_date", payload.date).is("deleted_at", null);
           if (reservationResult.error) throw reservationResult.error;
         }
@@ -1688,7 +1698,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   const shownAttendance = useMemo(() => attendance.filter((item) => `${item.childName} ${item.parentName} ${item.packageName}`.toLowerCase().includes(search.trim().toLowerCase())), [attendance, search]);
 
-  const monthlyPayments = useMemo(() => payments.filter((item) => kstDateKey(item.created_at).slice(0, 7) === paymentMonth), [paymentMonth, payments]);
+  const monthlyPayments = useMemo(() => payments.filter((item) => kstDateKey(item.created_at)?.slice(0, 7) === paymentMonth), [paymentMonth, payments]);
 
   const shownPayments = useMemo(() => monthlyPayments.filter((item) => {
     const target = `${item.users?.name ?? ""} ${item.users?.email ?? ""} ${(item.childrenNames ?? []).join(" ")} ${item.pg_tid ?? ""} ${item.id} ${item.products.map((product) => product.package_name).join(" ")}`.toLowerCase();
@@ -1718,10 +1728,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   // 출결 화면의 수업 정보는 원생에게 등록된 전체 시간표의 첫 항목이 아니라,
   // 선택한 날짜에 실제 생성된 예약이 가리키는 시간표를 기준으로 표시한다.
   const attendanceSchedulesByStudentId = useMemo(() => {
-    const schedulesByStudent = new Map<string, any[]>();
+    const schedulesByStudent = new Map<string, AttendanceSchedule[]>();
     todayReservations.forEach((reservation) => {
       if (!reservation?.child_id) return;
-      const schedule = firstJoined(reservation.class_schedules);
+      const schedule = firstJoined<AttendanceSchedule>(reservation.class_schedules ?? null);
       if (!schedule) return;
       const schedules = schedulesByStudent.get(reservation.child_id) || [];
       if (!schedules.some((item) => item.id === schedule.id)) schedules.push(schedule);
@@ -1733,7 +1743,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     return schedulesByStudent;
   }, [todayReservations]);
 
-  const getAttendanceSchedules = useCallback((student: any) => {
+  const getAttendanceSchedules = useCallback((student: AttendanceScheduleStudent): AttendanceSchedule[] => {
     const reservationKey = student?.child_id || student?.id;
     const reservationSchedules = reservationKey ? attendanceSchedulesByStudentId.get(reservationKey) : undefined;
     if (reservationSchedules?.length) return reservationSchedules;
@@ -1743,11 +1753,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
     // 앱 계정과 연결되지 않은 기존 원생만 선택 요일의 학원 시간표를 보조값으로 사용한다.
     return (student?.academy_student_classes || [])
-      .map((item: any) => firstJoined(item?.class_schedules))
-      .filter((schedule: any) => schedule && (
+      .map((item) => firstJoined(item?.class_schedules ?? null))
+      .filter((schedule) => schedule !== null)
+      .filter((schedule) => (
         schedule.day_of_week === currentDayShort || schedule.day_of_week === currentDayFull
       ))
-      .sort((left: any, right: any) => String(left?.start_time || '99:99').localeCompare(String(right?.start_time || '99:99')));
+      .sort((left, right) => String(left.start_time || '99:99').localeCompare(String(right.start_time || '99:99')));
   }, [attendanceSchedulesByStudentId, currentDayFull, currentDayShort]);
 
   // Attendance filter counts
@@ -3107,8 +3118,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                               const reservationSchedules = getAttendanceSchedules(s);
                               const currentClassName = Array.from(new Set(reservationSchedules.map((schedule) => schedule.target_class))).join(', ') || '예약 수업';
                               const classTime = Array.from(new Set(reservationSchedules
-                                .filter((schedule) => schedule.start_time && schedule.end_time)
-                                .map((schedule) => `${schedule.start_time.slice(0, 5)}~${schedule.end_time.slice(0, 5)}`)
+                                .flatMap(({ start_time, end_time }) => start_time && end_time
+                                  ? [`${start_time.slice(0, 5)}~${end_time.slice(0, 5)}`]
+                                  : [])
                               )).join(', ') || null;
                               const isScheduled = isStudentScheduledOnDate(s);
 
