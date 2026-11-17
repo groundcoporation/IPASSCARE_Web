@@ -64,19 +64,20 @@ export function App() {
   const handleLoginSuccess = useCallback((profile: any) => {
     setLoggedInProfile(profile);
   }, []);
+  const handleLogout = useCallback(() => setLoggedInProfile(null), []);
 
   const handleBackToSite = useCallback(() => {
     setCurrentView('main');
     window.history.pushState({}, '', '/');
   }, []);
 
-  // If Admin View: Render Full-Screen Dedicated Admin Portal Page (Pass initialProfile to eliminate flicker!)
+  // The admin portal validates its own Auth session and active server profile.
   if (currentView === 'admin') {
     return (
       <AdminPage 
-        initialProfile={loggedInProfile}
         onBackToSite={handleBackToSite} 
         onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
       />
     );
   }

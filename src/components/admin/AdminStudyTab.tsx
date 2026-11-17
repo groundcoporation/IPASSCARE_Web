@@ -42,7 +42,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
   const [content, setContent] = useState('');
   const [homework, setHomework] = useState('');
   const [note, setNote] = useState('');
-  const [notifyParent, setNotifyParent] = useState(true);
+  const [notifyParent, setNotifyParent] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -102,7 +102,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
     const firstClass = getStudentSchedules(student)[0];
     setEditingId(null); setClassId(firstClass?.id || ''); setClassName(firstClass?.target_class || '미배정');
     setDate(today()); setTeacher(profile?.name || '담당선생님'); setCustomTeacher(false);
-    setTitle(''); setContent(''); setHomework(''); setNote(''); setNotifyParent(true);
+    setTitle(''); setContent(''); setHomework(''); setNote(''); setNotifyParent(false);
   }, [profile?.name, selectedStudent]);
 
   const selectStudent = (student: any) => { setStudentId(student.id); resetForm(student); };
@@ -117,12 +117,12 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
   const saveLog = async (event: React.FormEvent) => {
     event.preventDefault();
     if (saving) return;
-    if (!studentId) return alert('먼저 원생을 선택해주세요.');
+    if (!studentId || !selectedStudent?.branch_id) return alert('먼저 원생을 선택해주세요.');
     if (!title.trim()) return alert('일지 제목을 입력해주세요.');
     if (!content.trim()) return alert('수업 진도 및 학습 내용을 입력해주세요.');
     setSaving(true);
     try {
-      const payload = { branch_id: activeBranchId || null, student_id: studentId, class_schedule_id: classId || null, class_name: className || '미배정', teacher_name: teacher.trim() || profile?.name || '담당선생님', lesson_date: date, title: title.trim(), content: content.trim(), homework: homework.trim() || null, special_note: note.trim() || null, updated_at: new Date().toISOString() };
+      const payload = { branch_id: selectedStudent.branch_id, student_id: studentId, class_schedule_id: classId || null, class_name: className || '미배정', teacher_name: teacher.trim() || profile?.name || '담당선생님', lesson_date: date, title: title.trim(), content: content.trim(), homework: homework.trim() || null, special_note: note.trim() || null, updated_at: new Date().toISOString() };
       if (editingId) {
         const existingLog = logs.find((item) => item.id === editingId);
         const { data, error } = await supabase.from('academy_study_logs').update({ ...payload, is_parent_visible: Boolean(existingLog?.is_parent_visible) || notifyParent }).eq('id', editingId).select().single();

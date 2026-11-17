@@ -33,6 +33,7 @@ interface Bill {
     student_name: string;
     parent_user_id: string | null;
     child_id: string | null;
+    archived_at?: string | null;
     child?: {
       deleted_at: string | null;
     } | null;
@@ -534,7 +535,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               packages(name)
             )
           )
-        `);
+        `).is('archived_at', null);
       if (studentError) throw studentError;
 
       const activeStudents = (students as any[] || [])
@@ -1203,6 +1204,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             student_name,
             parent_user_id,
             child_id,
+            archived_at,
             child:children(deleted_at),
             parent:users(status)
           ),
@@ -1238,9 +1240,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       if (data) {
         const activeStudentBills = (data as any[]).filter((bill) => {
           const student = bill.academy_students;
-          return student
-            && (!student.child_id || student.child?.deleted_at == null)
-            && (!student.parent_user_id || student.parent?.status !== 'deleted');
+          return student && (student.archived_at || (
+            (!student.child_id || student.child?.deleted_at == null)
+            && (!student.parent_user_id || student.parent?.status !== 'deleted')
+          ));
         });
         setBills(activeStudentBills.map((bill) =>
           withBillingReminder(bill, reminders.get(bill.payment_request_id)),
@@ -1620,8 +1623,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   };
 
   const handleDeleteAppPaymentRequest = async (request: AppPaymentRequest) => {
-    if (request.status === 'paid') {
-      alert('결제 또는 수납이 완료된 어플 청구서는 삭제할 수 없습니다.');
+    if (request.issued_source !== 'admin_app' || !['pending', 'declined', 'expired', 'cancelled'].includes(request.status)) {
+      alert('삭제할 수 있는 미결제 앱 직접 청구가 아닙니다.');
       return;
     }
     const title = request.request_title || '이용권 청구서';
@@ -1632,11 +1635,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     billingBusyRef.current = true;
     setActionLoading(true);
     try {
-      const { error } = await supabase.rpc('delete_unpaid_app_payment_request', {
+      const { data, error } = await supabase.rpc('delete_unpaid_app_payment_request', {
         p_request_id: request.id,
         p_reason: '수납 관리에서 어플 관리자 직접 청구 삭제',
       });
       if (error) throw error;
+      if (data?.success !== true || data.request_id !== request.id) throw new AppError('BILL_DELETE_FAILED');
       await loadBills();
       alert('어플 직접 청구가 삭제되었습니다.');
     } catch (error: unknown) {
@@ -1747,6 +1751,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     bill.status === 'unpaid'
     && bill.amount_due > 0
     && !bill.payment_request_id
+    && !bill.academy_students?.archived_at
     && Boolean(bill.academy_students?.parent_user_id)
     && Boolean(bill.package_option_id),
   );
@@ -1755,7 +1760,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   useEffect(() => {
     const availableIds = new Set(bills
-      .filter((bill) => bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id)
+      .filter((bill) => bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id && !bill.academy_students?.archived_at)
       .map((bill) => bill.id));
     setSelectedAppBillIds((previous) => {
       const next = new Set(Array.from(previous).filter((id) => availableIds.has(id)));
@@ -2570,7 +2575,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                             || (connectedClassText && connectedClassText !== '없음' ? connectedClassText : '수업 미지정');
                           const packageLabel = bill.package_options ? `[${bill.package_options.packages?.name || ''}] ${bill.package_options.label}` : bill.memo || '수강 정보 연동 안 됨';
                           const isPaid = bill.status === 'paid';
-                          const canSendToApp = bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
+                          const canSendToApp = bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id && !bill.academy_students?.archived_at && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
                           const isDeclined = bill.status === 'declined';
                           const isExpired = bill.status === 'expired';
                           const hasAmountAdjustment = Number(bill.original_amount ?? bill.amount_due) !== Number(bill.amount_due);
@@ -2685,7 +2690,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                           : request.status === 'cancelled'
                             ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
                             : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
-                    const canDeleteRequest = request.status !== 'paid';
+                     const canDeleteRequest = request.issued_source === 'admin_app' && ['pending', 'declined', 'expired', 'cancelled'].includes(request.status);
 return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}<ReminderDate count={request.reminder_count} sentAt={request.last_reminded_at} /></td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount ?? request.total_amount ?? 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
                   }) : <tr><td colSpan={7} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
                 </tbody>

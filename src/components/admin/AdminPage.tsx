@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { 
   CalendarCheck, Check, ChevronLeft, ChevronRight, Clock3, CreditCard, Download, 
   Loader2, LogOut, Search, ShieldAlert, TicketCheck, UsersRound, FileText, Settings, Video, Lock, User, Eye, EyeOff, Pencil, Play, Trash2, X,
@@ -6,9 +6,11 @@ import {
   History, Clock, Coins, Bell, Megaphone
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
-import { AppError } from "../../errors/appError";
+import { AppError, formatError, logError, normalizeError } from "../../errors/appError";
 import { handleError } from "../../errors/handleError";
 import { loadActiveAppSchedulesByChild } from "../../lib/adminScheduleAssignments";
+import { ATTENDANCE_PAGE_SIZES, paginateAttendance, type AttendancePageSize } from "../../utils/attendancePagination";
+import { readAttendanceIdBatches, readAttendancePages } from "../../utils/attendanceQuery";
 import { ReferralTreeTab } from "./ReferralTreeTab";
 import { AdminStudentTab } from "./AdminStudentTab";
 import { AdminTeacherTab } from "./AdminTeacherTab";
@@ -24,13 +26,15 @@ import { AdminNoticeTab } from "./AdminNoticeTab";
 import { AdminHqNoticeTab } from "./AdminHqNoticeTab";
 import { AdminShuttleTab } from "./AdminShuttleTab";
 
-const MAX_SLOTS = 20;
+const MAX_SLOTS = 30;
+const ATTENDANCE_SLOT_INDEXES = Array.from({ length: MAX_SLOTS }, (_, index) => index);
 type Profile = { id: string; name: string | null; role: string; branch_id: string | null };
 type Branch = { id: string; name: string };
 type PaymentProduct = { package_name: string | null; price: number | null; total_count: number | null };
 type PaymentOrderItem = { package_id?: string | null; option_id?: string | null; quantity?: number | null };
 type Payment = { id: string; user_id?: string | null; created_at: string; total_amount: number | null; final_amount: number | null; payment_method: string | null; status: string | null; pg_tid: string | null; order_items?: PaymentOrderItem[] | null; users: { name: string | null; email: string | null } | null; products: PaymentProduct[]; childrenNames?: string[]; isIpointCharge?: boolean };
-type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[]; withdrawalStatus?: 'pending' | 'completed' | null };
+type AttendanceSource = { id: string; consumedAt: string | null };
+type AttendanceRow = { id: string; childId: string; childName: string; parentName: string; packageName: string; weekly: number | null; total: number; used: number; remaining: number; dates: string[]; sources: Array<AttendanceSource | null>; withdrawalStatus?: 'pending' | 'completed' | null };
 type ClassSchedule = { id: string; branch_id: string | null; target_class: string; day_of_week: string; start_time: string; end_time: string; max_people: number | null; branches: { name: string } | null };
 type AttendanceSchedule = {
   id: string;
@@ -51,6 +55,13 @@ type ScheduleReservation = { id: string; schedule_id: string; class_date: string
 const won = new Intl.NumberFormat("ko-KR");
 const ADMIN_PORTAL_ROLES = new Set(["admin", "director", "teacher", "coach"]);
 const canAccessAdminPortal = (role: string | null | undefined) => Boolean(role && ADMIN_PORTAL_ROLES.has(role));
+const loadAdminProfile = async (userId: string): Promise<Profile> => {
+  const { data, error } = await supabase.from("users").select("id,name,role,branch_id")
+    .eq("id", userId).eq("status", "active").maybeSingle();
+  if (error) throw error;
+  if (!data || !canAccessAdminPortal(data.role)) throw new AppError("PERMISSION_DENIED");
+  return data;
+};
 const roleLabel = (role: string | null | undefined) => {
   switch (role) {
     case "admin": return "최고 관리자";
@@ -173,13 +184,14 @@ export function extractYoutubeId(url: string): string | null {
 interface AdminPageProps {
   onBackToSite: () => void;
   onLoginSuccess?: (profile: Profile) => void;
-  initialProfile?: Profile | null;
+  onLogout?: () => void;
 }
 
-export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSuccess, initialProfile }) => {
+export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSuccess, onLogout }) => {
   // Authentication State
-  const [profile, setProfile] = useState<Profile | null>(() => canAccessAdminPortal(initialProfile?.role) ? initialProfile ?? null : null);
-  const [authLoading, setAuthLoading] = useState(false);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const loginInFlight = useRef(false);
   
   // Login Form & Remember Me State
   const [identifier, setIdentifier] = useState(() => localStorage.getItem("remembered_id") || "");
@@ -196,12 +208,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [, setError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [month, setMonth] = useState(() => kstDateKey(new Date().toISOString())?.slice(0, 7) ?? localDate(new Date()).slice(0, 7));
   const [paymentMonth, setPaymentMonth] = useState(() => localDate(new Date()).slice(0, 7));
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchFilter, setBranchFilter] = useState("all");
   const [payments, setPayments] = useState<Payment[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRow[]>([]);
+  const [attendancePageSize, setAttendancePageSize] = useState<AttendancePageSize>(20);
+  const [attendancePage, setAttendancePage] = useState({ key: "", number: 1 });
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [attendanceLoadFailed, setAttendanceLoadFailed] = useState(false);
+  const [attendanceLoadedKey, setAttendanceLoadedKey] = useState("");
+  const attendanceQueryKey = JSON.stringify([profile?.id, branchFilter, month]);
+  const attendancePending = attendanceLoading || attendanceLoadedKey !== attendanceQueryKey;
+  const attendanceLoadRequest = useRef(0);
   const [schedules, setSchedules] = useState<ClassSchedule[]>([]);
   const [scheduleReservations, setScheduleReservations] = useState<ScheduleReservation[]>([]);
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()));
@@ -271,14 +291,27 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const [cancelLoading, setCancelLoading] = useState(false);
 
   // Attendance Modal State
-  const [attendanceModal, setAttendanceModal] = useState<{ childId: string; childName: string } | null>(null);
-  const [attendanceDate, setAttendanceDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [attendanceModal, setAttendanceModal] = useState<{ childId: string; childName: string; packageId: string } | null>(null);
+  const attendanceToday = kstDateKey(new Date().toISOString()) ?? "";
+  const [attendanceDate, setAttendanceDate] = useState(() => kstDateKey(new Date().toISOString()) ?? "");
   const [actionLoading, setActionLoading] = useState(false);
+  const manualAttendanceInFlight = useRef(false);
+  const attendanceDialog = useRef<HTMLDialogElement>(null);
+  const attendanceTitleId = useId();
+  const attendanceDateId = useId();
+  const ledgerCancelInFlight = useRef(false);
+  const [ledgerCancelPending, setLedgerCancelPending] = useState(false);
 
   const onLoginSuccessRef = useRef(onLoginSuccess);
   useEffect(() => {
     onLoginSuccessRef.current = onLoginSuccess;
   }, [onLoginSuccess]);
+
+  useEffect(() => {
+    if (attendanceModal && attendanceDialog.current && !attendanceDialog.current.open) {
+      attendanceDialog.current.showModal();
+    }
+  }, [attendanceModal]);
 
   // Set Tab Title on Mount
   useEffect(() => {
@@ -287,45 +320,37 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   // Session Check
   useEffect(() => {
-    if (initialProfile) {
-      if (canAccessAdminPortal(initialProfile.role)) {
-        setProfile(initialProfile);
-        setLoginError("");
-      } else {
-        setProfile(null);
-        setLoginError("관리자 페이지 접근 권한이 없습니다.");
-      }
-      setAuthLoading(false);
-      return;
-    }
-    let active = true;
+    let restoreAllowed = true;
+    let mounted = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event !== "SIGNED_OUT") return;
+      restoreAllowed = false;
+      setProfile(null);
+      if (!loginInFlight.current) setAuthLoading(false);
+      onLogout?.();
+    });
     (async () => {
       try {
-        const { data: auth } = await supabase.auth.getUser();
-        if (auth?.user) {
-          const { data } = await supabase.from("users").select("id,name,role,branch_id").eq("id", auth.user.id).neq("status", "deleted").maybeSingle();
-          if (active && data) {
-            const userProf = data as Profile;
-            if (canAccessAdminPortal(userProf.role)) {
-              setProfile(userProf);
-              setLoginError("");
-              if (onLoginSuccessRef.current) {
-                onLoginSuccessRef.current(userProf);
-              }
-            } else {
-              setProfile(null);
-              setLoginError("관리자 페이지 접근 권한이 없습니다.");
-            }
-          }
-        }
-      } catch (err) {
-        console.warn("Session check warning", err);
+        const { data: auth, error } = await supabase.auth.getUser();
+        if (error?.name === "AuthSessionMissingError") return;
+        if (error) throw error;
+        if (!auth.user || !restoreAllowed) return;
+        const verifiedProfile = await loadAdminProfile(auth.user.id);
+        if (!restoreAllowed) return;
+        setProfile(verifiedProfile);
+        setLoginError("");
+        onLoginSuccessRef.current?.(verifiedProfile);
+      } catch (error: unknown) {
+        if (!restoreAllowed) return;
+        const safeError = normalizeError(error, "AUTH_REQUIRED");
+        logError(safeError, { operation: "admin.auth.restore" });
+        setLoginError(formatError(safeError));
       } finally {
-        if (active) setAuthLoading(false);
+        if (mounted && !loginInFlight.current) setAuthLoading(false);
       }
     })();
-    return () => { active = false; };
-  }, [initialProfile]);
+    return () => { mounted = false; restoreAllowed = false; subscription.unsubscribe(); };
+  }, [onLogout]);
 
   // Fetch Branches
   useEffect(() => {
@@ -386,7 +411,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         academy_student_classes(
           class_schedules(id, target_class, day_of_week, start_time, end_time)
         )
-      `).order("student_name");
+      `).is("archived_at", null).order("student_name");
 
       const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) query = query.eq("branch_id", selectedBranch);
@@ -519,6 +544,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   // Login Handler
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loginInFlight.current) return;
+    loginInFlight.current = true;
     setAuthLoading(true);
     setLoginError("");
 
@@ -532,14 +559,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     localStorage.setItem("auto_login_check", autoLogin ? "true" : "false");
 
     try {
-      if (password === "ground1234" || password === "ipasscare1234") {
-        const adminProf: Profile = { id: "master", name: "관리자님", role: "admin", branch_id: null };
-        setProfile(adminProf);
-        if (onLoginSuccessRef.current) onLoginSuccessRef.current(adminProf);
-        setAuthLoading(false);
-        return;
-      }
-
       let loginEmail = identifier.trim();
       if (!loginEmail.includes("@")) {
         const { data: userData, error: userError } = await supabase
@@ -549,9 +568,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           .neq("status", "deleted")
           .maybeSingle();
 
-        if (userError || !userData?.email) {
-          setLoginError("존재하지 않는 아이디입니다.");
-          setAuthLoading(false);
+        if (userError) throw userError;
+        if (!userData?.email) {
+          setLoginError("[AUTH_REQUIRED] 아이디 또는 비밀번호를 확인해 주세요.");
           return;
         }
         loginEmail = userData.email;
@@ -563,42 +582,43 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       });
 
       if (authError || !authData?.user) {
-        setLoginError("아이디 또는 비밀번호가 일치하지 않습니다.");
-        setAuthLoading(false);
+        setLoginError("[AUTH_REQUIRED] 아이디 또는 비밀번호를 확인해 주세요.");
         return;
       }
 
-      const { data: userProfileData } = await supabase
-        .from("users")
-        .select("id,name,role,branch_id")
-        .eq("id", authData.user.id)
-        .neq("status", "deleted")
-        .maybeSingle();
-
-      const authenticatedProfile: Profile = userProfileData 
-        ? (userProfileData as Profile)
-        : { id: authData.user.id, name: authData.user.email?.split("@")[0] || "회원", role: "parent", branch_id: null };
-
-      if (!canAccessAdminPortal(authenticatedProfile.role)) {
-        setProfile(null);
-        setLoginError("관리자 페이지는 원장 및 교직원 계정만 이용할 수 있습니다.");
-        return;
+      let authenticatedProfile: Profile;
+      try {
+        authenticatedProfile = await loadAdminProfile(authData.user.id);
+      } catch (error: unknown) {
+        const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
+        if (signOutError) logError(normalizeError(signOutError, "AUTH_REQUIRED"), { operation: "admin.auth.rejectedSignOut" });
+        throw error;
       }
 
       setProfile(authenticatedProfile);
       if (onLoginSuccessRef.current) onLoginSuccessRef.current(authenticatedProfile);
-    } catch (err: any) {
-      setLoginError(err.message || "로그인 실패");
+    } catch (error: unknown) {
+      setProfile(null);
+      const safeError = normalizeError(error, "AUTH_REQUIRED");
+      logError(safeError, { operation: "admin.auth.login" });
+      setLoginError(formatError(safeError));
     } finally {
+      loginInFlight.current = false;
       setAuthLoading(false);
     }
   };
 
   const logout = async () => {
     // 웹에서 로그아웃해도 앱과 다른 기기의 세션은 유지합니다.
-    await supabase.auth.signOut({ scope: "local" });
-    localStorage.removeItem("auto_login_check");
-    setProfile(null);
+    try {
+      const { error } = await supabase.auth.signOut({ scope: "local" });
+      if (error) throw error;
+      localStorage.removeItem("auto_login_check");
+      setProfile(null);
+      onLogout?.();
+    } catch (error: unknown) {
+      await handleError(error, "AUTH_REQUIRED", { operation: "admin.auth.logout" });
+    }
   };
 
   // Load Payments with Child Names
@@ -693,14 +713,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
   // Load Attendance
   const loadAttendance = useCallback(async () => {
-    if (!profile) return;
-    setLoading(true); setError("");
+    if (!profile || !month) return;
+    const request = ++attendanceLoadRequest.current;
+    setAttendanceLoading(true);
+    setAttendanceLoadFailed(false);
     const period = rangeOf(month);
     try {
-      let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id,deleted_at").is("deleted_at", null).order("child_name");
-      let packagesQuery = supabase.from("user_packages").select("id,user_id,child_id,child_name,package_name,total_count,remaining_count,status,voucher_type,branch_id").or("voucher_type.is.null,voucher_type.neq.shuttle").order("created_at", { ascending: false });
-      let logsQuery = supabase.from("attendance_logs").select("child_id,date,status,check_in").gte("date", period.from).lte("date", period.to).not("check_in", "is", null);
-      let withdrawalsQuery = supabase.from("user_withdrawals").select("id,child_id,user_id,child_name,user_name,refund_status");
+      let childrenQuery = supabase.from("children").select("id,child_name,parent_id,branch_id,deleted_at").is("deleted_at", null).order("child_name").order("id");
+      let packagesQuery = supabase.from("user_packages").select("id,user_id,child_id,child_name,package_name,total_count,remaining_count,status,voucher_type,branch_id").or("voucher_type.is.null,voucher_type.neq.shuttle").order("created_at", { ascending: false }).order("id");
+      let logsQuery = supabase.from("attendance_logs").select("child_id,date,status,check_in").gte("date", period.from).lte("date", period.to).not("check_in", "is", null).order("id");
+      let withdrawalsQuery = supabase.from("user_withdrawals").select("id,child_id,user_id,child_name,user_name,refund_status").order("id");
 
       const selectedBranch = scopedBranchId(profile, branchFilter);
       if (selectedBranch) {
@@ -709,13 +731,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         logsQuery = logsQuery.eq("branch_id", selectedBranch);
         withdrawalsQuery = withdrawalsQuery.eq("branch_id", selectedBranch);
       }
-      const [childResult, packageResult, logResult, withdrawalsResult] = await Promise.all([childrenQuery, packagesQuery, logsQuery, withdrawalsQuery]);
-      if (childResult.error) throw childResult.error;
-      if (packageResult.error) throw packageResult.error;
-      if (logResult.error) throw logResult.error;
-      const children = childResult.data ?? [];
-      const packages = packageResult.data ?? [];
-      const withdrawals = (withdrawalsResult.data ?? []) as any[];
+      const [children, packages, logs, withdrawals] = await Promise.all([
+        readAttendancePages((from, to) => childrenQuery.range(from, to)),
+        readAttendancePages((from, to) => packagesQuery.range(from, to)),
+        readAttendancePages((from, to) => logsQuery.range(from, to)),
+        readAttendancePages((from, to) => withdrawalsQuery.range(from, to)),
+      ]);
 
       const withdrawalByChild = new Map<string, any>();
       const withdrawalByUser = new Map<string, any>();
@@ -726,14 +747,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
       const parentIds = [...new Set(children.map((child: any) => child.parent_id).filter(Boolean))];
       const packageIds = packages.map((item: any) => item.id);
-      const [parentResult, usageResult] = await Promise.all([
-        parentIds.length ? supabase.from("users").select("id,name,status").in("id", parentIds).neq("status", "deleted") : Promise.resolve({ data: [], error: null }),
-        packageIds.length ? supabase.from("package_usage_logs").select("user_package_id,child_id,quantity,consumed_at,reservations(class_date,attendance_status,deleted_at)").in("user_package_id", packageIds).eq("status", "consumed") : Promise.resolve({ data: [], error: null }),
+      const monthStart = `${period.from}T00:00:00+09:00`;
+      const nextMonthStart = `${moveMonth(month, 1)}-01T00:00:00+09:00`;
+      const [parentRows, reservedUsage, directUsage] = await Promise.all([
+        readAttendanceIdBatches(parentIds, (ids) => readAttendancePages((from, to) =>
+          supabase.from("users").select("id,name,status").in("id", ids).order("id").range(from, to))),
+        readAttendanceIdBatches(packageIds, (ids) => readAttendancePages((from, to) =>
+          supabase.from("package_usage_logs").select("id,user_package_id,quantity,consumed_at,reservations!inner(class_date,attendance_status,deleted_at)")
+            .in("user_package_id", ids).eq("status", "consumed").gte("reservations.class_date", period.from)
+            .lte("reservations.class_date", period.to).is("reservations.deleted_at", null).order("id").range(from, to))),
+        readAttendanceIdBatches(packageIds, (ids) => readAttendancePages((from, to) =>
+          supabase.from("package_usage_logs").select("id,user_package_id,quantity,consumed_at")
+            .in("user_package_id", ids).eq("status", "consumed").is("reservation_id", null)
+            .gte("consumed_at", monthStart).lt("consumed_at", nextMonthStart).order("id").range(from, to))),
       ]);
-      if (parentResult.error) throw parentResult.error;
-      if (usageResult.error) throw usageResult.error;
-      const parents = new Map((parentResult.data ?? []).map((item: any) => [item.id, item.name]));
-      const parentStatuses = new Map((parentResult.data ?? []).map((item: any) => [item.id, item.status]));
+      const parents = new Map(parentRows.map((item) => [item.id, item.name]));
+      const parentStatuses = new Map(parentRows.map((item) => [item.id, item.status]));
 
       const visibleChildren = children.filter((child: any) => {
         if (child.deleted_at != null) return false;
@@ -756,16 +785,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       const packageMap = new Map<string, any[]>();
       packages.forEach((item: any) => item.child_id && packageMap.set(item.child_id, [...(packageMap.get(item.child_id) ?? []), item]));
       const legacy = new Map<string, string[]>();
-      (logResult.data ?? []).forEach((log: any) => { if (!excluded(log.status)) legacy.set(log.child_id, [...(legacy.get(log.child_id) ?? []), log.date]); });
-      const usage = new Map<string, string[]>();
-      (usageResult.data ?? []).forEach((item: any) => {
+      logs.forEach((log) => {
+        if (!excluded(log.status)) {
+          const dates = legacy.get(log.child_id) ?? [];
+          dates.push(log.date);
+          legacy.set(log.child_id, dates);
+        }
+      });
+      const usage = new Map<string, Array<{ date: string; source: AttendanceSource | null }>>();
+      [...reservedUsage, ...directUsage.map((item) => ({ ...item, reservations: null }))].forEach((item) => {
         const reservation: any = firstJoined(item.reservations);
         if (reservation?.deleted_at) return;
         if (excluded(reservation?.attendance_status ?? null)) return;
-        const date = reservation?.class_date ?? item.consumed_at?.slice(0, 10);
+        const date = reservation?.class_date ?? kstDateKey(item.consumed_at);
         if (!date || date < period.from || date > period.to) return;
         const dates = usage.get(item.user_package_id) ?? [];
-        for (let index = 0; index < Math.max(1, item.quantity ?? 1); index += 1) dates.push(date);
+        for (let index = 0; index < Math.max(1, item.quantity ?? 1); index += 1) dates.push({ date, source: { id: item.id, consumedAt: item.consumed_at ?? null } });
         usage.set(item.user_package_id, dates);
       });
 
@@ -787,13 +822,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             used: 0, 
             remaining: 0, 
             dates: [],
+            sources: [],
             withdrawalStatus
           });
         }
         items.forEach((item: any) => {
-          let dates = [...(usage.get(item.id) ?? [])].sort();
-          if (!dates.length && items.length === 1) dates = [...(legacy.get(child.id) ?? [])].sort();
-          dates = dates.filter((date) => isBeforeChildDeletion(date, child.deleted_at));
+          let entries = [...(usage.get(item.id) ?? [])];
+          if (!entries.length && items.length === 1) entries = (legacy.get(child.id) ?? []).map((date) => ({ date, source: null }));
+          entries = entries.filter(({ date }) => isBeforeChildDeletion(date, child.deleted_at)).sort((a, b) => a.date.localeCompare(b.date));
+          const dates = entries.map(({ date }) => date);
           const total = Math.min(MAX_SLOTS, item.total_count ?? 0);
           const used = Math.min(MAX_SLOTS, Math.max((item.total_count ?? 0) - (item.remaining_count ?? 0), dates.length));
           rows.push({ 
@@ -807,14 +844,24 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             used, 
             remaining: Math.max(0, item.remaining_count ?? total - used), 
             dates: dates.slice(0, MAX_SLOTS),
+            sources: entries.slice(0, MAX_SLOTS).map(({ source }) => source),
             withdrawalStatus
           });
         });
       });
-      setAttendance(rows);
-    } catch (reason: any) { setError(reason?.message ?? "출결표를 불러오지 못했습니다."); }
-    finally { setLoading(false); }
-  }, [branchFilter, month, profile]);
+      if (request === attendanceLoadRequest.current) setAttendance(rows);
+    } catch (reason: unknown) {
+      if (request !== attendanceLoadRequest.current) return;
+      setAttendance([]);
+      setAttendanceLoadFailed(true);
+      await handleError(reason, "UNKNOWN_ERROR", { operation: "attendance.ledger.load" });
+    } finally {
+      if (request === attendanceLoadRequest.current) {
+        setAttendanceLoadedKey(attendanceQueryKey);
+        setAttendanceLoading(false);
+      }
+    }
+  }, [attendanceQueryKey, branchFilter, month, profile]);
 
   // Load Schedules
   const loadSchedules = useCallback(async () => {
@@ -1190,64 +1237,55 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   };
 
   const handleManualAttendance = async () => {
-    if (!attendanceModal || !profile) return;
+    if (!attendanceModal || !profile || !attendanceDate.startsWith(`${month}-`) || manualAttendanceInFlight.current) return;
+    manualAttendanceInFlight.current = true;
     setActionLoading(true);
-    const { childId } = attendanceModal;
-    const dateStr = attendanceDate;
-    const targetBranch = scopedBranchId(profile, branchFilter) || profile.branch_id || "branch_1";
-
     try {
-      const { data: existingLog } = await (supabase as any).from("attendance_logs").select("id").eq("child_id", childId).eq("date", dateStr).maybeSingle();
-      if (!existingLog) {
-        await (supabase as any).from("attendance_logs").insert({ child_id: childId, date: dateStr, branch_id: targetBranch, status: "출석", check_in: new Date().toISOString() });
-      }
-
-      const { data: activePackages } = await (supabase as any).from("user_packages").select("id, remaining_count").eq("child_id", childId).eq("status", "active").gt("remaining_count", 0).order("created_at", { ascending: true });
-
-      if (activePackages && activePackages.length > 0) {
-        const pkg = activePackages[0] as any;
-        await (supabase as any).from("package_usage_logs").insert({ user_package_id: pkg.id, child_id: childId, quantity: 1, consumed_at: new Date(dateStr + "T12:00:00Z").toISOString(), status: "consumed", branch_id: targetBranch });
-        await (supabase as any).from("user_packages").update({ remaining_count: Math.max(0, pkg.remaining_count - 1) }).eq("id", pkg.id);
-      }
-
-      alert("출석 처리가 완료되었습니다.");
-      setAttendanceModal(null);
+      const { data, error } = await supabase.rpc("register_manual_ledger_attendance", {
+        p_child_id: attendanceModal.childId,
+        p_date: attendanceDate,
+        p_package_id: attendanceModal.packageId,
+      });
+      if (error) throw error;
+      if (data?.status !== "registered" && data?.status !== "already_registered") throw new AppError("ATT_SAVE_FAILED");
+      attendanceDialog.current?.close();
+      alert(data.status === "already_registered" ? "이미 등록된 출석입니다. 이용권은 추가로 차감하지 않았습니다." : "출석을 등록하고 이용권 1회를 차감했습니다.");
       void loadAttendance();
-    } catch (err: any) {
-      alert(err.message || "출석 처리에 실패했습니다.");
+    } catch (error: unknown) {
+      const safeError = normalizeError(error, "ATT_SAVE_FAILED");
+      if (safeError.code === "SERVER_UPDATE_REQUIRED") {
+        await handleError(new AppError("ATT_UPDATE_REQUIRED", safeError), "ATT_SAVE_FAILED", { operation: "attendance.ledger.register" });
+      } else {
+        await handleError(safeError, "ATT_SAVE_FAILED", { operation: "attendance.ledger.register" });
+      }
     } finally {
+      manualAttendanceInFlight.current = false;
       setActionLoading(false);
     }
   };
 
-  const handleCancelAttendance = async (childId: string, dateStr: string) => {
-    if (!profile) return;
-    if (!confirm(`${dateStr} 날짜의 출석을 취소하시겠습니까?\n이미 차감된 수강권이 있다면 자동으로 +1회 복구됩니다.`)) return;
-
-    setLoading(true);
+  const handleCancelAttendance = async (row: AttendanceRow, dateStr: string, source: AttendanceSource | null) => {
+    if (!profile || ledgerCancelInFlight.current) return;
+    if (!confirm(`${dateStr} 출석을 취소하시겠습니까?\n연결된 이용권 차감 기록이 있으면 해당 횟수가 복구됩니다.`)) return;
+    ledgerCancelInFlight.current = true;
+    setLedgerCancelPending(true);
     try {
-      await (supabase as any).from("attendance_logs").delete().eq("child_id", childId).eq("date", dateStr);
-      const startOfDay = `${dateStr}T00:00:00.000Z`;
-      const endOfDay = `${dateStr}T23:59:59.999Z`;
-      const { data: usages } = await (supabase as any).from("package_usage_logs").select("id, user_package_id, quantity").eq("child_id", childId).eq("status", "consumed").gte("consumed_at", startOfDay).lte("consumed_at", endOfDay);
-
-      if (usages && usages.length > 0) {
-        for (const usage of usages) {
-          await (supabase as any).from("package_usage_logs").delete().eq("id", usage.id);
-          const { data: pkg } = await (supabase as any).from("user_packages").select("id, remaining_count, total_count").eq("id", usage.user_package_id).maybeSingle();
-          if (pkg) {
-            const nextCount = Math.min(pkg.total_count || 100, (pkg.remaining_count || 0) + (usage.quantity || 1));
-            await (supabase as any).from("user_packages").update({ remaining_count: nextCount }).eq("id", pkg.id);
-          }
-        }
-      }
-
-      alert("출석 취소와 수강권 복구가 안전하게 완료되었습니다.");
-      void loadAttendance();
-    } catch (err: any) {
-      alert(err.message || "출석 취소 처리에 실패했습니다.");
+      const { data, error } = await supabase.rpc("cancel_attendance_ledger_entry", {
+        p_child_id: row.childId,
+        p_date: dateStr,
+        p_package_id: row.id,
+        p_usage_id: source?.id ?? null,
+        p_expected_consumed_at: source?.consumedAt ?? null,
+      });
+      if (error) throw error;
+      if (data?.cancelled !== true) throw new AppError("CONFLICT_ERROR");
+      await loadAttendance();
+      alert(data.restored > 0 ? `출석을 취소하고 이용권 ${data.restored}회를 복구했습니다.` : "출석을 취소했습니다.");
+    } catch (error: unknown) {
+      await handleError(error, "ATT_SAVE_FAILED", { operation: "attendance.ledger.cancel" });
     } finally {
-      setLoading(false);
+      ledgerCancelInFlight.current = false;
+      setLedgerCancelPending(false);
     }
   };
 
@@ -1697,6 +1735,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   };
 
   const shownAttendance = useMemo(() => attendance.filter((item) => `${item.childName} ${item.parentName} ${item.packageName}`.toLowerCase().includes(search.trim().toLowerCase())), [attendance, search]);
+  const attendancePageKey = JSON.stringify([attendanceQueryKey, search.trim().toLowerCase(), attendancePageSize]);
+  const attendanceView = paginateAttendance(shownAttendance, attendancePage.key === attendancePageKey ? attendancePage.number : 1, attendancePageSize);
+  const goToAttendancePage = (number: number) => setAttendancePage({ key: attendancePageKey, number });
 
   const monthlyPayments = useMemo(() => payments.filter((item) => kstDateKey(item.created_at)?.slice(0, 7) === paymentMonth), [paymentMonth, payments]);
 
@@ -2354,7 +2395,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         </aside>
 
         {/* 3. RIGHT MAIN CONTENT AREA */}
-        <main className="flex-1 md:pl-[240px] min-h-screen">
+        <main className="min-w-0 flex-1 md:pl-[240px] min-h-screen">
           <div className="w-full max-w-none space-y-6 p-4 sm:p-6 xl:p-8">
             
             {/* DASHBOARD TAB */}
@@ -3341,38 +3382,53 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               </div>
             )}
 
-            {/* ATTENDANCE 3: 출결 조회 (100% ORIGINAL 20-SLOT ATTENDANCE TABLE) */}
+            {/* ATTENDANCE 3: 출결 조회 */}
             {subTab === "attendance" && (
               <>
-                <section className="mb-5 grid gap-3 sm:grid-cols-3">
-                  <Stat label="표시 자녀" value={`${new Set(shownAttendance.map((row) => row.childName)).size}명`} icon={<UsersRound />} color="blue" />
-                  <Stat label="이번 달 이용" value={`${shownAttendance.reduce((sum, row) => sum + row.dates.length, 0)}회`} icon={<CalendarCheck />} color="green" />
-                  <Stat label="남은 이용권" value={`${shownAttendance.reduce((sum, row) => sum + row.remaining, 0)}회`} icon={<TicketCheck />} color="amber" />
+                <section className="mb-5 grid gap-3 sm:grid-cols-3" aria-label="조회 결과 요약">
+                  <Stat label="조회 원생" value={attendancePending || attendanceLoadFailed ? '—' : `${new Set(shownAttendance.map((row) => row.childId)).size}명`} icon={<UsersRound />} color="blue" />
+                  <Stat label="이번 달 이용" value={attendancePending || attendanceLoadFailed ? '—' : `${shownAttendance.reduce((sum, row) => sum + row.dates.length, 0)}회`} icon={<CalendarCheck />} color="green" />
+                  <Stat label="남은 이용권" value={attendancePending || attendanceLoadFailed ? '—' : `${shownAttendance.reduce((sum, row) => sum + row.remaining, 0)}회`} icon={<TicketCheck />} color="amber" />
                 </section>
 
-                <Toolbar search={search} setSearch={setSearch} placeholder="자녀, 보호자, 이용권 검색">
-                  <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={setBranchFilter} />
+                <Toolbar search={search} setSearch={(value) => { setSearch(value); goToAttendancePage(1); }} placeholder="자녀, 보호자, 이용권 검색">
+                  <BranchFilter profile={profile} branches={branches} value={branchFilter} onChange={(value) => { setBranchFilter(value); goToAttendancePage(1); }} />
                   <div className="flex items-center rounded-xl border border-slate-200">
-                    <button aria-label="이전 달" onClick={() => setMonth(moveMonth(month, -1))} className="p-3"><ChevronLeft size={18} /></button>
-                    <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-[132px] py-3 text-center text-sm font-black outline-none bg-transparent text-slate-900" />
-                    <button aria-label="다음 달" onClick={() => setMonth(moveMonth(month, 1))} className="p-3"><ChevronRight size={18} /></button>
+                    <button aria-label="이전 달" onClick={() => { setMonth(moveMonth(month, -1)); goToAttendancePage(1); }} className="p-3"><ChevronLeft size={18} /></button>
+                    <input type="month" aria-label="출결 조회 월" value={month} onChange={(e) => { if (e.target.value) { setMonth(e.target.value); goToAttendancePage(1); } }} className="w-[132px] py-3 text-center text-sm font-bold outline-none bg-transparent text-slate-900" />
+                    <button aria-label="다음 달" onClick={() => { setMonth(moveMonth(month, 1)); goToAttendancePage(1); }} className="p-3"><ChevronRight size={18} /></button>
                   </div>
-                  <button onClick={() => void downloadWorkbook("attendance")} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-bold text-white"><Download size={17} /> Excel</button>
+                  <button type="button" disabled={attendanceLoading} onClick={() => void loadAttendance()} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={16} className={attendanceLoading ? 'animate-spin' : undefined} /> 새로고침</button>
+                  <button type="button" disabled={attendancePending || attendanceLoadFailed || !shownAttendance.length} onClick={() => void downloadWorkbook("attendance")} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-bold text-white disabled:opacity-40"><Download size={17} /> Excel</button>
                 </Toolbar>
 
-                <div className="mb-3 rounded-2xl bg-blue-50 px-4 py-3 text-sm text-blue-800 ring-1 ring-blue-100">
-                  등원 처리되어 이용권이 실제 차감된 날짜만 체크됩니다. 결석·보강은 포함하지 않으며 최대 20회까지 표시합니다.
+                <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="월별 출결 장부" aria-busy={attendancePending}>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-4 sm:px-5">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900">월별 출결 장부</h2>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-500">표를 좌우로 밀어 1~{MAX_SLOTS}회차를 확인하세요. 이용권 차감 기록을 우선 표시하며 결석·보강은 제외합니다.</p>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                    페이지당
+                    <select value={attendancePageSize} onChange={(e) => { setAttendancePageSize(Number(e.target.value) as AttendancePageSize); goToAttendancePage(1); }} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 font-semibold text-slate-800">
+                      {ATTENDANCE_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}개</option>)}
+                    </select>
+                  </label>
                 </div>
 
-                <TableShell empty={!loading && !shownAttendance.length} emptyText="조건에 맞는 출결 정보가 없습니다.">
-                  <table className="min-w-[1000px] w-full text-left text-xs sm:text-[13px]">
-                    <thead className="bg-slate-100 text-[11px] font-black text-slate-500">
-                      <tr><Th sticky>자녀 / 보호자</Th><Th>이용권</Th><Th>주 횟수</Th><Th>사용</Th>{Array.from({ length: MAX_SLOTS }, (_, i) => <Th key={i}>{i + 1}</Th>)}<Th>출석일</Th></tr>
+                {attendancePending ? (
+                  <p className="px-4 py-12 text-center text-sm text-slate-500" role="status">출결 내역을 불러오는 중입니다.</p>
+                ) : (
+                <div className="overflow-x-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-500" role="region" aria-label="출결 조회 표, 가로 스크롤 가능" tabIndex={0}>
+                  <table className="w-max min-w-full text-left text-xs sm:text-[13px]">
+                    <caption className="sr-only">월별 원생 출결 및 이용권 현황</caption>
+                    <thead className="bg-slate-50 text-[11px] font-bold text-slate-600">
+                      <tr><Th sticky>자녀 / 보호자</Th><Th>이용권</Th><Th>주 횟수</Th><Th>사용</Th>{ATTENDANCE_SLOT_INDEXES.map((i) => <th key={i} scope="col" className="min-w-10 px-0.5 py-4 text-center">{i + 1}</th>)}<Th>출석 횟수</Th></tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {shownAttendance.map((row) => (
+                      {attendanceView.rows.map((row) => (
                         <tr key={row.id} className={`hover:bg-blue-50/30 ${row.withdrawalStatus === 'pending' ? 'bg-amber-50/20' : ''}`}>
-                          <Td sticky>
+                          <th scope="row" className="sticky left-0 z-10 whitespace-nowrap bg-white px-4 py-4 text-left align-middle font-normal">
                             <div className="flex items-center gap-1.5">
                               <b className="text-sm">{row.childName}</b>
                               {row.withdrawalStatus === 'pending' && (
@@ -3382,29 +3438,42 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                               )}
                             </div>
                             <p className="mt-1 text-[11px] text-slate-400">보호자 {row.parentName}</p>
-                          </Td>
+                          </th>
                           <Td><b className="text-[12px]">{row.packageName}</b><p className="mt-1 text-[11px] text-slate-400">{row.total}회권 · 잔여 {row.remaining}회</p></Td>
                           <Td>{row.weekly ? <b>주 {row.weekly}회</b> : "-"}</Td>
                           <Td><b className="text-blue-700">{row.used}</b> / {row.total}</Td>
-                          {Array.from({ length: MAX_SLOTS }, (_, i) => {
+                          {ATTENDANCE_SLOT_INDEXES.map((i) => {
                             const date = row.dates[i];
-                            const isClickable = i < row.total;
+                                const isClickable = i < row.total && month <= attendanceToday.slice(0, 7);
                             return (
                               <td key={i} className="px-0.5 py-2 text-center">
                                 {date ? (
-                                  <button type="button" onClick={() => void handleCancelAttendance(row.childId, date)} className="mx-auto flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white text-[9px] font-black hover:bg-rose-600 hover:scale-105 transition shadow-xs font-mono" title={`${date} 출석 취소 (클릭)`}>{date.slice(5).replace("-", ".")}</button>
+                                  <button type="button" disabled={ledgerCancelPending} onClick={() => void handleCancelAttendance(row, date, row.sources[i] ?? null)} aria-label={`${date.slice(5).replace("-", ".")} ${row.childName} ${i + 1}회차 출석 취소`} className="mx-auto flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white text-[9px] font-black hover:bg-rose-600 hover:scale-105 transition shadow-xs font-mono disabled:opacity-50" title={`${date} 출석 취소`}>{date.slice(5).replace("-", ".")}</button>
                                 ) : (
-                                  <button type="button" onClick={() => { setAttendanceModal({ childId: row.childId, childName: row.childName }); setAttendanceDate(new Date().toISOString().slice(0, 10)); }} disabled={!isClickable} className={`mx-auto flex h-9 w-9 items-center justify-center rounded-full text-xs font-black transition hover:scale-105 ${isClickable ? "bg-slate-100 text-slate-500 hover:bg-blue-100 hover:text-blue-600" : "bg-slate-50 text-slate-200 cursor-not-allowed"}`} title={`${i + 1}회차 출석 등록 (클릭)`}>{i + 1}</button>
+                                  <button type="button" onClick={() => { const today = kstDateKey(new Date().toISOString()) ?? ""; setAttendanceModal({ childId: row.childId, childName: row.childName, packageId: row.id }); setAttendanceDate(today.startsWith(`${month}-`) ? today : ""); }} disabled={!isClickable} aria-label={`${i + 1}회차 ${row.childName} 출석 등록`} className={`mx-auto flex h-9 w-9 items-center justify-center rounded-full text-xs font-black transition hover:scale-105 ${isClickable ? "bg-slate-100 text-slate-500 hover:bg-blue-100 hover:text-blue-600" : "bg-slate-50 text-slate-200 cursor-not-allowed"}`} title={`${i + 1}회차 출석 등록`}>{i + 1}</button>
                                 )}
                               </td>
                             );
                           })}
-                          <Td><div className="flex max-w-[180px] flex-wrap gap-1">{row.dates.length ? row.dates.map((date, i) => <button key={`${date}-${i}`} onClick={() => void handleCancelAttendance(row.childId, date)} className="rounded-lg bg-slate-100 px-1.5 py-0.5 text-[11px] font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-600 transition" title="출석 취소 (클릭)">{date.slice(5).replace("-", ".")}</button>) : <span className="text-slate-400">출석 없음</span>}</div></Td>
+                          <Td><b className={`inline-block min-w-11 rounded-full px-2 py-1 text-center tabular-nums ${row.dates.length ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{row.dates.length}회</b></Td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                </TableShell>
+                  {!shownAttendance.length && <p className="px-4 py-12 text-center text-sm text-slate-500" role="status">{attendanceLoadFailed ? '출결 내역을 불러오지 못했습니다. 새로고침으로 다시 조회해 주세요.' : '조건에 맞는 출결 정보가 없습니다.'}</p>}
+                </div>
+                )}
+                {!attendancePending && shownAttendance.length > 0 && (
+                  <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 sm:px-5">
+                    <p className="text-xs tabular-nums text-slate-500" aria-live="polite">전체 {shownAttendance.length.toLocaleString()}개 중 {attendanceView.first.toLocaleString()}~{attendanceView.last.toLocaleString()}개</p>
+                    <nav aria-label="출결 조회 페이지" className="flex items-center gap-2">
+                      <button type="button" onClick={() => goToAttendancePage(attendanceView.page - 1)} disabled={attendanceView.page === 1} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"><ChevronLeft size={15} /> 이전</button>
+                      <span className="min-w-12 text-center text-xs font-bold tabular-nums text-slate-700">{attendanceView.page} / {attendanceView.totalPages}</span>
+                      <button type="button" onClick={() => goToAttendancePage(attendanceView.page + 1)} disabled={attendanceView.page === attendanceView.totalPages} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40">다음 <ChevronRight size={15} /></button>
+                    </nav>
+                  </footer>
+                )}
+                </section>
               </>
             )}
 
@@ -4364,28 +4433,33 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
         </div>
       )}
 
-      {/* Manual Attendance Modal */}
       {attendanceModal && (
-        <div className="fixed inset-0 z-[3000] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-xs sm:items-center sm:p-6" onClick={() => setAttendanceModal(null)}>
-          <div className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl" onClick={(event) => event.stopPropagation()}>
+        <dialog ref={attendanceDialog} aria-labelledby={attendanceTitleId}
+          onCancel={(event) => { if (manualAttendanceInFlight.current) event.preventDefault(); }}
+          onClose={() => setAttendanceModal(null)}
+          className="fixed inset-x-0 top-auto bottom-0 mx-auto max-h-[80dvh] w-full max-w-md overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-6 shadow-2xl backdrop:overflow-hidden backdrop:overscroll-contain backdrop:bg-slate-950/55 backdrop:backdrop-blur-xs sm:inset-0 sm:m-auto sm:rounded-3xl">
+          <form aria-busy={actionLoading} onSubmit={(event) => { event.preventDefault(); void handleManualAttendance(); }}>
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-black tracking-widest text-blue-600">출결 수동 관리</p>
-                <h3 className="mt-1 text-xl font-black">{attendanceModal.childName} 학생 출석 등록</h3>
+                <h3 id={attendanceTitleId} className="mt-1 text-xl font-black">{attendanceModal.childName} 학생 출석 등록</h3>
               </div>
-              <button onClick={() => setAttendanceModal(null)} className="rounded-full bg-slate-100 px-3 py-2 text-sm font-black">닫기</button>
+              <button type="button" disabled={actionLoading} onClick={() => attendanceDialog.current?.close()} className="rounded-full bg-slate-100 px-3 py-2 text-sm font-black disabled:opacity-50">닫기</button>
             </div>
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">출석 처리할 날짜 선택</label>
-                <input type="date" value={attendanceDate} onChange={(e) => setAttendanceDate(e.target.value)} className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500" />
+                <label htmlFor={attendanceDateId} className="block text-xs font-bold text-slate-600 mb-1.5">출석 처리할 날짜 선택</label>
+                <input id={attendanceDateId} type="date" required autoFocus readOnly={actionLoading}
+                  min={rangeOf(month).from} max={attendanceToday && attendanceToday < rangeOf(month).to ? attendanceToday : rangeOf(month).to}
+                  value={attendanceDate} onChange={(e) => setAttendanceDate(e.target.value)} className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-              <button onClick={handleManualAttendance} disabled={actionLoading} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300">
+              <p className="text-xs text-slate-600">해당 날짜에 예약된 수업이 한 건 있어야 이 이용권으로 출석을 등록할 수 있습니다.</p>
+              <button type="submit" disabled={actionLoading || !attendanceDate} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300">
                 {actionLoading ? "출석 처리 중..." : "출석 완료 체크하기"}
               </button>
             </div>
-          </div>
-        </div>
+          </form>
+        </dialog>
       )}
 
     </div>
@@ -4431,17 +4505,17 @@ function BranchFilter({ profile, branches, value, onChange }: { profile: Profile
   );
 }
 
-function TableShell({ children, empty, emptyText }: { children: React.ReactNode; empty: boolean; emptyText: string }) {
+function TableShell({ children, empty, emptyText, scrollLabel }: { children: React.ReactNode; empty: boolean; emptyText: string; scrollLabel?: string }) {
   return (
     <div className="overflow-hidden rounded-3xl bg-white shadow-sm ring-1 ring-slate-200">
-      <div className="overflow-x-auto">{children}</div>
+      <div className="overflow-x-auto" role={scrollLabel ? "region" : undefined} aria-label={scrollLabel} tabIndex={scrollLabel ? 0 : undefined}>{children}</div>
       {empty && <div className="p-14 text-center text-sm font-bold text-slate-400">{emptyText}</div>}
     </div>
   );
 }
 
 function Th({ children, sticky = false }: { children: React.ReactNode; sticky?: boolean }) {
-  return <th className={`whitespace-nowrap px-4 py-4 ${sticky ? "sticky left-0 z-10 bg-slate-100" : ""}`}>{children}</th>;
+  return <th scope="col" className={`whitespace-nowrap px-4 py-4 ${sticky ? "sticky left-0 z-10 bg-slate-100" : ""}`}>{children}</th>;
 }
 
 function Td({ children, sticky = false }: { children: React.ReactNode; sticky?: boolean }) {

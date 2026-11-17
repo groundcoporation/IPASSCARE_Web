@@ -56,7 +56,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
           id, student_name, admission_date, created_at, branch_id,
           child_id, child:children(deleted_at),
           parent_user_id, parent:users(status)
-        `);
+        `).is('archived_at', null);
       if (targetBranch) studentsQuery = studentsQuery.eq('branch_id', targetBranch);
 
       // 2. Class Schedules (Active)

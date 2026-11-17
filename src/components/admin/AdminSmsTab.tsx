@@ -366,7 +366,7 @@ export const AdminSmsTab: React.FC<AdminSmsTabProps> = ({
         academy_student_classes(
           class_schedules(target_class)
         )
-      `);
+      `).is('archived_at', null);
 
       if (targetBranchId) {
         query = query.eq('branch_id', targetBranchId);

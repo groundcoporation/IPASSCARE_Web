@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
+import { AppError } from '../../errors/appError';
 import { 
   Users, Search, Plus, Calendar, Save, Trash2, Edit3, MessageSquare, 
   Clock, AlertCircle, RefreshCw, CheckCircle2, Phone, BookOpen, ChevronRight, X,
@@ -65,7 +66,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   const [selectedCategory, setSelectedCategory] = useState<string>('일반상담');
   const [counselContent, setCounselContent] = useState<string>('');
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
-  const [sendParentNotification, setSendParentNotification] = useState<boolean>(true);
+  const [sendParentNotification, setSendParentNotification] = useState<boolean>(false);
 
   // Load Students, Teachers, and Counsel Logs
   const loadData = useCallback(async () => {
@@ -202,7 +203,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   // Handle Save or Update Counsel Log
   const handleSaveCounsel = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedStudentId) {
+    if (!selectedStudentId || !selectedStudent?.branch_id) {
       alert('상담을 작성할 학생을 먼저 선택해주세요.');
       return;
     }
@@ -214,7 +215,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
     setSaving(true);
     try {
       const payload = {
-        branch_id: activeBranchId || selectedStudent?.branch_id || null,
+        branch_id: selectedStudent.branch_id,
         student_id: selectedStudentId,
         counselor_name: counselorName.trim() || profile?.name || '관리자',
         counsel_date: counselDate,
@@ -282,7 +283,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
 
       setCounselContent('');
       setSelectedCategory('일반상담');
-      setSendParentNotification(true);
+      setSendParentNotification(false);
     } catch (error: unknown) {
       await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.save' });
     } finally {
@@ -295,11 +296,12 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
     if (!confirm('이 상담일지를 학부모 앱에 공개하고 알림을 보내시겠습니까?')) return;
     setPublishingId(log.id);
     try {
-      const { error: publishError } = await supabase
+      const { data: published, error: publishError } = await supabase
         .from('academy_counsel_logs')
         .update({ is_parent_visible: true, updated_at: new Date().toISOString() })
-        .eq('id', log.id);
+        .eq('id', log.id).eq('is_parent_visible', false).select('id').maybeSingle();
       if (publishError) throw publishError;
+      if (!published) throw new AppError('CONFLICT_ERROR');
 
       setCounselLogs(prev => prev.map(item => item.id === log.id ? { ...item, is_parent_visible: true } : item));
       try {
@@ -335,14 +337,16 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   const handleDeleteClick = async (logId: string) => {
     if (!confirm('이 상담일지 기록을 삭제하시겠습니까?')) return;
     try {
-      await supabase.from('academy_counsel_logs').delete().eq('id', logId);
+      const { data, error } = await supabase.from('academy_counsel_logs').delete().eq('id', logId).select('id').maybeSingle();
+      if (error) throw error;
+      if (!data) throw new AppError('CONFLICT_ERROR');
       setCounselLogs(prev => prev.filter(log => log.id !== logId));
       if (editingLogId === logId) {
         setEditingLogId(null);
         setCounselContent('');
       }
-    } catch (err: any) {
-      alert('삭제에 실패했습니다: ' + err.message);
+    } catch (error: unknown) {
+      await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.delete' });
     }
   };
 
@@ -436,6 +440,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                       setSelectedStudentId(student.id);
                       setEditingLogId(null);
                       setCounselContent('');
+                      setSendParentNotification(false);
                     }}
                     className={`p-3.5 rounded-2xl border transition cursor-pointer flex items-center justify-between gap-3 ${
                       isSelected
@@ -525,7 +530,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
                         setEditingLogId(null);
                         setCounselContent('');
                         setSelectedCategory('일반상담');
-                        setSendParentNotification(true);
+                        setSendParentNotification(false);
                       }}
                       className="text-xs text-slate-400 hover:text-slate-700 flex items-center gap-1 font-bold"
                     >

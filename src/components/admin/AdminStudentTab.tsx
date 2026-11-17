@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, AlertTriangle, RefreshCw, X, CreditCard, LogOut, Bus, MapPin } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
+import { AppError } from '../../errors/appError';
 
 export interface WithdrawalRecord {
   id: string;
@@ -223,6 +224,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [pickupSettingsLoading, setPickupSettingsLoading] = useState(false);
   const [classAssignments, setClassAssignments] = useState<ClassAssignment[]>([emptyAssignment()]);
   const [saveLoading, setSaveLoading] = useState(false);
+  const archiveInFlight = useRef(false);
   const [courseTab, setCourseTab] = useState<'current' | 'next'>('current');
   const [nextMonthClassIds, setNextMonthClassIds] = useState<string[]>([]);
   const [nextMonthClassDay, setNextMonthClassDay] = useState('전체');
@@ -303,7 +305,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         *,
         parent_user:users(name, email, status, phone, branch_id),
         child:children(deleted_at, back_number, branch_id, parent_id)
-      `);
+      `).is('archived_at', null);
       if (activeBranchId && activeBranchId !== 'all') {
         studentsQuery = studentsQuery.eq('branch_id', activeBranchId);
       }
@@ -650,75 +652,33 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
   };
 
-  // Offline departure handler
+  const archiveStudent = async (id: string, reason: string) => {
+    const isVirtual = id.startsWith('child-');
+    const { data, error } = await supabase.rpc('archive_academy_student', {
+      p_student_id: isVirtual ? null : id,
+      p_child_id: isVirtual ? id.slice(6) : null,
+      p_reason: reason,
+    });
+    if (error) throw error;
+    if (data?.status !== 'archived' && data?.status !== 'already_archived') throw new AppError('UNKNOWN_ERROR');
+  };
+
   const handleDepartStudent = async (student: Student) => {
-    const reason = prompt(
-      `[${student.student_name}] 원생의 퇴원(이탈) 사유를 선택하거나 입력해주세요:\n\n1. 이사 / 지역 이동\n2. 수강 종료 / 일정 종료\n3. 타 학원 이동\n4. 개인 사정\n\n직접 사유를 입력하셔도 됩니다.`,
-      '수강 종료 / 일정 종료'
-    );
-    if (reason === null) return;
-
-    if (!confirm(`[${student.student_name}] 원생을 '퇴원·탈퇴 회원'으로 이동 처리하시겠습니까?\n출결 및 이용권은 종료 상태로 아카이빙됩니다.`)) {
-      return;
-    }
-
+    if (archiveInFlight.current || saveLoading || deleteLoading) return;
+    const reason = prompt('퇴원 사유를 입력해 주세요.', '수강 종료');
+    if (reason === null || !confirm('퇴원 처리하시겠습니까? 재원 목록에서 제외되며 기존 청구와 일지는 보존됩니다.')) return;
+    archiveInFlight.current = true;
+    setSaveLoading(true);
     try {
-      setSaveLoading(true);
-      let pkgInfo: any = null;
-      let actualAttendedCount = 0;
-      const targetChildId = student.child_id || student.id;
-
-      if (student.child_id) {
-        const { data: pkgs } = await supabase.from('user_packages').select('*').eq('child_id', student.child_id).limit(1);
-        if (pkgs && pkgs.length > 0) pkgInfo = pkgs[0];
-      }
-
-      // 🎯 수업 예약이 아닌 실제 "등원(출석)" 로그를 카운팅하여 실제 사용 횟수 산출
-      if (targetChildId) {
-        const { count } = await supabase
-          .from('attendance_logs')
-          .select('id', { count: 'exact', head: true })
-          .eq('child_id', targetChildId)
-          .not('check_in', 'is', null);
-        actualAttendedCount = count || 0;
-      }
-
-      const totalCount = pkgInfo?.total_count || 0;
-      const usedCount = Math.min(totalCount, actualAttendedCount);
-      const remainingCount = Math.max(0, totalCount - usedCount);
-      
-      await supabase.from('user_withdrawals').insert([{
-        user_id: student.parent_user_id || null,
-        user_name: student.parent_user?.name || student.parent_name || null,
-        phone: student.mother_phone || student.father_phone || student.student_phone || null,
-        child_id: student.child_id || null,
-        child_name: student.student_name,
-        attendance_code: student.attendance_code,
-        branch_id: student.branch_id,
-        reason: reason || '수강 종료 / 일정 종료',
-        source: 'admin',
-        event_type: 'academy_withdrawal',
-        package_name: pkgInfo?.package_name || null,
-        paid_amount: pkgInfo?.price || 0,
-        total_count: totalCount,
-        used_count: usedCount,
-        remaining_count: remainingCount,
-        refund_status: remainingCount > 0 ? 'pending' : 'none',
-      }]);
-
-      if (student.child_id) {
-        await supabase.from('children').update({ deleted_at: new Date().toISOString() }).eq('id', student.child_id);
-      } else {
-        await supabase.from('academy_students').delete().eq('id', student.id);
-      }
-
-      alert(`[${student.student_name}] 원생의 퇴원 처리가 완료되었습니다.\n상단의 [퇴원·탈퇴 회원] 탭에서 내역을 확인하실 수 있습니다.`);
+      await archiveStudent(student.id, reason);
       setIsModalOpen(false);
-      loadData();
-      loadWithdrawals();
-    } catch (err: any) {
-      alert(`퇴원 처리 중 오류: ${err.message || err}`);
+      alert('퇴원 처리했습니다. 기존 청구와 일지는 보존됩니다.');
+      void loadData();
+      void loadWithdrawals();
+    } catch (error: unknown) {
+      await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.archive' });
     } finally {
+      archiveInFlight.current = false;
       setSaveLoading(false);
     }
   };
@@ -1343,74 +1303,25 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     setDeleteModalOpen(true);
   };
 
-  // Delete Confirm Action (실제 삭제 실행)
   const handleConfirmDelete = async () => {
-    if (!targetStudentForDelete) return;
+    if (!targetStudentForDelete || archiveInFlight.current || saveLoading || deleteLoading) return;
     if (confirmInputName.trim() !== targetStudentForDelete.name.trim()) {
       alert('입력하신 학생 이름이 일치하지 않습니다.');
       return;
     }
-
+    archiveInFlight.current = true;
     setDeleteLoading(true);
     try {
-      const rawId = targetStudentForDelete.id;
-
-      // 1. 앱 가입 자녀 (id가 'child-' 로 시작하는 가상 ID인 경우)
-      if (rawId.startsWith('child-')) {
-        const realChildId = rawId.replace('child-', '');
-
-        // 잔여 이용권 상태를 'expired' 처리
-        await supabase
-          .from('user_packages')
-          .update({ status: 'expired' })
-          .eq('child_id', realChildId)
-          .eq('status', 'active');
-
-        // 미래 예약 소프트 삭제/취소 처리
-        await supabase
-          .from('reservations')
-          .update({ status: 'canceled', deleted_at: new Date().toISOString() })
-          .eq('child_id', realChildId)
-          .is('deleted_at', null);
-
-        // children 테이블 소프트 삭제
-        const { error } = await supabase
-          .from('children')
-          .update({ deleted_at: new Date().toISOString() })
-          .eq('id', realChildId);
-
-        if (error) throw error;
-      } else {
-        // 2. 학원 등록 원생 (academy_students 테이블)
-        // 연관된 child_id가 있으면 함께 소프트 삭제 및 이용권 정리 처리
-        if (targetStudentForDelete.child_id) {
-          await supabase
-            .from('children')
-            .update({ deleted_at: new Date().toISOString() })
-            .eq('id', targetStudentForDelete.child_id);
-
-          await supabase
-            .from('user_packages')
-            .update({ status: 'expired' })
-            .eq('child_id', targetStudentForDelete.child_id)
-            .eq('status', 'active');
-        }
-
-        const { error } = await supabase
-          .from('academy_students')
-          .delete()
-          .eq('id', rawId);
-
-        if (error) throw error;
-      }
-
-      alert(`'${targetStudentForDelete.name}' 원생이 정상적으로 삭제 처리되었습니다.`);
+      await archiveStudent(targetStudentForDelete.id, '재원 명부에서 제외');
       setDeleteModalOpen(false);
       setTargetStudentForDelete(null);
-      loadData();
-    } catch (err: any) {
-      alert(`삭제 처리에 실패했습니다: ${err.message || err}`);
+      alert('재원 목록에서 제외했습니다. 기존 청구와 일지는 보존됩니다.');
+      void loadData();
+      void loadWithdrawals();
+    } catch (error: unknown) {
+      await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.archive' });
     } finally {
+      archiveInFlight.current = false;
       setDeleteLoading(false);
     }
   };
@@ -1980,7 +1891,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                             <button
                               onClick={() => openDeleteModal(student)}
                               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-rose-600 bg-rose-50/80 hover:bg-rose-100/90 border border-rose-200/60 rounded-lg transition shadow-2xs"
-                              title="원생 삭제"
+                              title="재원 목록에서 제외"
                             >
                               <Trash2 size={12} />
                               <span>삭제</span>
@@ -2703,7 +2614,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </div>
       )}
 
-      {/* ⚠️ 원생 삭제 이중 확인 모달 */}
+      {/* 재원 목록 제외 이중 확인 */}
       {deleteModalOpen && targetStudentForDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
@@ -2714,7 +2625,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                   <AlertTriangle size={20} />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-base text-rose-950">원생 정보 삭제</h3>
+                  <h3 className="font-extrabold text-base text-rose-950">재원 목록에서 제외</h3>
                   <p className="text-xs text-rose-700 font-medium">실수 방지를 위한 이중 안전 확인</p>
                 </div>
               </div>
@@ -2730,17 +2641,17 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             <div className="p-6 space-y-4">
               <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/70 text-sm space-y-1.5">
                 <div className="flex justify-between">
-                  <span className="text-slate-500 font-medium">삭제 대상 원생:</span>
+                  <span className="text-slate-500 font-medium">대상 원생:</span>
                   <span className="font-bold text-slate-900">{targetStudentForDelete.name}</span>
                 </div>
                 <div className="text-xs text-rose-600 pt-1.5 border-t border-slate-200/60 font-medium leading-relaxed">
-                  ⚠️ 삭제 시 해당 원생의 남은 이용권 및 예약도 함께 정리되며 목록에서 지워집니다.
+                  남은 이용권과 미사용 예약은 종료되며, 기존 청구와 일지 기록은 보존됩니다.
                 </div>
               </div>
 
               <div className="space-y-2">
                 <label className="block text-xs font-bold text-slate-700">
-                  삭제를 진행하려면 아래에 <span className="text-rose-600 underline font-black">[{targetStudentForDelete.name}]</span> 을(를) 똑같이 입력해 주세요.
+                  재원 목록에서 제외하려면 아래에 <span className="text-rose-600 underline font-black">[{targetStudentForDelete.name}]</span> 을(를) 똑같이 입력해 주세요.
                 </label>
                 <input
                   type="text"
@@ -2768,7 +2679,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 disabled={confirmInputName.trim() !== targetStudentForDelete.name.trim() || deleteLoading}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-xl transition shadow-sm"
               >
-                {deleteLoading ? '삭제 중...' : '원생 삭제 실행'}
+                {deleteLoading ? '처리 중...' : '재원 목록에서 제외'}
               </button>
             </div>
           </div>
