@@ -1,13 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useId } from 'react';
+import { MessageSquare, RefreshCw, Save } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
 import { AppError } from '../../errors/appError';
-import { 
-  Users, Search, Plus, Calendar, Save, Trash2, Edit3, MessageSquare, 
-  Clock, AlertCircle, RefreshCw, CheckCircle2, Phone, BookOpen, ChevronRight, X,
-  ArrowUpDown, ArrowDown, ArrowUp, Filter, UserCheck, BellRing, LockKeyhole
-} from 'lucide-react';
+import { focusJournalSection, JournalEntry, JournalSelection, JournalSort, JournalStudentPicker, JournalVisibility, journalButton, journalField, journalLabel, journalPanel, journalPrimary } from './JournalUi';
 
 export interface CounselLog {
   id: string;
@@ -67,6 +64,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   const [counselContent, setCounselContent] = useState<string>('');
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [sendParentNotification, setSendParentNotification] = useState<boolean>(false);
+  const journalId = useId();
 
   // Load Students, Teachers, and Counsel Logs
   const loadData = useCallback(async () => {
@@ -91,7 +89,8 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
         query = query.eq('branch_id', activeBranchId);
       }
 
-      const { data: stuData } = await query;
+      const { data: stuData, error: studentError } = await query;
+      if (studentError) throw studentError;
       const rawStudents = stuData || [];
       const schedulesByChild = await loadActiveAppSchedulesByChild(
         rawStudents.map((student: any) => student.child_id).filter(Boolean),
@@ -102,16 +101,15 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       }));
       setStudents(stuList);
 
-      if (stuList.length > 0 && !selectedStudentId) {
-        setSelectedStudentId(stuList[0].id);
-      }
+      setSelectedStudentId((current) => current ?? stuList[0]?.id ?? null);
 
       // 2. Fetch Teachers
       let teacherQuery = supabase.from('academy_teachers').select('id, name, phone');
       if (activeBranchId) {
         teacherQuery = teacherQuery.eq('branch_id', activeBranchId);
       }
-      const { data: teacherData } = await teacherQuery.order('name');
+      const { data: teacherData, error: teacherError } = await teacherQuery.order('name');
+      if (teacherError) throw teacherError;
       setTeachers(teacherData || []);
 
       // 3. Fetch Counsel Logs
@@ -125,15 +123,16 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       }
 
       const { data: logsData, error: logsError } = await logsQuery;
-      if (!logsError && logsData) {
-        setCounselLogs(logsData);
-      }
-    } catch (err) {
-      console.warn('Error loading counsel tab data:', err);
+      if (logsError) throw logsError;
+      setCounselLogs(logsData || []);
+    } catch (error: unknown) {
+      setStudents([]);
+      setCounselLogs([]);
+      await handleError(error, 'JOURNAL_LOAD_FAILED', { operation: 'journal.counsel.load' });
     } finally {
       setLoading(false);
     }
-  }, [activeBranchId, selectedStudentId]);
+  }, [activeBranchId]);
 
   useEffect(() => {
     loadData();
@@ -203,6 +202,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   // Handle Save or Update Counsel Log
   const handleSaveCounsel = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving || publishingId) return;
     if (!selectedStudentId || !selectedStudent?.branch_id) {
       alert('상담을 작성할 학생을 먼저 선택해주세요.');
       return;
@@ -330,7 +330,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
     setCounselorName(log.counselor_name);
     setSelectedCategory(log.category);
     setCounselContent(log.content);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    focusJournalSection(journalId + '-editor');
   };
 
   // Handle Delete Click
@@ -350,437 +350,101 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
     }
   };
 
-  const getCategoryBadge = (category: string) => {
-    const cat = COUNSEL_CATEGORIES.find(c => c.id === category) || COUNSEL_CATEGORIES[0];
-    return (
-      <span className={`text-[11px] font-black px-2.5 py-1 rounded-full border ${cat.color}`}>
-        {cat.label}
-      </span>
-    );
-  };
+  const counts = new Map<string, number>();
+  for (const log of counselLogs) counts.set(log.student_id, (counts.get(log.student_id) || 0) + 1);
+  const editorId = journalId + '-editor';
+  const historyId = journalId + '-history';
 
-  return (
-    <div className="space-y-6">
-      
-      {/* Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
-        <div>
-          <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-            <MessageSquare className="text-blue-600" size={20} />
-            원생 및 학부모 상담일지
-          </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            원생별 1:1 상담 내역, 학부모 요청사항, 셔틀/시간표 변경 특이사항을 체계적으로 기록하고 날짜순으로 정렬 조회합니다.
-          </p>
-        </div>
-
-        <button
-          onClick={loadData}
-          className="flex items-center gap-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-2xs self-start sm:self-auto"
-        >
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-          새로고침
-        </button>
+  return <div className="space-y-6">
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+      <div>
+        <h2 className="flex items-center gap-2 text-xl font-bold text-slate-950"><span className="grid size-9 place-items-center rounded-xl bg-indigo-50 text-indigo-700"><MessageSquare size={18} aria-hidden="true" /></span> 상담일지</h2>
+        <p className="mt-2 text-sm text-slate-600">원생별 상담 내용과 보호자 요청을 기록하고, 필요한 일지만 공유합니다.</p>
       </div>
-
-      {/* 2-Pane Split View */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        
-        {/* ========================================================================= */}
-        {/* LEFT PANE: Student List & Filter (4 cols)                                 */}
-        {/* ========================================================================= */}
-        <div className="lg:col-span-4 bg-white p-4 sm:p-5 rounded-3xl border border-slate-200 shadow-xs space-y-4">
-          
-          {/* Class Filter & Search */}
-          <div className="space-y-2.5">
-            <label className="block text-xs font-bold text-slate-700">클래스 선택 및 학생 검색</label>
-            <select
-              value={selectedClassFilter}
-              onChange={(e) => setSelectedClassFilter(e.target.value)}
-              className="w-full bg-slate-100 rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-800 border-none outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">전체 클래스 ({students.length}명)</option>
-              {uniqueClasses.map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-              <input
-                type="text"
-                placeholder="학생 이름 / 출결번호 / 보호자 검색..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-slate-100 rounded-xl py-2 pl-9 pr-3 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-              />
+      <button type="button" onClick={loadData} disabled={loading || saving || Boolean(publishingId)} className={journalButton}><RefreshCw size={15} aria-hidden="true" className={loading ? 'animate-spin' : ''} /> 새로고침</button>
+    </header>
+    <div className="grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(15rem,19rem)_minmax(0,1fr)]">
+      <JournalStudentPicker students={filteredStudents.map((student) => {
+        const firstClass = (student.child_id ? student.app_schedule_classes?.[0] : student.academy_student_classes?.[0]?.class_schedules)?.target_class;
+        return { id: student.id, name: student.student_name, code: student.attendance_code,
+          summary: [firstClass || '수업 미배정', student.parent_name].filter(Boolean).join(' · '), count: counts.get(student.id) || 0 };
+      })} selectedId={selectedStudentId} total={students.length} loading={loading} disabled={saving || Boolean(publishingId)}
+        classes={uniqueClasses.map(String)} classFilter={selectedClassFilter} onClass={setSelectedClassFilter} search={search} onSearch={setSearch}
+        onSelect={(id) => {
+          if (id === selectedStudentId) return;
+          if (counselContent.trim() && !confirm('작성 중인 일지가 있습니다. 다른 원생으로 이동할까요?')) return;
+          setSelectedStudentId(id); setEditingLogId(null); setCounselContent(''); setSendParentNotification(false);
+          setHistoryCategoryFilter('all');
+        }} />
+      <div className="min-w-0 space-y-4">
+        {selectedStudent ? <>
+          <JournalSelection name={selectedStudent.student_name}
+            description={[selectedStudent.parent_name ? '보호자: ' + selectedStudent.parent_name : '보호자 정보 없음', selectedStudent.mother_phone || selectedStudent.father_phone || '연락처 없음'].join(' · ')}
+            count={counts.get(selectedStudent.id) || 0} editorId={editorId} historyId={historyId} />
+          <form method="post" aria-labelledby={editorId} onSubmit={handleSaveCounsel} className={journalPanel + ' space-y-4'}>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+              <h4 id={editorId} tabIndex={-1} className="scroll-mt-24 text-base font-bold text-slate-950">{editingLogId ? '상담일지 수정' : '새 상담일지 작성'}</h4>
+              {editingLogId && <button type="button" disabled={saving} onClick={() => {
+                setEditingLogId(null); setCounselContent(''); setSelectedCategory('일반상담'); setSendParentNotification(false);
+              }} className={journalButton}>수정 취소</button>}
             </div>
-          </div>
-
-          {/* Student Cards List */}
-          <div className="space-y-2 max-h-[580px] overflow-y-auto pr-1">
-            <div className="text-[11px] font-bold text-slate-400 px-1 flex justify-between">
-              <span>원생 목록 ({filteredStudents.length}명)</span>
-              <span>상담 건수</span>
+            <fieldset className="min-w-0">
+              <legend className="mb-2 text-sm font-bold text-slate-800">상담 정보</legend>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="min-w-0"><label htmlFor={journalId + '-date'} className={journalLabel}>상담 일자</label>
+                  <input id={journalId + '-date'} name="counsel_date" type="date" value={counselDate} onChange={(event) => setCounselDate(event.target.value)} required className={journalField} /></div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-x-1">
+                    <label htmlFor={journalId + '-counselor'} className={journalLabel}>상담자</label>
+                    <button type="button" onClick={() => { setIsCustomCounselor(!isCustomCounselor); setCounselorName(isCustomCounselor ? profile?.name || '관리자' : ''); }}
+                      className="mb-1.5 text-xs font-semibold text-indigo-800 underline-offset-2 hover:underline">{isCustomCounselor ? '목록 선택' : '직접 입력'}</button>
+                  </div>
+                  {isCustomCounselor ? <input id={journalId + '-counselor'} name="counselor" value={counselorName} onChange={(event) => setCounselorName(event.target.value)} required className={journalField} />
+                    : <select id={journalId + '-counselor'} name="counselor" value={counselorName} onChange={(event) => setCounselorName(event.target.value)} className={journalField}>
+                      <option value={profile?.name || '관리자'}>{profile?.name || '관리자'} (현재 계정)</option>
+                      {teachers.filter((item) => item.name !== (profile?.name || '관리자')).map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
+                    </select>}
+                </div>
+                <div className="min-w-0"><label htmlFor={journalId + '-category'} className={journalLabel}>상담 구분</label>
+                  <select id={journalId + '-category'} name="counsel_category" value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)} className={journalField}>
+                    {COUNSEL_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  </select></div>
+              </div>
+            </fieldset>
+            <div>
+              <label htmlFor={journalId + '-content'} className={journalLabel}>상담 내용 *</label>
+              <textarea id={journalId + '-content'} name="counsel_content" rows={5} value={counselContent} onChange={(event) => setCounselContent(event.target.value)}
+                required placeholder="상담 내용과 후속 조치가 필요한 사항을 기록하세요." className={journalField + ' resize-y leading-relaxed'} />
             </div>
-
-            {filteredStudents.length > 0 ? (
-              filteredStudents.map(student => {
-                const isSelected = selectedStudentId === student.id;
-                const logCount = counselLogs.filter(l => l.student_id === student.id).length;
-                const className = (student.child_id
-                  ? student.app_schedule_classes?.[0]
-                  : student.academy_student_classes?.[0]?.class_schedules
-                )?.target_class || '미배정';
-
-                return (
-                  <div
-                    key={student.id}
-                    onClick={() => {
-                      setSelectedStudentId(student.id);
-                      setEditingLogId(null);
-                      setCounselContent('');
-                      setSendParentNotification(false);
-                    }}
-                    className={`p-3.5 rounded-2xl border transition cursor-pointer flex items-center justify-between gap-3 ${
-                      isSelected
-                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                        : 'bg-slate-50/70 hover:bg-slate-100/80 border-slate-200/80 text-slate-800'
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <b className="text-sm truncate">{student.student_name}</b>
-                        <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
-                          isSelected ? 'bg-blue-700/80 text-blue-100' : 'bg-slate-200 text-slate-600'
-                        }`}>
-                          #{student.attendance_code}
-                        </span>
-                      </div>
-                      <p className={`text-[11px] mt-0.5 truncate ${isSelected ? 'text-blue-100' : 'text-slate-500'}`}>
-                        {className} • {student.parent_name ? `${student.parent_name} 보호자` : '-'}
-                      </p>
-                    </div>
-
-                    <div className="shrink-0 flex items-center gap-1.5">
-                      {logCount > 0 ? (
-                        <span className={`text-[11px] font-black px-2 py-0.5 rounded-full ${
-                          isSelected ? 'bg-white text-blue-600' : 'bg-blue-100 text-blue-700'
-                        }`}>
-                          {logCount}건
-                        </span>
-                      ) : (
-                        <span className={`text-[10px] ${isSelected ? 'text-blue-200' : 'text-slate-400'}`}>
-                          이력없음
-                        </span>
-                      )}
-                      <ChevronRight size={14} className={isSelected ? 'text-white' : 'text-slate-400'} />
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="py-12 text-center text-xs font-bold text-slate-400">
-                조건에 맞는 원생이 없습니다.
+            <JournalVisibility enabled={sendParentNotification} editing={Boolean(editingLogId)} disabled={saving}
+              published={Boolean(counselLogs.find((log) => log.id === editingLogId)?.is_parent_visible)} onChange={setSendParentNotification} />
+            <div className="flex justify-end"><button type="submit" disabled={saving || Boolean(publishingId)} className={journalPrimary}><Save size={15} aria-hidden="true" />
+              {saving ? '저장 중…' : sendParentNotification ? '저장하고 알림 보내기' : editingLogId ? '알림 없이 수정 저장' : '내부용으로 저장'}
+            </button></div>
+          </form>
+          <section className={journalPanel + ' space-y-3'}>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+              <h4 id={historyId} tabIndex={-1} className="scroll-mt-24 text-base font-bold text-slate-950">상담 이력 <span className="text-sm font-medium text-slate-600">{studentLogs.length}건</span></h4>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <select aria-label="상담 이력 구분" value={historyCategoryFilter} onChange={(event) => setHistoryCategoryFilter(event.target.value)}
+                  className={journalField + ' w-auto max-w-full'}>
+                  <option value="all">전체 구분</option>{COUNSEL_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </select>
+                <JournalSort sort={historySortOrder} toggle={() => setHistorySortOrder((current) => current === 'desc' ? 'asc' : 'desc')} />
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* ========================================================================= */}
-        {/* RIGHT PANE: Counsel Entry Form & History Timeline (8 cols)                */}
-        {/* ========================================================================= */}
-        <div className="lg:col-span-8 space-y-6">
-          
-          {selectedStudent ? (
-            <>
-              {/* Selected Student Banner */}
-              <div className="bg-slate-900 text-white p-5 rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
-                <div>
-                  <span className="text-[10px] font-black text-blue-400 bg-blue-950/80 px-2.5 py-0.5 rounded-full uppercase">
-                    STUDENT PROFILE
-                  </span>
-                  <h3 className="text-xl font-black mt-1 flex items-center gap-2">
-                    <span>{selectedStudent.student_name} 학생</span>
-                    <span className="text-xs text-slate-400 font-mono font-normal">#{selectedStudent.attendance_code}</span>
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    보호자: {selectedStudent.parent_name || '-'} ({selectedStudent.mother_phone || selectedStudent.father_phone || '연락처 없음'})
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 self-start sm:self-auto">
-                  <span className="bg-blue-600 text-white px-3.5 py-1.5 rounded-xl text-xs font-black shadow-2xs">
-                    총 {studentLogs.length}건의 상담 이력
-                  </span>
-                </div>
-              </div>
-
-              {/* Counsel Entry Card */}
-              <form onSubmit={handleSaveCounsel} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                    <Edit3 size={16} className="text-blue-600" />
-                    <span>{editingLogId ? '상담일지 내용 수정' : '신규 상담 및 특이사항 작성'}</span>
-                  </h4>
-                  {editingLogId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingLogId(null);
-                        setCounselContent('');
-                        setSelectedCategory('일반상담');
-                        setSendParentNotification(false);
-                      }}
-                      className="text-xs text-slate-400 hover:text-slate-700 flex items-center gap-1 font-bold"
-                    >
-                      <X size={14} /> 수정 취소
-                    </button>
-                  )}
-                </div>
-
-                {/* Form Controls */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">상담 일자</label>
-                    <input
-                      type="date"
-                      value={counselDate}
-                      onChange={(e) => setCounselDate(e.target.value)}
-                      className="w-full bg-slate-100 rounded-xl px-3 py-2 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-[11px] font-bold text-slate-600">상담자 (작성자)</label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsCustomCounselor(!isCustomCounselor);
-                          if (!isCustomCounselor) setCounselorName('');
-                          else setCounselorName(profile?.name || '관리자');
-                        }}
-                        className="text-[10px] text-blue-600 hover:underline font-bold"
-                      >
-                        {isCustomCounselor ? '목록에서 선택' : '직접 입력'}
-                      </button>
-                    </div>
-
-                    {isCustomCounselor ? (
-                      <input
-                        type="text"
-                        placeholder="상담자 성함 직접 입력"
-                        value={counselorName}
-                        onChange={(e) => setCounselorName(e.target.value)}
-                        className="w-full bg-slate-100 rounded-xl px-3 py-2 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                        required
-                      />
-                    ) : (
-                      <select
-                        value={counselorName}
-                        onChange={(e) => setCounselorName(e.target.value)}
-                        className="w-full bg-slate-100 rounded-xl px-3 py-2 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value={profile?.name || '관리자'}>
-                          {profile?.name || '관리자'} (현재 로그인 계정)
-                        </option>
-                        {teachers.filter(t => t.name !== (profile?.name || '관리자')).map(t => (
-                          <option key={t.id} value={t.name}>{t.name} 선생님</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">상담 구분</label>
-                    <select
-                      value={selectedCategory}
-                      onChange={(e) => setSelectedCategory(e.target.value)}
-                      className="w-full bg-slate-100 rounded-xl px-3 py-2 text-xs font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      {COUNSEL_CATEGORIES.map(cat => (
-                        <option key={cat.id} value={cat.id}>{cat.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Content Textarea */}
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">상담 및 특이사항 상세 내용</label>
-                  <textarea
-                    rows={4}
-                    placeholder="학습 태도, 수업 이해도, 진도, 과제, 시간표 변경, 원비 등 상담 내용을 자유롭게 기록하세요..."
-                    value={counselContent}
-                    onChange={(e) => setCounselContent(e.target.value)}
-                    className="w-full bg-slate-100 rounded-2xl p-4 text-xs font-medium border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none leading-relaxed"
-                    required
-                  />
-                </div>
-
-                <button
-                    type="button"
-                    role="switch"
-                    aria-checked={sendParentNotification}
-                    onClick={() => setSendParentNotification((current) => !current)}
-                    className={`w-full flex items-center justify-between gap-4 rounded-2xl border p-4 text-left transition ${sendParentNotification ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${sendParentNotification ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
-                        <UserCheck size={18} />
-                      </div>
-                      <div>
-                        <p className="text-xs font-black text-slate-900">{editingLogId ? '수정하고 학부모에게 다시 알림 보내기' : '학부모에게 공개하고 알림 보내기'}</p>
-                        <p className="text-[11px] text-slate-500 mt-0.5">{editingLogId ? '기본값은 알림 없이 저장입니다. 켜면 수정 알림을 다시 보내며, 내부용 일지는 학부모에게 공개됩니다.' : '켜면 학부모 앱에 일지가 표시되고 새 일지 알림이 전송됩니다.'}</p>
-                      </div>
-                    </div>
-                    <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition ${sendParentNotification ? 'bg-blue-600' : 'bg-slate-300'}`}>
-                      <span className={`mt-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${sendParentNotification ? 'translate-x-6' : 'translate-x-1'}`} />
-                    </span>
-                  </button>
-
-                {/* Submit Button */}
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50"
-                  >
-                    <Save size={14} />
-                    <span>{saving ? '저장 중...' : editingLogId ? sendParentNotification ? '수정 저장 + 다시 알림' : '알림 없이 수정 저장' : sendParentNotification ? '학부모 공개·알림과 함께 저장' : '학원 내부용으로 저장'}</span>
-                  </button>
-                </div>
-              </form>
-
-              {/* History Timeline with Sorting & Filtering */}
-              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                  <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                    <Clock size={16} className="text-blue-600" />
-                    <span>{selectedStudent.student_name} 학생 상담 이력 ({studentLogs.length}건)</span>
-                  </h4>
-
-                  {/* Filter & Sort Controls */}
-                  <div className="flex items-center gap-2">
-                    {/* Category Filter */}
-                    <select
-                      value={historyCategoryFilter}
-                      onChange={(e) => setHistoryCategoryFilter(e.target.value)}
-                      className="bg-slate-100 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700 border-none outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="all">전체 구분</option>
-                      {COUNSEL_CATEGORIES.map(c => (
-                        <option key={c.id} value={c.id}>{c.label}</option>
-                      ))}
-                    </select>
-
-                    {/* Sort Order Toggle */}
-                    <button
-                      type="button"
-                      onClick={() => setHistorySortOrder(prev => prev === 'desc' ? 'asc' : 'desc')}
-                      className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-extrabold transition"
-                      title={historySortOrder === 'desc' ? '현재 최신순 (클릭 시 과거순)' : '현재 과거순 (클릭 시 최신순)'}
-                    >
-                      {historySortOrder === 'desc' ? (
-                        <>
-                          <ArrowDown size={13} className="text-blue-600" />
-                          <span>최신순 (최근일자부터)</span>
-                        </>
-                      ) : (
-                        <>
-                          <ArrowUp size={13} className="text-blue-600" />
-                          <span>과거순 (오래된일자부터)</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  {studentLogs.length > 0 ? (
-                    studentLogs.map((log) => (
-                      <div
-                        key={log.id}
-                        className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2 hover:bg-slate-100/60 transition"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/60 pb-2">
-                          <div className="flex items-center gap-2">
-                            {getCategoryBadge(log.category)}
-                            <span className="text-xs font-black text-slate-800 font-mono">
-                              {log.counsel_date}
-                            </span>
-                            <span className="text-[11px] text-slate-500 font-medium">
-                              (상담자: {log.counselor_name})
-                            </span>
-                            <span className="rounded-lg bg-indigo-50 px-2 py-1 text-[10px] font-black text-indigo-700">
-                              {branches.find((branch) => branch.id === log.branch_id)?.name || '지점 미지정'}
-                            </span>
-                          </div>
-
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            {log.is_parent_visible ? (
-                              <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200">
-                                <CheckCircle2 size={14} /> 학부모 공개 완료
-                              </span>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-slate-400"><LockKeyhole size={10} />내부용</span>
-                                <button
-                                  type="button"
-                                  onClick={() => handlePublishCounselLog(log)}
-                                  disabled={publishingId === log.id}
-                                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-black text-white bg-violet-600 hover:bg-violet-700 shadow-sm hover:shadow-md disabled:opacity-50 transition"
-                                >
-                                  <BellRing size={15} />
-                                  {publishingId === log.id ? '전송 중...' : '학부모에게 보내기'}
-                                </button>
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleEditClick(log)}
-                              className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                              title="수정"
-                            >
-                              <Edit3 size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteClick(log.id)}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                              title="삭제"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                        </div>
-
-                        <p className="text-xs text-slate-700 font-medium whitespace-pre-wrap leading-relaxed">
-                          {log.content}
-                        </p>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="py-12 text-center text-xs font-bold text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
-                      조건에 맞는 상담 이력이 없습니다.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="bg-white p-16 rounded-3xl border border-slate-200 text-center text-slate-400 font-bold text-xs space-y-2">
-              <Users size={32} className="mx-auto text-slate-300 mb-2" />
-              <p>좌측 목록에서 상담을 조회하거나 작성할 학생을 선택해주세요.</p>
             </div>
-          )}
-
-        </div>
-
+            {studentLogs.length ? studentLogs.map((log) => {
+              const category = COUNSEL_CATEGORIES.find((item) => item.id === log.category);
+              return <JournalEntry key={log.id} title={category?.label || log.category}
+                context={<><time dateTime={log.counsel_date}>{log.counsel_date}</time><span>· {log.counselor_name}</span><span>· {branches.find((branch) => branch.id === log.branch_id)?.name || '지점 미지정'}</span></>}
+                visible={Boolean(log.is_parent_visible)} busy={saving || Boolean(publishingId)} publishing={publishingId === log.id}
+                onEdit={() => handleEditClick(log)} onDelete={() => void handleDeleteClick(log.id)} onPublish={() => void handlePublishCounselLog(log)}>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800 [overflow-wrap:anywhere]">{log.content}</p>
+              </JournalEntry>;
+            }) : <p className="rounded-xl bg-slate-50 p-5 text-sm text-slate-600">{historyCategoryFilter === 'all' ? '등록된 상담일지가 없습니다.' : '선택한 구분에 해당하는 상담일지가 없습니다.'}</p>}
+          </section>
+        </> : <div className={journalPanel + ' py-12 text-center text-sm text-slate-600'}>원생을 선택하면 상담일지 작성과 이력을 볼 수 있습니다.</div>}
       </div>
-
     </div>
-  );
+  </div>;
 };

@@ -2,6 +2,7 @@
 export const errorMessages = {
   CONFIG_INVALID: "실행 환경 설정이 없거나 서로 일치하지 않습니다. 환경별 설정을 확인해 주세요.",
   LOCAL_EXTERNAL_DISABLED: "로컬 테스트에서는 실제 결제·외부 전송을 차단합니다. 테스트 전용 mock으로 검증해 주세요.",
+  PREVIEW_EXTERNAL_DISABLED: "테스트 환경에서는 실제 결제·환불·외부 전송을 사용할 수 없습니다.",
   PAYMENT_START_FAILED: "결제창을 준비하지 못했습니다. 기존 결제 내역을 확인한 후 다시 시도해 주세요.",
   SMS_SEND_FAILED: "문자 처리 결과를 확인하지 못했습니다. 발송 이력을 확인하고 즉시 다시 발송하지 마세요.",
   SHUTTLE_TRACKING_FAILED: "위치 전송 상태를 확인하지 못했습니다. 네트워크와 위치 권한을 확인해 주세요.",

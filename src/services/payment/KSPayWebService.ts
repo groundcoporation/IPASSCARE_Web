@@ -1,8 +1,9 @@
 import { supabase } from '../../lib/supabaseClient';
 import { environmentConfig } from '../../lib/environment';
-import { AppError, normalizeError } from '../../errors/appError';
+import { AppError, formatError, logError, normalizeError } from '../../errors/appError';
 
 function assertPaymentEnabled() {
+  if (environmentConfig.environment === 'preview') throw new AppError('PREVIEW_EXTERNAL_DISABLED');
   if (environmentConfig.databaseTarget === 'local') throw new AppError('LOCAL_EXTERNAL_DISABLED');
 }
 
@@ -44,11 +45,10 @@ export class KSPayWebService {
         .maybeSingle();
 
       if (!error && data && data.kspay_mid) {
-        console.log(`[KSPay DB 연동 확인] 지점: ${data.name}(${data.id}) ➔ DB에서 조회된 실 MID: ${data.kspay_mid}`);
         return data.kspay_mid;
       }
-    } catch (err) {
-      console.warn('Failed to fetch branch MID, falling back to test MID:', err);
+    } catch (err: unknown) {
+      logError(normalizeError(err, 'PAYMENT_START_FAILED'), { operation: 'payment.fetch_mid' });
     }
     console.log('[KSPay] DB에 지점 MID가 없어 기본 테스트 MID(2999199999)로 연동됩니다.');
     return DEFAULT_TEST_MID;
@@ -132,8 +132,8 @@ export class KSPayWebService {
             source: 'web_ipoint'
           })
           .eq('pg_tid', tid);
-      } catch (memoErr) {
-        console.warn('Payment memo update notice:', memoErr);
+      } catch (memoErr: unknown) {
+        logError(normalizeError(memoErr, 'PAYMENT_SAVE_FAILED'), { operation: 'payment.record_memo' });
       }
     }
 
@@ -317,7 +317,6 @@ export class KSPayWebService {
 
       // 1. Request final card deduction via Supabase Edge Function
       try {
-        console.log('[KSPay PC] Supabase Edge Function(payment-confirm) 호출하여 KSNET 실출금 승인 요청... payKey:', payKey);
         const { data: confirmData, error: confirmErr } = await supabase.functions.invoke('payment-confirm', {
           body: {
             payKey: payKey,
@@ -327,8 +326,7 @@ export class KSPayWebService {
         });
 
         if (confirmErr) {
-          console.error('[KSPay PC] Edge Function 승인 에러:', confirmErr);
-          throw new Error(`카드 승인 실패: ${confirmErr.message || '카드사 승인 거절'}`);
+          throw normalizeError(confirmErr, 'PAYMENT_SAVE_FAILED');
         }
 
         if (confirmData?.error) {
@@ -338,23 +336,23 @@ export class KSPayWebService {
         if (confirmData?.transactionId) {
           finalTid = confirmData.transactionId;
         }
-        console.log('[KSPay PC] 🎉 카드사 실출금 승인 완료! KSNET 거래번호:', finalTid);
-      } catch (err: any) {
-        console.error('[KSPay PC] 실결제 처리 실패:', err);
-        alert(`❌ 카드 결제 승인 실패: ${err.message}`);
+      } catch (err: unknown) {
+        const safeError = normalizeError(err, 'PAYMENT_SAVE_FAILED');
+        logError(safeError, { operation: 'payment.web_confirm' });
+        alert(formatError(safeError));
         if (form.parentNode) form.parentNode.removeChild(form);
         if (onCancel) onCancel();
         return;
       }
 
-      console.log('[KSPay PC] 결제 승인 완료 ➔ DB 포인트 가산 처리. 거래번호:', finalTid);
       try {
         const result = await KSPayWebService.processChargeRecord(req, orderNumber, finalTid);
         if (form.parentNode) form.parentNode.removeChild(form);
         onSuccess(result);
-      } catch (err: any) {
-        console.error('KSPay Charge Record Error:', err);
-        alert(`포인트 가산 처리 중 오류 발생: ${err.message}`);
+      } catch (err: unknown) {
+        const safeError = normalizeError(err, 'PAYMENT_PACKAGE_PENDING');
+        logError(safeError, { operation: 'payment.web_record' });
+        alert(formatError(safeError));
         if (onCancel) onCancel();
       }
     };
@@ -366,8 +364,7 @@ export class KSPayWebService {
     };
     window.addEventListener('message', messageListener);
 
-    (window as any).eparamSet = (rcid: string, rctype: string, rhash: string) => {
-      console.log('[KSPay PC eparamSet]', { rcid, rctype, rhash });
+    (window as any).eparamSet = (rcid: string, _rctype: string, _rhash: string) => {
       if (rcid) handleSuccess(rcid);
     };
 

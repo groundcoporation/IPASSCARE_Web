@@ -25,6 +25,9 @@ import { AdminDashboardTab } from "./AdminDashboardTab";
 import { AdminNoticeTab } from "./AdminNoticeTab";
 import { AdminHqNoticeTab } from "./AdminHqNoticeTab";
 import { AdminShuttleTab } from "./AdminShuttleTab";
+import { AttendanceRecordDialog } from "./AttendanceRecordDialog";
+import { environmentConfig } from "../../lib/environment";
+import { hasTesterMarker, isTestDirector, testLoginUrl } from "../../tester/access";
 
 const MAX_SLOTS = 30;
 const ATTENDANCE_SLOT_INDEXES = Array.from({ length: MAX_SLOTS }, (_, index) => index);
@@ -185,9 +188,12 @@ interface AdminPageProps {
   onBackToSite: () => void;
   onLoginSuccess?: (profile: Profile) => void;
   onLogout?: () => void;
+  testLogin?: boolean;
 }
 
-export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSuccess, onLogout }) => {
+export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSuccess, onLogout, testLogin = false }) => {
+  const testHref = environmentConfig.environment === 'production'
+    ? testLoginUrl(import.meta.env.VITE_TESTER_PREVIEW_URL, window.location.origin) : null;
   // Authentication State
   const [profile, setProfile] = useState<Profile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -301,6 +307,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
   const attendanceDateId = useId();
   const ledgerCancelInFlight = useRef(false);
   const [ledgerCancelPending, setLedgerCancelPending] = useState(false);
+  const [attendanceRecord, setAttendanceRecord] = useState<{ row: AttendanceRow; date: string; slot: number; source: AttendanceSource | null } | null>(null);
+  const attendanceRecordDialog = useRef<HTMLDialogElement>(null);
 
   const onLoginSuccessRef = useRef(onLoginSuccess);
   useEffect(() => {
@@ -335,7 +343,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
         if (error?.name === "AuthSessionMissingError") return;
         if (error) throw error;
         if (!auth.user || !restoreAllowed) return;
+        if (testLogin && !hasTesterMarker(auth.user)) throw new AppError("PERMISSION_DENIED");
         const verifiedProfile = await loadAdminProfile(auth.user.id);
+        if ((testLogin || hasTesterMarker(auth.user))
+          && (!testLogin || environmentConfig.environment !== 'preview' || !isTestDirector(verifiedProfile, auth.user))) {
+          throw new AppError("PERMISSION_DENIED");
+        }
         if (!restoreAllowed) return;
         setProfile(verifiedProfile);
         setLoginError("");
@@ -350,7 +363,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       }
     })();
     return () => { mounted = false; restoreAllowed = false; subscription.unsubscribe(); };
-  }, [onLogout]);
+  }, [onLogout, testLogin]);
 
   // Fetch Branches
   useEffect(() => {
@@ -561,6 +574,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
     try {
       let loginEmail = identifier.trim();
       if (!loginEmail.includes("@")) {
+        if (testLogin) {
+          setLoginError("[AUTH_REQUIRED] 발급받은 테스트 계정 이메일을 입력해 주세요.");
+          return;
+        }
         const { data: userData, error: userError } = await supabase
           .from("users")
           .select("email")
@@ -588,7 +605,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
 
       let authenticatedProfile: Profile;
       try {
+        if (testLogin && !hasTesterMarker(authData.user)) throw new AppError("PERMISSION_DENIED");
         authenticatedProfile = await loadAdminProfile(authData.user.id);
+        if ((testLogin || hasTesterMarker(authData.user))
+          && (!testLogin || environmentConfig.environment !== 'preview' || !isTestDirector(authenticatedProfile, authData.user))) {
+          throw new AppError("PERMISSION_DENIED");
+        }
       } catch (error: unknown) {
         const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
         if (signOutError) logError(normalizeError(signOutError, "AUTH_REQUIRED"), { operation: "admin.auth.rejectedSignOut" });
@@ -1280,6 +1302,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       if (error) throw error;
       if (data?.cancelled !== true) throw new AppError("CONFLICT_ERROR");
       await loadAttendance();
+      attendanceRecordDialog.current?.close();
       alert(data.restored > 0 ? `출석을 취소하고 이용권 ${data.restored}회를 복구했습니다.` : "출석을 취소했습니다.");
     } catch (error: unknown) {
       await handleError(error, "ATT_SAVE_FAILED", { operation: "attendance.ledger.cancel" });
@@ -1995,19 +2018,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
       <div className="min-h-screen bg-[#f2efe9] flex items-center justify-center px-5 py-20 font-sans">
         <div className="max-w-md w-full bg-white rounded-[40px] shadow-2xl p-10 border border-black/5">
           <div className="text-center mb-10">
-            <h2 className="text-3xl font-black text-[#1a3021] italic uppercase tracking-tighter">Welcome Back</h2>
-            <p className="text-gray-400 font-bold mt-2 text-sm">아이패스케어 앱 계정으로 로그인하세요.</p>
+            <h2 className="text-3xl font-black text-[#1a3021] italic uppercase tracking-tighter">{testLogin ? '테스트 로그인' : 'Welcome Back'}</h2>
+            <p className="text-slate-600 font-bold mt-2 text-sm">{testLogin ? '가상 지점 전용 계정으로 로그인하세요. 운영 데이터는 사용하지 않습니다.' : '아이패스케어 앱 계정으로 로그인하세요.'}</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-6">
             {loginError && <div className="bg-red-50 text-red-500 p-4 rounded-2xl text-sm font-bold border border-red-100 text-center">{loginError}</div>}
 
             <div className="space-y-2">
-              <label className="text-[12px] font-black text-[#1a3021] uppercase ml-2">ID / EMAIL</label>
+              <label htmlFor="admin-login-id" className="text-[12px] font-black text-[#1a3021] uppercase ml-2">{testLogin ? '테스트 계정 이메일' : 'ID / EMAIL'}</label>
               <div className="relative">
                 <User className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                 <input
-                  type="text"
+                  id="admin-login-id"
+                  name="username"
+                  type={testLogin ? "email" : "text"}
+                  autoComplete="username"
                   placeholder="아이디 또는 이메일"
                   className="w-full bg-[#f8f6f2] border-none rounded-2xl py-4 pl-12 pr-4 focus:ring-2 focus:ring-[#d35400] transition-all font-medium text-slate-900"
                   value={identifier}
@@ -2018,10 +2044,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             </div>
 
             <div className="space-y-2">
-              <label className="text-[12px] font-black text-[#1a3021] uppercase ml-2">PASSWORD</label>
+              <label htmlFor="admin-login-password" className="text-[12px] font-black text-[#1a3021] uppercase ml-2">PASSWORD</label>
               <div className="relative">
                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                 <input
+                  id="admin-login-password"
+                  name="password"
+                  autoComplete="current-password"
                   type={showPassword ? "text" : "password"}
                   placeholder="••••••••"
                   className="w-full bg-[#f8f6f2] border-none rounded-2xl py-4 pl-12 pr-12 focus:ring-2 focus:ring-[#d35400] transition-all font-medium text-slate-900"
@@ -2029,7 +2058,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                   onChange={(e) => setPassword(e.target.value)}
                   required
                 />
-                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
+                <button type="button" aria-label="비밀번호 보기" aria-pressed={showPassword} onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
                   {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                 </button>
               </div>
@@ -2058,9 +2087,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
             </div>
 
             <button type="submit" disabled={authLoading} className="w-full bg-[#1a3021] text-white py-4 rounded-2xl font-black text-lg flex items-center justify-center gap-2 hover:bg-[#d35400] transition-all shadow-xl active:scale-95 disabled:opacity-50">
-              {authLoading ? <Loader2 className="animate-spin" /> : <span>LOGIN NOW</span>}
+              {authLoading ? <Loader2 className="animate-spin" /> : <span>{testLogin ? '테스트 계정으로 로그인' : 'LOGIN NOW'}</span>}
             </button>
           </form>
+          {testHref && <a href={testHref} className="mt-3 flex min-h-12 items-center justify-center rounded-2xl border border-indigo-200 bg-indigo-50 px-4 font-bold text-indigo-900 hover:bg-indigo-100">테스트 로그인</a>}
 
           <div className="mt-8 text-center border-t border-slate-100 pt-6">
             <button onClick={onBackToSite} className="text-xs font-bold text-slate-400 hover:text-slate-700">← 메인 웹사이트로 돌아가기</button>
@@ -2105,7 +2135,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           </div>
           <div className="flex flex-col">
             <span className="text-base font-black text-slate-900 tracking-tight leading-none group-hover:text-blue-600 transition-colors">IPASSCARE</span>
-            <span className="text-[10px] text-slate-500 font-extrabold tracking-wider mt-1">관리자 모드</span>
+            <span className="text-[10px] text-slate-500 font-extrabold tracking-wider mt-1">{testLogin ? '테스트 · 가상 지점' : '관리자 모드'}</span>
           </div>
         </div>
 
@@ -3387,8 +3417,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
               <>
                 <section className="mb-5 grid gap-3 sm:grid-cols-3" aria-label="조회 결과 요약">
                   <Stat label="조회 원생" value={attendancePending || attendanceLoadFailed ? '—' : `${new Set(shownAttendance.map((row) => row.childId)).size}명`} icon={<UsersRound />} color="blue" />
-                  <Stat label="이번 달 이용" value={attendancePending || attendanceLoadFailed ? '—' : `${shownAttendance.reduce((sum, row) => sum + row.dates.length, 0)}회`} icon={<CalendarCheck />} color="green" />
-                  <Stat label="남은 이용권" value={attendancePending || attendanceLoadFailed ? '—' : `${shownAttendance.reduce((sum, row) => sum + row.remaining, 0)}회`} icon={<TicketCheck />} color="amber" />
+                  <Stat label="선택 월 출석 기록" value={attendancePending || attendanceLoadFailed ? '—' : `${shownAttendance.reduce((sum, row) => sum + row.dates.length, 0)}회`} icon={<CalendarCheck />} color="green" />
+                  <Stat label="이용권 잔여 합계" value={attendancePending || attendanceLoadFailed ? '—' : `${shownAttendance.reduce((sum, row) => sum + row.remaining, 0)}회`} icon={<TicketCheck />} color="amber" />
                 </section>
 
                 <Toolbar search={search} setSearch={(value) => { setSearch(value); goToAttendancePage(1); }} placeholder="자녀, 보호자, 이용권 검색">
@@ -3406,7 +3436,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-4 sm:px-5">
                   <div>
                     <h2 className="text-base font-bold text-slate-900">월별 출결 장부</h2>
-                    <p className="mt-1 text-xs leading-relaxed text-slate-500">표를 좌우로 밀어 1~{MAX_SLOTS}회차를 확인하세요. 이용권 차감 기록을 우선 표시하며 결석·보강은 제외합니다.</p>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-500">날짜를 눌러 기록을 확인할 수 있습니다. 표를 좌우로 밀어 1~{MAX_SLOTS}회차를 보세요. 결석·보강은 제외합니다.</p>
                   </div>
                   <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
                     페이지당
@@ -3423,10 +3453,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                   <table className="w-max min-w-full text-left text-xs sm:text-[13px]">
                     <caption className="sr-only">월별 원생 출결 및 이용권 현황</caption>
                     <thead className="bg-slate-50 text-[11px] font-bold text-slate-600">
-                      <tr><Th sticky>자녀 / 보호자</Th><Th>이용권</Th><Th>주 횟수</Th><Th>사용</Th>{ATTENDANCE_SLOT_INDEXES.map((i) => <th key={i} scope="col" className="min-w-10 px-0.5 py-4 text-center">{i + 1}</th>)}<Th>출석 횟수</Th></tr>
+                      <tr><Th sticky>원생 · 출석 요약</Th><Th>이용권</Th><Th>주 횟수</Th><Th>이용권 사용</Th><Th>관리</Th>{ATTENDANCE_SLOT_INDEXES.map((i) => <th key={i} scope="col" className="min-w-10 px-0.5 py-4 text-center">{i + 1}</th>)}</tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {attendanceView.rows.map((row) => (
+                      {attendanceView.rows.map((row) => {
+                        const canRegister = Boolean(attendanceToday) && month <= attendanceToday.slice(0, 7) && row.dates.length < row.total;
+                        return (
                         <tr key={row.id} className={`hover:bg-blue-50/30 ${row.withdrawalStatus === 'pending' ? 'bg-amber-50/20' : ''}`}>
                           <th scope="row" className="sticky left-0 z-10 whitespace-nowrap bg-white px-4 py-4 text-left align-middle font-normal">
                             <div className="flex items-center gap-1.5">
@@ -3437,27 +3469,48 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
                                 </span>
                               )}
                             </div>
-                            <p className="mt-1 text-[11px] text-slate-400">보호자 {row.parentName}</p>
+                            <p className="mt-1 text-[11px] text-slate-600">보호자 {row.parentName}</p>
+                            <div className="mt-2 flex items-center gap-1.5 text-xs tabular-nums">
+                              <span className="rounded-md bg-indigo-50 px-2 py-1 font-semibold text-indigo-800">출석 {row.dates.length}회</span>
+                              {row.total > 0 && <span className="rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-700">잔여 {row.remaining}회</span>}
+                            </div>
                           </th>
-                          <Td><b className="text-[12px]">{row.packageName}</b><p className="mt-1 text-[11px] text-slate-400">{row.total}회권 · 잔여 {row.remaining}회</p></Td>
+                          <Td><b className="text-[12px]">{row.packageName}</b></Td>
                           <Td>{row.weekly ? <b>주 {row.weekly}회</b> : "-"}</Td>
                           <Td><b className="text-blue-700">{row.used}</b> / {row.total}</Td>
+                          <Td>{canRegister ? (
+                            <button type="button" disabled={ledgerCancelPending || actionLoading}
+                              onClick={() => {
+                                const today = kstDateKey(new Date().toISOString()) ?? "";
+                                setAttendanceModal({ childId: row.childId, childName: row.childName, packageId: row.id });
+                                setAttendanceDate(today.startsWith(month + "-") ? today : "");
+                              }} aria-label={row.childName + ' ' + row.packageName + ' 출석 등록'}
+                              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-50">
+                              <CalendarCheck size={14} aria-hidden="true" /> 출석 등록
+                            </button>
+                          ) : <span className="text-xs text-slate-600">{row.total === 0 ? '이용권 없음' : month > attendanceToday.slice(0, 7) ? '미래 월' : '빈 회차 없음'}</span>}</Td>
                           {ATTENDANCE_SLOT_INDEXES.map((i) => {
                             const date = row.dates[i];
-                                const isClickable = i < row.total && month <= attendanceToday.slice(0, 7);
                             return (
                               <td key={i} className="px-0.5 py-2 text-center">
                                 {date ? (
-                                  <button type="button" disabled={ledgerCancelPending} onClick={() => void handleCancelAttendance(row, date, row.sources[i] ?? null)} aria-label={`${date.slice(5).replace("-", ".")} ${row.childName} ${i + 1}회차 출석 취소`} className="mx-auto flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white text-[9px] font-black hover:bg-rose-600 hover:scale-105 transition shadow-xs font-mono disabled:opacity-50" title={`${date} 출석 취소`}>{date.slice(5).replace("-", ".")}</button>
+                                  <button type="button" disabled={ledgerCancelPending}
+                                    onClick={() => setAttendanceRecord({ row, date, slot: i + 1, source: row.sources[i] ?? null })}
+                                    aria-label={[date, row.childName, (i + 1) + '회차', '출석 기록 보기'].join(' ')}
+                                    className="mx-auto flex size-9 items-center justify-center rounded-lg bg-indigo-50 text-[11px] font-semibold tabular-nums text-indigo-800 hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-indigo-700 disabled:opacity-50"
+                                    title={date + ' 출석 기록 보기'}>{date.slice(5).replace("-", ".")}</button>
                                 ) : (
-                                  <button type="button" onClick={() => { const today = kstDateKey(new Date().toISOString()) ?? ""; setAttendanceModal({ childId: row.childId, childName: row.childName, packageId: row.id }); setAttendanceDate(today.startsWith(`${month}-`) ? today : ""); }} disabled={!isClickable} aria-label={`${i + 1}회차 ${row.childName} 출석 등록`} className={`mx-auto flex h-9 w-9 items-center justify-center rounded-full text-xs font-black transition hover:scale-105 ${isClickable ? "bg-slate-100 text-slate-500 hover:bg-blue-100 hover:text-blue-600" : "bg-slate-50 text-slate-200 cursor-not-allowed"}`} title={`${i + 1}회차 출석 등록`}>{i + 1}</button>
+                                  <span className={'mx-auto block w-9 text-xs ' + (i < row.total ? 'text-slate-500' : 'text-slate-300')}>
+                                    <span aria-hidden="true">{i < row.total ? '–' : '·'}</span>
+                                    <span className="sr-only">{i < row.total ? '기록 없음' : '이용권 범위 아님'}</span>
+                                  </span>
                                 )}
                               </td>
                             );
                           })}
-                          <Td><b className={`inline-block min-w-11 rounded-full px-2 py-1 text-center tabular-nums ${row.dates.length ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{row.dates.length}회</b></Td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                   {!shownAttendance.length && <p className="px-4 py-12 text-center text-sm text-slate-500" role="status">{attendanceLoadFailed ? '출결 내역을 불러오지 못했습니다. 새로고침으로 다시 조회해 주세요.' : '조건에 맞는 출결 정보가 없습니다.'}</p>}
@@ -4431,6 +4484,14 @@ CREATE POLICY "Allow write for all" ON public.web_partner_logos FOR ALL USING (t
             </div>
           </div>
         </div>
+      )}
+
+      {attendanceRecord && (
+        <AttendanceRecordDialog dialogRef={attendanceRecordDialog} student={attendanceRecord.row.childName}
+          packageName={attendanceRecord.row.packageName} date={attendanceRecord.date} slot={attendanceRecord.slot}
+          linkedUsage={Boolean(attendanceRecord.source)} busy={ledgerCancelPending}
+          onClose={() => setAttendanceRecord(null)}
+          onCancelAttendance={() => void handleCancelAttendance(attendanceRecord.row, attendanceRecord.date, attendanceRecord.source)} />
       )}
 
       {attendanceModal && (

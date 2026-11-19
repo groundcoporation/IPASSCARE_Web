@@ -172,3 +172,49 @@ test('manual registration sends one RPC during a duplicate click and reports a m
   assert.deepEqual(flags, [true, false]);
   assert.equal(inFlight.current, false);
 });
+
+test('ledger date controls open a record before exposing the existing cancellation action', () => {
+  assert.match(source, /onClick=\{\(\) => setAttendanceRecord\(\{ row, date, slot: i \+ 1, source: row\.sources\[i\] \?\? null \}\)\}/);
+  assert.match(source, /onCancelAttendance=\{\(\) => void handleCancelAttendance\(attendanceRecord\.row, attendanceRecord\.date, attendanceRecord\.source\)\}/);
+  assert.match(source, /scope="row"[\s\S]*출석 \{row\.dates\.length\}회[\s\S]*잔여 \{row\.remaining\}회/);
+});
+
+test('ledger cancellation sends one scoped RPC, stays open on error, and refreshes on success', async () => {
+  const requests = [];
+  const reports = [];
+  const flags = [];
+  const inFlight = { current: false };
+  let finish;
+  let confirmed = false;
+  let closed = 0;
+  let refreshed = 0;
+  const cancel = evaluateHandler('handleCancelAttendance', {
+    profile: { role: 'director' },
+    ledgerCancelInFlight: inFlight, setLedgerCancelPending: (flag) => flags.push(flag),
+    confirm: () => confirmed,
+    supabase: { rpc: (...args) => { requests.push(args); return new Promise((resolve) => { finish = resolve; }); } },
+    AppError, handleError: async (error) => reports.push(error.code),
+    attendanceRecordDialog: { current: { close: () => { closed++; } } },
+    loadAttendance: async () => { refreshed++; },
+    alert: () => {},
+  });
+  const args = [{ childId: 'child-a', id: 'package-a' }, '2026-11-02', { id: 'usage-a', consumedAt: '2026-11-02T02:00:00Z' }];
+  await cancel(...args);
+  assert.equal(requests.length, 0);
+  confirmed = true;
+  const rejected = cancel(...args);
+  await cancel(...args);
+  assert.deepEqual(requests, [['cancel_attendance_ledger_entry', { p_child_id: 'child-a', p_date: '2026-11-02', p_package_id: 'package-a', p_usage_id: 'usage-a', p_expected_consumed_at: '2026-11-02T02:00:00Z' }]]);
+  finish({ data: null, error: { code: '42501' } });
+  await rejected;
+  assert.deepEqual(reports, ['42501']);
+  assert.equal(closed, 0);
+  assert.equal(refreshed, 0);
+  const succeeded = cancel(...args);
+  finish({ data: { cancelled: true, restored: 1 }, error: null });
+  await succeeded;
+  assert.equal(closed, 1);
+  assert.equal(refreshed, 1);
+  assert.deepEqual(flags, [true, false, true, false]);
+  assert.equal(inFlight.current, false);
+});

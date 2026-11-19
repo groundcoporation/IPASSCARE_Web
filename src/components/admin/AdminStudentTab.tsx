@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useId, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, AlertTriangle, RefreshCw, X, CreditCard, LogOut, Bus, MapPin } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload, Loader2, Link2, Link2Off, Download, UserX, CheckCircle, Clock, AlertCircle, Archive, RefreshCw, X, CreditCard, Bus, MapPin, Users, ChevronLeft, ChevronRight } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { loadActiveAppSchedulesByChild, type ActiveAppSchedule } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
 import { AppError } from '../../errors/appError';
+import { StudentArchiveDialog } from './StudentArchiveDialog';
 
 export interface WithdrawalRecord {
   id: string;
@@ -190,15 +191,28 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   const [packageOptions, setPackageOptions] = useState<PackageOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [rosterPage, setRosterPage] = useState(1);
+  useEffect(() => setRosterPage(1), [activeBranchId]);
   const [assignedClassOnly, setAssignedClassOnly] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [studentDetailLoading, setStudentDetailLoading] = useState(false);
+  const [studentSaveNotice, setStudentSaveNotice] = useState('');
+  const studentDetailInFlight = useRef(false);
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  const detailTrigger = useRef<HTMLButtonElement | null>(null);
+  const detailSnapshot = useRef<string | null>(null);
+  const wasShowingStudentDetail = useRef(false);
+  const [editorRevision, setEditorRevision] = useState(0);
+  const editorFieldId = useId();
   const [excelLoading, setExcelLoading] = useState(false);
 
-  // 삭제 이중확인 모달 State
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [targetStudentForDelete, setTargetStudentForDelete] = useState<{ id: string; name: string; child_id?: string | null } | null>(null);
-  const [confirmInputName, setConfirmInputName] = useState('');
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<{ id: string; name: string; branchName: string; appLinked: boolean; fromEditor: boolean } | null>(null);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveNotice, setArchiveNotice] = useState('');
+  const rosterHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (!archiveTarget && archiveNotice) rosterHeading.current?.focus();
+  }, [archiveNotice, archiveTarget]);
 
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -661,29 +675,41 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     });
     if (error) throw error;
     if (data?.status !== 'archived' && data?.status !== 'already_archived') throw new AppError('UNKNOWN_ERROR');
+    return data.status;
   };
 
-  const handleDepartStudent = async (student: Student) => {
-    if (archiveInFlight.current || saveLoading || deleteLoading) return;
-    const reason = prompt('퇴원 사유를 입력해 주세요.', '수강 종료');
-    if (reason === null || !confirm('퇴원 처리하시겠습니까? 재원 목록에서 제외되며 기존 청구와 일지는 보존됩니다.')) return;
+  const openArchive = (student: Student, fromEditor = false) => {
+    if (archiveInFlight.current || saveLoading) return;
+    setArchiveNotice('');
+    setArchiveTarget({
+      id: student.id,
+      name: student.student_name,
+      branchName: branches.find((branch) => branch.id === student.branch_id)?.name || '지점 정보 없음',
+      appLinked: Boolean(student.child_id || student.id.startsWith('child-')),
+      fromEditor,
+    });
+  };
+
+  const confirmArchive = async (reason: string) => {
+    if (!archiveTarget || archiveInFlight.current || saveLoading) return;
     archiveInFlight.current = true;
-    setSaveLoading(true);
+    setArchiveLoading(true);
     try {
-      await archiveStudent(student.id, reason);
-      setIsModalOpen(false);
-      alert('퇴원 처리했습니다. 기존 청구와 일지는 보존됩니다.');
+      const status = await archiveStudent(archiveTarget.id, reason);
+      setArchiveTarget(null);
+      if (archiveTarget.fromEditor) setIsModalOpen(false);
+      setArchiveNotice(status === 'already_archived' ? '이미 탈퇴 처리된 원생입니다.' : '탈퇴 처리했습니다. 기존 청구와 일지는 보존됩니다.');
       void loadData();
       void loadWithdrawals();
     } catch (error: unknown) {
       await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.archive' });
     } finally {
       archiveInFlight.current = false;
-      setSaveLoading(false);
+      setArchiveLoading(false);
     }
   };
 
-  // Open modal for registration/edit
+  // Prepare the shared form before opening registration or student details.
   const openModal = async (student?: Student) => {
     setPickupSpots([]);
     setPickupSpotId('');
@@ -741,8 +767,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             .maybeSingle(),
         ]);
         setPickupSettingsLoading(false);
-        if (spotError) alert(`정류장 목록을 불러오지 못했습니다: ${spotError.message}`);
-        if (pickupSettingError) alert(`학생 정류장 설정을 불러오지 못했습니다: ${pickupSettingError.message}`);
+        if (spotError) throw spotError;
+        if (pickupSettingError) throw pickupSettingError;
         setPickupSpots((spotRows || []) as PickupSpotOption[]);
         setPickupSpotId(pickupSetting?.pickup_spot_id || '');
         setDropoffSpotId(pickupSetting?.dropoff_spot_id || '');
@@ -1036,7 +1062,26 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       setNextMonthPackageSource('none');
       setClassAssignments([emptyAssignment()]);
     }
+    detailSnapshot.current = null;
+    setEditorRevision((revision) => revision + 1);
     setIsModalOpen(true);
+  };
+
+  const openStudentDetails = async (student: Student, trigger: HTMLButtonElement) => {
+    if (studentDetailInFlight.current) return;
+    studentDetailInFlight.current = true;
+    detailTrigger.current = trigger;
+    setStudentSaveNotice('');
+    setStudentDetailLoading(true);
+    try {
+      await openModal(student);
+    } catch (error: unknown) {
+      await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.detail.load' });
+    } finally {
+      studentDetailInFlight.current = false;
+      setStudentDetailLoading(false);
+      setPickupSettingsLoading(false);
+    }
   };
 
   // Helper to search and link parent user in real-time
@@ -1118,6 +1163,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
   // Save or Update Student
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saveLoading || pickupSettingsLoading) return;
     if (!studentName.trim()) return alert('학생 이름을 입력해주세요.');
     if (!attendanceCode.trim()) return alert('출결번호를 입력해주세요.');
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
@@ -1281,6 +1327,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         if (unifiedPlanError) throw unifiedPlanError;
       }
 
+      if (editingId) setStudentSaveNotice('학생 정보를 저장했습니다.');
       setIsModalOpen(false);
       loadData();
     } catch (error: unknown) {
@@ -1292,39 +1339,6 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
     }
   };
 
-  // Delete Student (모달 오픈)
-  const openDeleteModal = (student: Student) => {
-    setTargetStudentForDelete({
-      id: student.id,
-      name: student.student_name,
-      child_id: student.child_id
-    });
-    setConfirmInputName('');
-    setDeleteModalOpen(true);
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!targetStudentForDelete || archiveInFlight.current || saveLoading || deleteLoading) return;
-    if (confirmInputName.trim() !== targetStudentForDelete.name.trim()) {
-      alert('입력하신 학생 이름이 일치하지 않습니다.');
-      return;
-    }
-    archiveInFlight.current = true;
-    setDeleteLoading(true);
-    try {
-      await archiveStudent(targetStudentForDelete.id, '재원 명부에서 제외');
-      setDeleteModalOpen(false);
-      setTargetStudentForDelete(null);
-      alert('재원 목록에서 제외했습니다. 기존 청구와 일지는 보존됩니다.');
-      void loadData();
-      void loadWithdrawals();
-    } catch (error: unknown) {
-      await handleError(error, 'UNKNOWN_ERROR', { operation: 'student.archive' });
-    } finally {
-      archiveInFlight.current = false;
-      setDeleteLoading(false);
-    }
-  };
 
   // Download Excel Registration template
   const downloadTemplate = async () => {
@@ -1571,6 +1585,17 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
       (student.school_name && student.school_name.toLowerCase().includes(query))
     );
   }).sort((left, right) => left.student_name.localeCompare(right.student_name, 'ko-KR'));
+  const rosterPageSize = 20;
+  const rosterPageCount = Math.max(1, Math.ceil(filteredStudents.length / rosterPageSize));
+  const currentRosterPage = Math.min(rosterPage, rosterPageCount);
+  const rosterStart = (currentRosterPage - 1) * rosterPageSize;
+  const rosterStudents = filteredStudents.slice(rosterStart, rosterStart + rosterPageSize);
+  const hasRosterFilters = Boolean(searchQuery.trim()) || assignedClassOnly;
+  const clearRosterFilters = () => {
+    setSearchQuery('');
+    setAssignedClassOnly(false);
+    setRosterPage(1);
+  };
   const filteredWithdrawals = withdrawals.filter((item) => {
     const query = searchQuery.toLowerCase().trim();
     if (!query) return true;
@@ -1596,6 +1621,42 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
   const modalStudent = editingId ? students.find((student) => student.id === editingId) || null : null;
   const isModalAppLinked = Boolean(modalStudent?.child_id);
+  const showStudentDetail = isModalOpen && Boolean(editingId);
+  const detailFingerprint = showStudentDetail ? JSON.stringify([
+    selectedBranchId, studentName, parentName, attendanceCode, motherPhone, fatherPhone, studentPhone,
+    birthDate, schoolName, gradeLevel, address, admissionDate, memo, isSmsEnabled, classAssignments,
+    pickupSpotId, dropoffSpotId, pickupDetailLocation, dropoffDetailLocation,
+    currentMonthClassIds, nextMonthClassIds, currentMonthPackages, nextMonthPackages, applyCurrentClassesToNextMonth,
+  ]) : null;
+  useEffect(() => {
+    if (detailFingerprint !== null && detailSnapshot.current === null) detailSnapshot.current = detailFingerprint;
+  }, [detailFingerprint, editorRevision]);
+  useEffect(() => {
+    if (showStudentDetail) {
+      detailHeading.current?.focus({ preventScroll: true });
+      detailHeading.current?.scrollIntoView({ block: 'start' });
+    } else if (wasShowingStudentDetail.current) {
+      const trigger = detailTrigger.current;
+      if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+      else rosterHeading.current?.focus();
+    }
+    wasShowingStudentDetail.current = showStudentDetail;
+  }, [showStudentDetail]);
+
+  const detailSections = [
+    ['basic', '기본 정보'], ['classes', '수업·이용권'], ['contact', '연락처·추가 정보'],
+  ] as const;
+  const jumpToDetailSection = (section: string) => {
+    const heading = document.getElementById(editorFieldId + '-' + section);
+    heading?.focus({ preventScroll: true });
+    heading?.scrollIntoView({ block: 'start' });
+  };
+  const returnToStudentList = () => {
+    if (saveLoading || archiveLoading || additionalBillSaving || billingPlanCorrectionSaving) return;
+    if (detailSnapshot.current !== null && detailSnapshot.current !== detailFingerprint
+      && !window.confirm('저장하지 않은 변경사항이 있습니다. 학생 목록으로 돌아갈까요?')) return;
+    setIsModalOpen(false);
+  };
   // The global admin view loads every branch's timetable, but a student's
   // enrollment must only ever be edited against that student's selected branch.
   const modalBranchClasses = classes.filter((item) => item.branch_id === selectedBranchId);
@@ -1623,14 +1684,16 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
 
   return (
     <div className="space-y-6">
+      <div hidden={showStudentDetail} className="space-y-6">
       {/* Title Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-        <div>
-          <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-            👥 학생 원생 명부 관리
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+        <div className="min-w-0">
+          <h2 ref={rosterHeading} tabIndex={-1} className="flex items-center gap-2 rounded-sm text-xl font-bold tracking-tight text-slate-900 focus-visible:outline-2 focus-visible:outline-indigo-600">
+            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-700"><Users size={18} aria-hidden="true" /></span>
+            학생 관리
           </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            원생 정보를 추가하거나, 기존 프로그램의 엑셀 백업 파일을 업로드하여 일괄 등록 및 퇴원/탈퇴 회원을 관리합니다.
+          <p className="mt-2 text-sm text-slate-600">
+            재원생의 수업반, 보호자 연락처, 앱 연동을 한곳에서 확인하세요.
           </p>
         </div>
         
@@ -1639,30 +1702,31 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
             {/* Template Download Button */}
             <button 
               onClick={downloadTemplate}
-              className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs"
+              className="flex items-center justify-center gap-1.5 min-h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
-              <Download size={16} />
+              <Download size={16} aria-hidden="true" />
               엑셀 양식 다운로드
             </button>
 
             {/* Excel Upload Input */}
-            <label className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs cursor-pointer">
-              <Upload size={16} />
+            <label className="flex items-center justify-center gap-1.5 min-h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer focus-within:ring-2 focus-within:ring-indigo-600 focus-within:ring-offset-2 has-disabled:cursor-not-allowed has-disabled:opacity-60">
+              <Upload size={16} aria-hidden="true" />
               {excelLoading ? '업로드 처리 중...' : '엑셀 일괄 등록'}
               <input 
                 type="file" 
                 accept=".xlsx"
                 onChange={handleExcelUpload}
                 disabled={excelLoading}
-                className="hidden"
+                className="sr-only"
               />
             </label>
 
             <button 
-              onClick={() => openModal()}
-              className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm"
+              onClick={() => void openModal()}
+              disabled={studentDetailLoading}
+              className="flex items-center justify-center gap-1.5 min-h-10 rounded-xl bg-indigo-700 px-3.5 text-sm font-semibold text-white shadow-xs hover:bg-indigo-800"
             >
-              <Plus size={16} />
+              <Plus size={16} aria-hidden="true" />
               학생 직접 등록
             </button>
           </div>
@@ -1672,7 +1736,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
           <button
             onClick={loadWithdrawals}
             disabled={withdrawalLoading}
-            className="flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs"
+            className="flex items-center justify-center gap-1.5 min-h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
             <RefreshCw size={15} className={withdrawalLoading ? 'animate-spin' : ''} />
             탈퇴 목록 새로고침
@@ -1680,238 +1744,160 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         )}
       </div>
 
-      {/* Student, childless member, and withdrawal views */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200/80 pb-3">
-        <button
-          onClick={() => setViewTab('active')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
-            viewTab === 'active'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-          }`}
-        >
-          <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-          <span>재원생 명부</span>
-          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-            viewTab === 'active' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
-          }`}>
-            {students.length}명
-          </span>
-        </button>
-
-        <button
-          onClick={() => setViewTab('unregistered')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
-            viewTab === 'unregistered'
-              ? 'bg-amber-500 text-white shadow-sm'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-          }`}
-        >
-          <span className="h-2 w-2 rounded-full bg-amber-300"></span>
-          <span>자녀 미등록 회원</span>
-          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-            viewTab === 'unregistered' ? 'bg-amber-600 text-white' : 'bg-slate-200 text-slate-700'
-          }`}>
-            {unregisteredMembers.length}명
-          </span>
-        </button>
-
-        <button
-          onClick={() => { setViewTab('withdrawn'); loadWithdrawals(); }}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition ${
-            viewTab === 'withdrawn'
-              ? 'bg-rose-600 text-white shadow-sm'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-          }`}
-        >
-          <span className="h-2 w-2 rounded-full bg-rose-400"></span>
-          <span>퇴원 · 탈퇴 회원 관리</span>
-          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-            viewTab === 'withdrawn' ? 'bg-rose-700 text-white' : 'bg-slate-200 text-slate-700'
-          }`}>
-            {withdrawals.length}명
-          </span>
-        </button>
+      <p role="status" className={studentSaveNotice ? 'rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-900' : 'sr-only'}>{studentSaveNotice}</p>
+      <div className={archiveNotice ? 'flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-emerald-50 px-4 py-2 text-sm text-emerald-900' : 'sr-only'}>
+        <p role="status" className="font-semibold">{archiveNotice}</p>
+        {archiveNotice && viewTab !== 'withdrawn' && <button type="button" onClick={() => { setViewTab('withdrawn'); void loadWithdrawals(); }}
+          className="min-h-9 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700">탈퇴 이력 보기</button>}
       </div>
+      <nav aria-label="학생 명부 보기" className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
+        {([
+          ['active', '재원생 명부', students.length],
+          ['unregistered', '자녀 미등록 회원', unregisteredMembers.length],
+          ['withdrawn', '탈퇴 이력', withdrawals.length],
+        ] as const).map(([view, label, count]) => (
+          <button key={view} type="button" aria-pressed={viewTab === view}
+            onClick={() => { setViewTab(view); if (view === 'withdrawn') void loadWithdrawals(); }}
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-transparent px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 aria-pressed:border-indigo-100 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-800">
+            {label}<span className="rounded-full bg-white px-2 py-0.5 text-xs tabular-nums ring-1 ring-slate-200">{count}명</span>
+          </button>
+        ))}
+      </nav>
 
-      {/* Toolbar Search & Filters */}
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
         <div className="relative min-w-0 flex-1">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input 
-            type="text"
+          <Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" size={17} />
+          <input type="search" aria-label={viewTab === 'active' ? '학생 검색' : '회원 검색'}
             placeholder={viewTab === 'active'
-              ? '학생·보호자 이름, 연락처, 소속반, 학교명으로 검색...'
-              : viewTab === 'unregistered'
-                ? '회원 이름, 아이디, 연락처, 이메일로 검색...'
-                : '퇴원/탈퇴 원생·학부모 이름, 연락처, 사유로 검색...'}
+              ? '학생·보호자 이름, 연락처, 수업반, 학교명'
+              : viewTab === 'unregistered' ? '이름, 아이디, 연락처, 이메일' : '이름, 연락처, 탈퇴 사유'}
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-2xl bg-slate-100 py-3.5 pl-11 pr-4 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+            onChange={(event) => { setSearchQuery(event.target.value); setRosterPage(1); }}
+            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600"
           />
         </div>
-
         {viewTab === 'active' && (
-          <button
-            type="button"
-            aria-pressed={assignedClassOnly}
-            onClick={() => setAssignedClassOnly((current) => !current)}
-            className={`flex shrink-0 items-center justify-center gap-2 rounded-2xl px-4 py-3.5 text-xs font-black transition ${
-              assignedClassOnly
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <CheckCircle size={16} />
-            수업 반 지정
-            <span className={`rounded-full px-2 py-0.5 text-[10px] ${
-              assignedClassOnly ? 'bg-blue-700 text-white' : 'bg-white text-slate-600'
-            }`}>
-              {assignedClassStudentCount}명
-            </span>
+          <button type="button" aria-pressed={assignedClassOnly}
+            onClick={() => { setAssignedClassOnly((current) => !current); setRosterPage(1); }}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 aria-pressed:border-indigo-200 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-800">
+            <CheckCircle size={16} aria-hidden="true" /> 수업반 배정만 보기
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs tabular-nums">{assignedClassStudentCount}명</span>
           </button>
         )}
       </div>
 
-      {/* 🟢 VIEW 1: 재원생 명부 테이블 */}
       {viewTab === 'active' && (
-        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm text-slate-500">
-              <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-700 border-b border-slate-200">
-                <tr className="whitespace-nowrap">
-                  <th scope="col" className="px-6 py-4">학생이름</th>
-                  <th scope="col" className="px-6 py-4">보호자 성함</th>
-                  <th scope="col" className="px-6 py-4">수강 수업반</th>
-                  <th scope="col" className="px-6 py-4">연락처 (부모/학생)</th>
-                  <th scope="col" className="px-6 py-4">학교 / 학년</th>
-                  <th scope="col" className="px-6 py-4">입회일</th>
-                  <th scope="col" className="px-6 py-4">어플 연동 여부</th>
-                  <th scope="col" className="px-6 py-4 text-right">관리</th>
+        <section aria-label="학생 목록" className="@container/roster min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3.5 sm:px-5">
+            <div>
+              <h3 className="text-base font-bold text-slate-950">학생 목록</h3>
+              <p role="status" className="mt-1 text-sm text-slate-600">
+                {loading ? '목록을 불러오는 중입니다.' : <><strong className="font-semibold text-slate-900">{filteredStudents.length.toLocaleString()}명</strong>{hasRosterFilters && ' 검색됨'}</>}
+              </p>
+            </div>
+            {hasRosterFilters && <button type="button" onClick={clearRosterFilters}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100">
+              <X size={15} aria-hidden="true" /> 검색·필터 초기화
+            </button>}
+          </header>
+          <table role="table" aria-label="재원생 정보" className="block w-full border-separate border-spacing-0 text-left @min-[46rem]/roster:table @min-[46rem]/roster:table-fixed">
+            <thead role="rowgroup" className="hidden bg-slate-50 text-xs font-semibold text-slate-700 @min-[46rem]/roster:table-header-group">
+              <tr role="row">
+                <th scope="col" className="w-[22%] border-b border-slate-200 px-4 py-3">학생</th>
+                <th scope="col" className="w-[24%] border-b border-slate-200 px-4 py-3">수업반</th>
+                <th scope="col" className="w-[23%] border-b border-slate-200 px-4 py-3">보호자 · 연락처</th>
+                <th scope="col" className="w-[13%] border-b border-slate-200 px-4 py-3">앱 연동</th>
+                <th scope="col" className="w-[18%] border-b border-slate-200 px-4 py-3 text-right">관리</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup" className="block divide-y divide-slate-200 @min-[46rem]/roster:table-row-group">
+              {loading || rosterStudents.length === 0 ? (
+                <tr role="row" className="block @min-[46rem]/roster:table-row">
+                  <td role="cell" colSpan={5} className="block px-4 py-12 text-center @min-[46rem]/roster:table-cell">
+                    {loading ? <Loader2 aria-hidden="true" size={22} className="mx-auto animate-spin text-indigo-700" /> : <>
+                      <p className="text-sm font-semibold text-slate-900">{hasRosterFilters ? '조건에 맞는 학생이 없습니다.' : '아직 등록된 학생이 없습니다.'}</p>
+                      <p className="mt-1 text-sm text-slate-600">{hasRosterFilters ? '검색어 또는 수업반 필터를 확인하세요.' : '학생 직접 등록 또는 엑셀 일괄 등록으로 추가할 수 있습니다.'}</p>
+                    </>}
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 border-t border-slate-100">
-                {loading ? (
-                  <tr>
-                    <td colSpan={8} className="text-center py-16">
-                      <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
-                      <span className="text-xs font-bold text-slate-400 block mt-2">원생 명부 불러오는 중...</span>
+              ) : rosterStudents.map((student) => {
+                const hasAppLinked = student.parent_user_id !== null;
+                const assignments = student.child_id
+                  ? (student.app_schedule_classes || []).map((schedule) => ({
+                      class_schedule_id: schedule.id, package_option_id: null, class_schedules: schedule,
+                    }))
+                  : student.academy_student_classes || [];
+                const displayParentName = student.parent_user?.name || student.parent_name || '미기입';
+                const contacts = ([
+                  ['어머니', student.mother_phone], ['아버지', student.father_phone], ['학생', student.student_phone],
+                ] as const).filter(([, phone]) => Boolean(phone));
+                const school = [student.school_name, student.grade_level].filter(Boolean).join(' · ');
+                const cell = 'block min-w-0 px-4 pb-3 text-sm align-top @min-[46rem]/roster:table-cell @min-[46rem]/roster:border-b @min-[46rem]/roster:border-slate-100 @min-[46rem]/roster:py-4';
+                const mobileLabel = 'mb-1 block text-xs font-semibold text-slate-600 @min-[46rem]/roster:sr-only';
+                return (
+                  <tr role="row" key={student.id} className="grid grid-cols-2 gap-y-0 hover:bg-slate-50/60 @min-[46rem]/roster:table-row">
+                    <th scope="row" role="rowheader" className={cell + ' col-span-2 bg-slate-50/80 pt-3 @min-[46rem]/roster:bg-transparent'}>
+                      <p className="text-base font-bold text-slate-950 [overflow-wrap:anywhere]">{student.student_name}</p>
+                      <p className="mt-1 text-xs font-medium text-indigo-800">출결번호 <span className="ml-1 tabular-nums">{student.attendance_code || '미등록'}</span></p>
+                      {school && <p className="mt-1 text-xs text-slate-700 [overflow-wrap:anywhere]">{school}</p>}
+                      {student.admission_date && <p className="mt-1 text-xs text-slate-600">입회 {student.admission_date.slice(0, 10).replace(/-/g, '.')}</p>}
+                    </th>
+                    <td role="cell" className={cell + ' pt-3'}>
+                      <span className={mobileLabel}>수업반</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {assignments.length ? assignments.map((assignment, index) => (
+                          <span key={[assignment.class_schedule_id || 'package', assignment.package_option_id || index].join('-')}
+                            className={'max-w-full rounded-md px-2 py-1 text-xs font-semibold [overflow-wrap:anywhere] ' + (assignment.class_schedule_id ? 'bg-indigo-50 text-indigo-800' : 'bg-amber-50 text-amber-800')}>
+                            {assignment.class_schedules?.target_class || '이용권 단독 수강'}
+                          </span>
+                        )) : <span className="text-xs text-slate-600">미배정</span>}
+                      </div>
+                    </td>
+                    <td role="cell" className={cell + ' pt-3'}>
+                      <span className={mobileLabel}>보호자 · 연락처</span>
+                      <p className="font-semibold text-slate-900 [overflow-wrap:anywhere]">{displayParentName}</p>
+                      {contacts.length ? <dl className="mt-1.5 space-y-1 text-xs text-slate-700">
+                        {contacts.map(([label, phone]) => <div key={label} className="flex min-w-0 flex-wrap gap-x-1.5">
+                          <dt className="shrink-0 text-slate-600">{label}</dt><dd className="min-w-0 tabular-nums [overflow-wrap:anywhere]">{phone}</dd>
+                        </div>)}
+                      </dl> : <p className="mt-1 text-xs text-slate-600">연락처 미등록</p>}
+                    </td>
+                    <td role="cell" className={cell + ' self-center'}>
+                      <span className="sr-only">앱 연동: </span>
+                      <span className={'inline-flex max-w-full items-center gap-1.5 rounded-full px-2 py-1 text-xs font-semibold ' + (hasAppLinked ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-100 text-slate-700')}>
+                        {hasAppLinked ? <Link2 size={13} aria-hidden="true" className="shrink-0" /> : <Link2Off size={13} aria-hidden="true" className="shrink-0" />}
+                        <span>{hasAppLinked ? '연동 완료' : '미연동'}</span>
+                      </span>
+                    </td>
+                    <td role="cell" className={cell}>
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <button type="button" onClick={(event) => void openStudentDetails(student, event.currentTarget)}
+                          disabled={studentDetailLoading} aria-label={student.student_name + ' 상세·수정'}
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-indigo-100 bg-indigo-50 px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 disabled:opacity-60">
+                          <Pencil size={13} aria-hidden="true" /> 상세·수정
+                        </button>
+                        <button type="button" onClick={() => openArchive(student)} aria-label={student.student_name + ' 탈퇴 처리'}
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-slate-700 hover:bg-amber-50 hover:text-amber-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700">
+                          <Archive size={13} aria-hidden="true" /> 탈퇴 처리
+                        </button>
+                      </div>
                     </td>
                   </tr>
-                ) : filteredStudents.length > 0 ? (
-                  filteredStudents.map((student) => {
-                    const hasAppLinked = student.parent_user_id !== null;
-                    const assignments = student.child_id
-                      ? (student.app_schedule_classes || []).map((schedule) => ({
-                          class_schedule_id: schedule.id,
-                          package_option_id: null,
-                          class_schedules: schedule,
-                        }))
-                      : student.academy_student_classes || [];
-                    const displayParentName = student.parent_user?.name || student.parent_name || '미기입';
-                    
-                    return (
-                      <tr key={student.id} className="hover:bg-slate-50">
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col">
-                            <span className="font-extrabold text-slate-900 text-sm">{student.student_name}</span>
-                            <span className="text-[11px] text-slate-400 font-mono">출결번호: {student.attendance_code}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-xs font-extrabold text-slate-900">
-                          {displayParentName}
-                          {student.parent_user?.name && <span className="ml-1 text-[10px] font-bold text-blue-500">(App)</span>}
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex max-w-xs flex-wrap gap-1.5">
-                            {assignments.length > 0 ? assignments.map((assignment, index) => (
-                              <span key={`${assignment.class_schedule_id || 'package'}-${assignment.package_option_id || index}`} className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${assignment.class_schedule_id ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
-                                {assignment.class_schedules?.target_class || '🎫 이용권 단독 수강'}
-                              </span>
-                            )) : <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">미배정</span>}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-xs text-slate-700 whitespace-nowrap">
-                          <div className="flex flex-col gap-1">
-                            {student.mother_phone && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">어머니</span>
-                                <span className="font-mono text-slate-800 font-bold">{student.mother_phone}</span>
-                              </div>
-                            )}
-                            {student.father_phone && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">아버지</span>
-                                <span className="font-mono text-slate-800 font-bold">{student.father_phone}</span>
-                              </div>
-                            )}
-                            {student.student_phone && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200/60">학생</span>
-                                <span className="font-mono text-slate-800 font-bold">{student.student_phone}</span>
-                              </div>
-                            )}
-                            {!student.mother_phone && !student.father_phone && !student.student_phone && (
-                              <span className="text-slate-400 font-medium text-xs">미등록</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-xs whitespace-nowrap">
-                          <div className="flex flex-col font-bold">
-                            <span>{student.school_name || '-'}</span>
-                            <span className="text-slate-400 mt-0.5">{student.grade_level || '-'}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-xs font-semibold text-slate-700 whitespace-nowrap">
-                          {student.admission_date ? student.admission_date.slice(0, 10).replace(/-/g, '.') : '-'}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          {hasAppLinked ? (
-                            <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full border border-emerald-100">
-                              <Link2 size={12} />
-                              연동 완료 (@{student.parent_user?.name})
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-400 font-bold px-2.5 py-1 rounded-full border border-slate-200/50">
-                              <Link2Off size={12} />
-                              앱 미가입
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 text-right whitespace-nowrap">
-                          <div className="flex justify-end items-center gap-1.5">
-                            <button
-                              onClick={() => openModal(student)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-blue-600 bg-blue-50/80 hover:bg-blue-100/90 border border-blue-200/60 rounded-lg transition shadow-2xs"
-                              title="원생 정보 수정"
-                            >
-                              <Pencil size={12} />
-                              <span>수정</span>
-                            </button>
-                            <button
-                              onClick={() => openDeleteModal(student)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-rose-600 bg-rose-50/80 hover:bg-rose-100/90 border border-rose-200/60 rounded-lg transition shadow-2xs"
-                              title="재원 목록에서 제외"
-                            >
-                              <Trash2 size={12} />
-                              <span>삭제</span>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={8} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
-                      일치하는 학생 정보가 없습니다. 첫 원생을 등록해 보세요!
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                );
+              })}
+            </tbody>
+          </table>
+          {!loading && rosterPageCount > 1 && <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-5">
+            <p className="text-sm text-slate-600">전체 {filteredStudents.length}명 중 {rosterStart + 1}–{rosterStart + rosterStudents.length}명</p>
+            <nav aria-label="학생 목록 페이지" className="flex flex-wrap items-center gap-2 text-sm">
+              <button type="button" onClick={() => setRosterPage(currentRosterPage - 1)} disabled={currentRosterPage === 1}
+                className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-slate-800 hover:bg-slate-100 disabled:opacity-50"><ChevronLeft size={15} aria-hidden="true" /> 이전</button>
+              <span role="status" className="min-w-12 text-center font-semibold tabular-nums text-slate-800">{currentRosterPage} / {rosterPageCount}</span>
+              <button type="button" onClick={() => setRosterPage(currentRosterPage + 1)} disabled={currentRosterPage === rosterPageCount}
+                className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-slate-800 hover:bg-slate-100 disabled:opacity-50">다음 <ChevronRight size={15} aria-hidden="true" /></button>
+            </nav>
+          </footer>}
+        </section>
       )}
 
       {/* 🟠 VIEW 2: 자녀 미등록 회원 */}
@@ -1959,7 +1945,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </div>
       )}
 
-      {/* 🔴 VIEW 3: 퇴원 · 탈퇴 회원 관리 테이블 */}
+      {/* 🔴 VIEW 3: 탈퇴 이력 테이블 */}
       {viewTab === 'withdrawn' && (
         <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
@@ -1968,8 +1954,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 <tr className="whitespace-nowrap">
                   <th scope="col" className="px-6 py-4">원생 / 출결번호</th>
                   <th scope="col" className="px-6 py-4">보호자 / 연락처</th>
-                  <th scope="col" className="px-6 py-4">퇴원·탈퇴일시 / 경로</th>
-                  <th scope="col" className="px-6 py-4">퇴원·탈퇴 사유</th>
+                  <th scope="col" className="px-6 py-4">탈퇴 일시 / 경로</th>
+                  <th scope="col" className="px-6 py-4">탈퇴 사유</th>
                   <th scope="col" className="px-6 py-4">당시 이용권 & 결제내역</th>
                   <th scope="col" className="px-6 py-4">환불 정산 상태</th>
                   <th scope="col" className="px-6 py-4 text-right">정산 관리</th>
@@ -1980,7 +1966,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                   <tr>
                     <td colSpan={7} className="text-center py-16">
                       <Loader2 className="animate-spin text-rose-500 mx-auto" size={24} />
-                      <span className="text-xs font-bold text-slate-400 block mt-2">퇴원·탈퇴 회원 명부 불러오는 중...</span>
+                      <span className="text-xs font-bold text-slate-400 block mt-2">탈퇴 이력을 불러오는 중입니다.</span>
                     </td>
                   </tr>
                 ) : filteredWithdrawals.length > 0 ? (
@@ -2021,11 +2007,11 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                             <span className="text-xs font-semibold text-slate-700 font-mono">{formattedDate}</span>
                             {isAccountWithdrawal ? (
                               <span className="inline-flex items-center gap-1 text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100 w-fit">
-                                📱 회원 탈퇴
+                                📱 앱 계정 탈퇴
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-full border border-slate-200 w-fit">
-                                🏫 학원 퇴원
+                                🏫 학원 탈퇴
                               </span>
                             )}
                           </div>
@@ -2102,7 +2088,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 ) : (
                   <tr>
                     <td colSpan={7} className="text-center py-20 text-slate-400 font-bold text-sm bg-slate-50/10">
-                      퇴원 및 탈퇴 처리된 회원이 없습니다.
+                      탈퇴 이력이 없습니다.
                     </td>
                   </tr>
                 )}
@@ -2122,7 +2108,7 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                   <CreditCard size={18} />
                 </div>
                 <div>
-                  <h3 className="text-base font-black text-slate-900">퇴원 회원 환불 정산</h3>
+                  <h3 className="text-base font-black text-slate-900">탈퇴 회원 환불 정산</h3>
                   <p className="text-xs text-slate-500">
                     {selectedWithdrawal.event_type === 'account_withdrawal'
                       ? `${selectedWithdrawal.user_name || '탈퇴 회원'} · 회원 계정 전체 탈퇴`
@@ -2228,31 +2214,65 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </div>
       )}
 
-      {/* Modal Dialog */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-[3000] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-xs sm:items-center sm:p-6" onClick={() => setIsModalOpen(false)}>
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full uppercase tracking-wider">
-                  {editingId ? 'STUDENT EDIT' : 'STUDENT REGISTER'}
-                </span>
-                <h3 className="mt-2 text-xl font-black text-slate-900">
-                  {editingId ? `${studentName} 원생 정보 수정` : '새 원생 개별 등록'}
-                </h3>
-              </div>
-              <button onClick={() => setIsModalOpen(false)} className="rounded-full bg-slate-100 hover:bg-slate-200 px-3 py-1.5 text-xs font-black text-slate-600">닫기</button>
-            </div>
+      </div>
 
-            <form onSubmit={handleSave} className="space-y-4">
+      {isModalOpen && (
+        <div className={showStudentDetail ? 'min-w-0' : 'fixed inset-0 z-[3000] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-xs sm:items-center sm:p-6'}
+          onClick={showStudentDetail ? undefined : () => setIsModalOpen(false)}>
+          <div className={showStudentDetail ? 'min-w-0 space-y-5' : 'max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl'}
+            onClick={showStudentDetail ? undefined : (event) => event.stopPropagation()}>
+            {showStudentDetail ? (
+              <header className="rounded-2xl border border-slate-200 bg-white px-4 py-5 shadow-xs sm:px-6">
+                <button type="button" onClick={returnToStudentList} disabled={saveLoading || archiveLoading || additionalBillSaving || billingPlanCorrectionSaving}
+                  className="mb-4 inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">
+                  <ChevronLeft size={17} aria-hidden="true" /> 학생 목록으로
+                </button>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800"><Users size={14} aria-hidden="true" /> 학생 상세</span>
+                <h2 ref={detailHeading} tabIndex={-1} className="mt-1 scroll-mt-24 break-words text-2xl font-bold text-slate-950">
+                  {modalStudent?.student_name || studentName}
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">등록된 정보를 확인하고, 아래에서 필요한 항목을 수정하세요.</p>
+                <dl className="mt-4 grid grid-cols-2 gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4 sm:grid-cols-4">
+                  {([
+                    ['소속 지점', branches.find((branch) => branch.id === modalStudent?.branch_id)?.name || '미등록'],
+                    ['출결번호', modalStudent?.attendance_code || '미등록'],
+                    ['학교 · 학년', [modalStudent?.school_name, modalStudent?.grade_level].filter(Boolean).join(' · ') || '미등록'],
+                    ['앱 연동', modalStudent?.parent_user_id ? '연동 완료' : '미연동'],
+                  ]).map(([label, value]) => <div key={label} className="min-w-0">
+                    <dt className="text-xs font-medium text-slate-600">{label}</dt>
+                    <dd className="mt-1 text-sm font-semibold text-slate-950 [overflow-wrap:anywhere]">{value}</dd>
+                  </div>)}
+                </dl>
+                <nav aria-label="학생 정보 항목" className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-3">
+                  {detailSections.map(([key, label]) => (
+                    <button key={key} type="button" onClick={() => jumpToDetailSection(key)}
+                      className="inline-flex min-h-10 items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800">
+                      {label}<ChevronRight size={14} aria-hidden="true" />
+                    </button>
+                  ))}
+                </nav>
+              </header>
+            ) : (
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <h3 className="mt-2 text-xl font-bold text-slate-900">새 원생 개별 등록</h3>
+                <button type="button" onClick={() => setIsModalOpen(false)} className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200">닫기</button>
+              </div>
+            )}
+
+            <form method="post" onSubmit={handleSave} className={showStudentDetail
+              ? 'min-w-0 space-y-5 [&_input]:scroll-mb-28 [&_select]:scroll-mb-28 [&_textarea]:scroll-mb-28' : 'min-w-0 space-y-5'}>
+              <fieldset className={showStudentDetail ? 'min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white px-4 pb-5 pt-1 shadow-xs sm:px-6' : 'min-w-0 space-y-4'}>
+                <legend id={editorFieldId + '-basic'} tabIndex={showStudentDetail ? -1 : undefined}
+                  className={showStudentDetail ? 'ml-0 scroll-mt-24 rounded-lg px-2 text-base font-bold text-slate-950 focus-visible:outline-2 focus-visible:outline-indigo-600' : 'sr-only'}>기본 정보</legend>
+                {showStudentDetail && <p className="text-sm leading-relaxed text-slate-600">학생 이름, 보호자 이름과 출결에 사용하는 번호를 관리합니다.</p>}
               {/* Branch */}
               {activeBranchId === null && (
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">지점 소속 선택 *</label>
-                  <select 
+                  <label htmlFor={editorFieldId + '-1'} className="block text-xs font-bold text-slate-500 mb-1.5">지점 소속 선택 *</label>
+                  <select id={editorFieldId + '-1'}
                     value={selectedBranchId}
                     onChange={(e) => setSelectedBranchId(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   >
                     <option value="">지점을 선택해주세요</option>
                     {branches.map(b => (
@@ -2262,42 +2282,47 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">학생 이름 *</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-2'} className="block text-xs font-bold text-slate-500 mb-1.5">학생 이름 *</label>
+                  <input id={editorFieldId + '-2'}
                     type="text" 
                     placeholder="예: 홍길동"
                     value={studentName}
                     onChange={(e) => setStudentName(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                     required
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">보호자(학부모) 성함</label>
-                  <input
+                  <label htmlFor={editorFieldId + '-3'} className="block text-xs font-bold text-slate-500 mb-1.5">보호자(학부모) 성함</label>
+                  <input id={editorFieldId + '-3'}
                     type="text"
                     placeholder="예: 홍길동 (수기 입력용)"
                     value={parentName}
                     onChange={(e) => setParentName(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
               </div>
 
               <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">출결 등원 번호 *</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-4'} className="block text-xs font-bold text-slate-500 mb-1.5">출결 등원 번호 *</label>
+                  <input id={editorFieldId + '-4'}
                     type="text" 
                     placeholder="예: 1234"
                     value={attendanceCode}
                     onChange={(e) => setAttendanceCode(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                     required
                   />
               </div>
 
+              </fieldset>
+              <fieldset className={showStudentDetail ? 'min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white px-4 pb-5 pt-1 shadow-xs sm:px-6' : 'min-w-0 space-y-4'}>
+                <legend id={editorFieldId + '-classes'} tabIndex={showStudentDetail ? -1 : undefined}
+                  className={showStudentDetail ? 'ml-0 scroll-mt-24 rounded-lg px-2 text-base font-bold text-slate-950 focus-visible:outline-2 focus-visible:outline-indigo-600' : 'sr-only'}>수업·이용권</legend>
+                {showStudentDetail && <p className="text-sm leading-relaxed text-slate-600">수업과 이용권 설정을 확인하고 필요한 항목만 변경하세요.</p>}
               <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/40 p-3">
                 {isModalAppLinked && (
                   <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-1">
@@ -2466,8 +2491,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                         {(isModalAppLinked || itemCount > 1) && <button type="button" aria-label="이용권 삭제" onClick={() => { if (isModalAppLinked) { setNextMonthPackages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setNextMonthPackageSource('edited'); } else { setClassAssignments((current) => current.filter((_, itemIndex) => itemIndex !== index)); } }} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-rose-400 transition hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>}
                       </div>
                       <div className={`grid grid-cols-1 gap-3 ${isModalAppLinked ? '' : 'sm:grid-cols-2'}`}>
-                        {!isModalAppLinked && <div><label className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{modalBranchClasses.map((item) => <option key={item.id} value={item.id}>{scheduleLabel(item)}</option>)}</select></div>}
-                        <div><label className="mb-1.5 block text-[11px] font-bold text-slate-500">{isModalAppLinked ? '이용권 변경' : '이용권 요금제 지정 *'}</label><select value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" required><option value="">이용권을 선택해 주세요</option>{selectablePackageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}</select></div>
+                        {!isModalAppLinked && <div><label htmlFor={editorFieldId + '-schedule-' + index} className="mb-1.5 block text-xs font-bold text-slate-500">수강 반 배정 (선택)</label><select id={editorFieldId + '-schedule-' + index} value={assignment.class_schedule_id} onChange={(e) => updateAssignment({ class_schedule_id: e.target.value })} className="w-full rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"><option value="">수업반 없음 / 이용권 단독 수강</option>{modalBranchClasses.map((item) => <option key={item.id} value={item.id}>{scheduleLabel(item)}</option>)}</select></div>}
+                        <div><label htmlFor={editorFieldId + '-package-' + index} className="mb-1.5 block text-[11px] font-bold text-slate-500">{isModalAppLinked ? '이용권 변경' : '이용권 요금제 지정 *'}</label><select id={editorFieldId + '-package-' + index} value={assignment.package_option_id} onChange={(e) => updateAssignment({ package_option_id: e.target.value })} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" required><option value="">이용권을 선택해 주세요</option>{selectablePackageOptions.map((option) => <option key={option.id} value={option.id}>[{voucherTypeLabel(option.packages?.voucher_type)}] {option.packages?.name || '패키지'} · {option.label} ({option.price.toLocaleString()}원)</option>)}</select></div>
                       </div>
                     </div>
                   );
@@ -2476,79 +2501,84 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
                 )}
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              </fieldset>
+              <fieldset className={showStudentDetail ? 'min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white px-4 pb-5 pt-1 shadow-xs sm:px-6' : 'min-w-0 space-y-4'}>
+                <legend id={editorFieldId + '-contact'} tabIndex={showStudentDetail ? -1 : undefined}
+                  className={showStudentDetail ? 'ml-0 scroll-mt-24 rounded-lg px-2 text-base font-bold text-slate-950 focus-visible:outline-2 focus-visible:outline-indigo-600' : 'sr-only'}>연락처·추가 정보</legend>
+                {showStudentDetail && <p className="text-sm leading-relaxed text-slate-600">보호자 연락처, 학교 정보와 비공개 메모를 관리합니다.</p>}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">어머니 연락처</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-7'} className="block text-xs font-bold text-slate-500 mb-1.5">어머니 연락처</label>
+                  <input id={editorFieldId + '-7'}
                     type="text" 
                     placeholder="01012345678"
                     value={motherPhone}
                     onChange={(e) => setMotherPhone(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">아버지 연락처</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-8'} className="block text-xs font-bold text-slate-500 mb-1.5">아버지 연락처</label>
+                  <input id={editorFieldId + '-8'}
                     type="text" 
                     placeholder="01012345678"
                     value={fatherPhone}
                     onChange={(e) => setFatherPhone(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">학생 본인 연락처</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-9'} className="block text-xs font-bold text-slate-500 mb-1.5">학생 본인 연락처</label>
+                  <input id={editorFieldId + '-9'}
                     type="text" 
                     placeholder="01012345678"
                     value={studentPhone}
                     onChange={(e) => setStudentPhone(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">생년월일 (선택)</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-10'} className="block text-xs font-bold text-slate-500 mb-1.5">생년월일 (선택)</label>
+                  <input id={editorFieldId + '-10'}
                     type="date" 
                     value={birthDate}
                     onChange={(e) => setBirthDate(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">학교명 (선택)</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-11'} className="block text-xs font-bold text-slate-500 mb-1.5">학교명 (선택)</label>
+                  <input id={editorFieldId + '-11'}
                     type="text" 
                     placeholder="예: 가온초"
                     value={schoolName}
                     onChange={(e) => setSchoolName(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">학년 (선택)</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-12'} className="block text-xs font-bold text-slate-500 mb-1.5">학년 (선택)</label>
+                  <input id={editorFieldId + '-12'}
                     type="text" 
                     placeholder="예: 초등 3학년"
                     value={gradeLevel}
                     onChange={(e) => setGradeLevel(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">입회 등록일 *</label>
-                  <input 
+                  <label htmlFor={editorFieldId + '-13'} className="block text-xs font-bold text-slate-500 mb-1.5">입회 등록일 *</label>
+                  <input id={editorFieldId + '-13'}
                     type="date" 
                     value={admissionDate}
                     onChange={(e) => setAdmissionDate(e.target.value)}
-                    className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                    className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                     required
                   />
                 </div>
@@ -2566,47 +2596,57 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">학생 거주지 주소</label>
-                <input 
+                <label htmlFor={editorFieldId + '-14'} className="block text-xs font-bold text-slate-500 mb-1.5">학생 거주지 주소</label>
+                <input id={editorFieldId + '-14'}
                   type="text" 
                   placeholder="예: 서울특별시 서초구 반포동 123"
                   value={address}
                   onChange={(e) => setAddress(e.target.value)}
-                  className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500"
+                  className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">비공개 학생 메모</label>
-                <textarea 
+                <label htmlFor={editorFieldId + '-15'} className="block text-xs font-bold text-slate-500 mb-1.5">비공개 학생 메모</label>
+                <textarea id={editorFieldId + '-15'}
                   placeholder="원장 작성용 비공개 학생 특이사항 메모"
                   value={memo}
                   onChange={(e) => setMemo(e.target.value)}
                   rows={2}
-                  className="w-full rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  className="min-h-12 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-600 sm:text-sm resize-y"
                 />
               </div>
 
-              <div className="flex gap-2.5 mt-6">
-                {editingId && modalStudent && (
+              </fieldset>
+              {showStudentDetail && modalStudent && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 sm:px-5">
+                  <p className="text-sm text-slate-600">탈퇴 처리 후에도 기존 청구와 일지 기록은 보존됩니다.</p>
                   <button
                     type="button"
-                    onClick={() => handleDepartStudent(modalStudent)}
+                    onClick={() => openArchive(modalStudent, true)}
                     disabled={saveLoading}
-                    className="flex w-1/3 items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 py-3.5 text-xs font-black text-rose-700 transition"
-                    title="해당 원생을 퇴원·탈퇴 회원으로 이동 처리"
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-800 disabled:opacity-50"
+                    title="기록을 보존하며 탈퇴 처리"
                   >
-                    <LogOut size={15} />
-                    퇴원(탈퇴) 처리
+                    <Archive size={15} aria-hidden="true" />
+                    탈퇴 처리
                   </button>
-                )}
+                </div>
+              )}
+              <div className={showStudentDetail
+                ? 'sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 rounded-t-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_-4px_16px_#0f172a0d] sm:px-5'
+                : 'mt-6 flex items-center justify-end border-t border-slate-200 pt-4'}>
+                {showStudentDetail && <p className="text-sm text-slate-600" role="status">
+                  {saveLoading ? '저장 중입니다.' : detailSnapshot.current !== null && detailSnapshot.current !== detailFingerprint
+                    ? '저장하지 않은 변경사항이 있습니다.' : '수정한 내용은 저장 버튼을 누른 뒤 반영됩니다.'}
+                </p>}
                 <button 
                   type="submit" 
                   disabled={saveLoading || pickupSettingsLoading}
-                  className={`flex ${editingId ? 'w-2/3' : 'w-full'} items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-black text-white hover:bg-blue-700 disabled:bg-blue-300 shadow-sm`}
+                  className={`inline-flex ${editingId ? '' : 'w-full'} min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-700 px-5 text-sm font-semibold text-white shadow-xs hover:bg-indigo-800 disabled:opacity-50`}
                 >
                   {saveLoading ? <Loader2 size={16} className="animate-spin" /> : null}
-                  {editingId ? (isModalAppLinked ? '변경사항 저장' : '학생 정보 수정 완료하기') : '학생 정보 등록하기'}
+                  {editingId ? '변경사항 저장' : '학생 정보 등록하기'}
                 </button>
               </div>
             </form>
@@ -2614,77 +2654,8 @@ export const AdminStudentTab: React.FC<AdminStudentTabProps> = ({ activeBranchId
         </div>
       )}
 
-      {/* 재원 목록 제외 이중 확인 */}
-      {deleteModalOpen && targetStudentForDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
-            {/* Header */}
-            <div className="bg-rose-50 px-6 py-4 border-b border-rose-100 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center font-bold">
-                  <AlertTriangle size={20} />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-base text-rose-950">재원 목록에서 제외</h3>
-                  <p className="text-xs text-rose-700 font-medium">실수 방지를 위한 이중 안전 확인</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setDeleteModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 transition"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Content */}
-            <div className="p-6 space-y-4">
-              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/70 text-sm space-y-1.5">
-                <div className="flex justify-between">
-                  <span className="text-slate-500 font-medium">대상 원생:</span>
-                  <span className="font-bold text-slate-900">{targetStudentForDelete.name}</span>
-                </div>
-                <div className="text-xs text-rose-600 pt-1.5 border-t border-slate-200/60 font-medium leading-relaxed">
-                  남은 이용권과 미사용 예약은 종료되며, 기존 청구와 일지 기록은 보존됩니다.
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-slate-700">
-                  재원 목록에서 제외하려면 아래에 <span className="text-rose-600 underline font-black">[{targetStudentForDelete.name}]</span> 을(를) 똑같이 입력해 주세요.
-                </label>
-                <input
-                  type="text"
-                  value={confirmInputName}
-                  onChange={(e) => setConfirmInputName(e.target.value)}
-                  placeholder={targetStudentForDelete.name}
-                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm font-bold focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none transition"
-                  autoFocus
-                />
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="bg-slate-50 px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteModalOpen(false)}
-                className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-xl transition"
-              >
-                취소
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                disabled={confirmInputName.trim() !== targetStudentForDelete.name.trim() || deleteLoading}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-xl transition shadow-sm"
-              >
-                {deleteLoading ? '처리 중...' : '재원 목록에서 제외'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {archiveTarget && <StudentArchiveDialog student={archiveTarget} busy={archiveLoading}
+        onClose={() => setArchiveTarget(null)} onConfirm={(reason) => void confirmArchive(reason)} />}
     </div>
   );
 };

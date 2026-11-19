@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import { fileURLToPath } from 'node:url'
 import { resolveEnvironment } from './config/environment.cjs'
+import { assertTesterBuildTarget } from './config/tester-target.mjs'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -15,6 +16,7 @@ export default defineConfig(({ mode }) => {
     supabaseUrl: env.VITE_SUPABASE_URL,
     supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY,
   }, mode)
+  assertTesterBuildTarget(environment, env.VITE_TESTER_ISOLATION_VERIFIED === 'true')
   return {
   define: { __IPASSCARE_ENVIRONMENT__: JSON.stringify(environment) },
   envDir: environmentDirectory,

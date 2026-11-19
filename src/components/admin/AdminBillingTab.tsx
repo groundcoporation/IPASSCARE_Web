@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useId, useMemo, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { AppError, formatError, normalizeError, logError } from '../../errors/appError';
 import { handleError } from '../../errors/handleError';
 import { allocateDiscountedBillAmounts, discountedBillAmount, normalizeDiscountPercent } from '../../utils/billingAmount';
 import { withBillingReminder } from '../../utils/billingReminder';
-import { CheckCircle2, AlertCircle, BellRing, FileText, Loader2, ArrowRight, Search, Trash2 } from 'lucide-react';
+import { CheckCircle2, BellRing, FileText, Loader2, ChevronDown, Search, Trash2, CalendarClock, ListChecks, SlidersHorizontal } from 'lucide-react';
 
 interface Bill {
   id: string;
@@ -81,10 +81,113 @@ interface AppPaymentRequest {
   request_type: string | null;
   issued_source: string | null;
   beneficiary_name: string | null;
+  billing_month: string | null;
   created_at: string;
   closed_at: string | null;
   reminder_count?: number;
   last_reminded_at?: string | null;
+}
+
+type BillingDeletion = { kind: 'web'; bill: Bill } | { kind: 'app'; request: AppPaymentRequest };
+
+const invoiceAmount = (value: number | null | undefined) => `${Number(value ?? 0).toLocaleString('ko-KR')}원`;
+const issuedDate = (value: string | null | undefined) => value
+  ? new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul' }).format(new Date(value))
+  : '—';
+const invoiceTitle = (bill: Bill) => bill.package_options
+  ? `${bill.package_options.packages?.name || '이용권'} · ${bill.package_options.label}`
+  : bill.memo || '수강 정보 연동 안 됨';
+const appInvoiceAmount = (request: AppPaymentRequest) => request.final_amount ?? request.total_amount ?? 0;
+const canDeleteWebInvoice = (bill: Bill) => Number(bill.amount_paid ?? 0) === 0 && ['unpaid', 'declined', 'expired'].includes(bill.status);
+const canDeleteDirectInvoice = (request: AppPaymentRequest) =>
+  request.issued_source === 'admin_app' && ['pending', 'declined', 'expired', 'cancelled'].includes(request.status);
+const invoiceActionStyle = 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-45';
+const billingListFrame = '@container/billing min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs';
+const billingCards = 'space-y-2 p-3 @min-[48rem]/billing:hidden';
+const billingTableRegion = 'hidden max-h-[min(65vh,42rem)] max-w-full overflow-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-indigo-600 @min-[48rem]/billing:block';
+const pinnedBillingHeader = 'sticky left-0 z-10 min-w-32 bg-slate-100 shadow-[1px_0_0_#e2e8f0]';
+const pinnedBillingRow = 'sticky left-0 z-10 max-w-48 border-b border-slate-100 bg-white px-3 py-3 text-left shadow-[1px_0_0_#e2e8f0] group-hover:bg-slate-50';
+
+function InvoiceStatus({ status, amountPaid = 0 }: { status: string; amountPaid?: number }) {
+  const tags: Record<string, [string, string]> = {
+    paid: ['완납', 'bg-emerald-50 text-emerald-800 ring-emerald-100'],
+    declined: ['거절', 'bg-rose-50 text-rose-800 ring-rose-100'],
+    expired: ['만료', 'bg-slate-100 text-slate-700 ring-slate-200'],
+    refunded: ['환불', 'bg-slate-100 text-slate-700 ring-slate-200'],
+    cancelled: ['취소', 'bg-slate-100 text-slate-700 ring-slate-200'],
+    canceled: ['취소', 'bg-slate-100 text-slate-700 ring-slate-200'],
+    pending: ['결제 대기', 'bg-amber-50 text-amber-900 ring-amber-100'],
+    unpaid: [amountPaid > 0 ? '일부 수납' : '미납', 'bg-amber-50 text-amber-900 ring-amber-100'],
+  };
+  const [label, style] = tags[status] ?? ['상태 확인', 'bg-slate-100 text-slate-700 ring-slate-200'];
+  return <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold ring-1 ring-inset ${style}`}>{label}</span>;
+}
+
+function InvoiceDetails({ children, label = '청구 상세' }: { children: React.ReactNode; label?: string }) {
+  return <details className="group border-t border-slate-100">
+    <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-4 text-xs font-bold text-indigo-700 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-indigo-600 [&::-webkit-details-marker]:hidden">
+      {label} <ChevronDown aria-hidden="true" size={15} className="group-open:rotate-180" />
+    </summary>
+    <div className="space-y-3 px-4 pb-4">{children}</div>
+  </details>;
+}
+
+function InvoiceDeleteDialog({ target, busy, onClose, onConfirm }: {
+  target: BillingDeletion;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+  }, []);
+
+  const details = target.kind === 'web' ? {
+    name: target.bill.academy_students?.student_name || '원생',
+    title: invoiceTitle(target.bill),
+    period: target.bill.bill_month,
+    periodLabel: '청구월',
+    amount: target.bill.amount_due,
+    source: target.bill.payment_request_id ? '웹 발행 · 앱 전송' : '웹 관리자 청구',
+    effect: target.bill.payment_request_id
+      ? '웹 청구서가 삭제되며, 앱에 전송된 결제 대기 청구는 만료 처리됩니다.'
+      : '이 미결제 청구서가 웹 청구내역에서 삭제됩니다.',
+  } : {
+    name: [target.request.beneficiary_name, target.request.parent_name].filter(Boolean).join(' · ') || '학부모',
+    title: target.request.request_title || '이용권 청구서',
+    period: target.request.billing_month ? target.request.billing_month.slice(0, 7) : issuedDate(target.request.created_at),
+    periodLabel: target.request.billing_month ? '청구월' : '발행일',
+    amount: appInvoiceAmount(target.request),
+    source: '앱 관리자 직접 발행',
+    effect: '웹 청구내역과 학부모 앱에서 이 직접 발행 청구가 삭제됩니다.',
+  };
+
+  return <dialog ref={dialogRef} aria-labelledby={titleId} aria-describedby={descriptionId}
+    onCancel={(event) => { if (busy) event.preventDefault(); }} onClose={onClose}
+    className="fixed inset-0 m-auto max-h-[85dvh] w-[calc(100%_-_2rem)] max-w-md overflow-y-auto overscroll-contain rounded-3xl border border-slate-200 bg-white p-0 text-left shadow-2xl backdrop:overflow-hidden backdrop:overscroll-contain backdrop:bg-slate-950/55">
+    <div className="border-b border-rose-100 bg-rose-50 px-5 py-5 sm:px-6">
+      <p className="text-xs font-bold text-rose-700">미결제 청구 관리</p>
+      <h2 id={titleId} className="mt-1 text-xl font-black text-slate-950">이 청구서를 삭제할까요?</h2>
+    </div>
+    <div className="space-y-4 p-5 sm:p-6">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 rounded-2xl bg-slate-50 px-4 py-3 text-sm">
+        {([['청구 대상', details.name], ['청구 항목', details.title], [details.periodLabel, details.period],
+          ['청구액', invoiceAmount(details.amount)], ['발행 경로', details.source]]).map(([label, value]) =>
+          <React.Fragment key={label}><dt className="text-slate-600">{label}</dt><dd className="break-words font-bold text-slate-900">{value}</dd></React.Fragment>)}
+      </dl>
+      <p id={descriptionId} className="text-sm leading-relaxed text-slate-700">{details.effect}</p>
+      <div className="flex flex-wrap justify-end gap-2">
+        <button type="button" autoFocus disabled={busy} onClick={() => dialogRef.current?.close()}
+          className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50">돌아가기</button>
+        <button type="button" disabled={busy} onClick={onConfirm}
+          className="min-h-10 rounded-xl bg-rose-700 px-4 text-sm font-bold text-white hover:bg-rose-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-700 disabled:opacity-50">{busy ? '삭제 중…' : '청구서 삭제'}</button>
+      </div>
+    </div>
+  </dialog>;
 }
 
 function ReminderDate({ count, sentAt }: { count?: number; sentAt?: string | null }) {
@@ -182,6 +285,12 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const billingBusyRef = useRef(false);
+  const [deletion, setDeletion] = useState<BillingDeletion | null>(null);
+  const [invoiceNotice, setInvoiceNotice] = useState('');
+  const invoiceHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (!deletion && invoiceNotice) invoiceHeading.current?.focus();
+  }, [deletion, invoiceNotice]);
   
   // Tab 1: Billing Targets data
   const [billingTargets, setBillingTargets] = useState<OwnedPackageTarget[]>([]);
@@ -360,8 +469,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     });
   }, [billingTargets, targetBillStatuses, selectedMonth]);
 
+  const visibleSelectedBillingCount = selectableBillingTargets.filter((target) => selectedBillingTargetIds.has(billingTargetKey(target))).length;
   const allBillingTargetsSelected = selectableBillingTargets.length > 0
-    && selectableBillingTargets.every((target) => selectedBillingTargetIds.has(billingTargetKey(target)));
+    && visibleSelectedBillingCount === selectableBillingTargets.length;
   const allAutoBillingStudentsSelected = visibleBillingTargetStudents.length > 0
     && visibleBillingTargetStudents.every((student) => autoBillingTargetStudentIds.has(student.studentId));
 
@@ -1253,7 +1363,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       const period = billingMonthPeriod(selectedMonth);
       let appRequestQuery = supabase
         .from('payment_requests')
-        .select('id, parent_id, parent_name, branch_id, final_amount, total_amount, status, request_title, request_type, issued_source, beneficiary_name, created_at, closed_at, reminder_count, last_reminded_at')
+        .select('id, parent_id, parent_name, branch_id, final_amount, total_amount, status, request_title, request_type, issued_source, beneficiary_name, billing_month, created_at, closed_at, reminder_count, last_reminded_at')
         .eq('issued_source', 'admin_app')
         .gte('created_at', `${period.start}T00:00:00+09:00`)
         .lte('created_at', `${period.end}T23:59:59+09:00`)
@@ -1589,15 +1699,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   };
 
   const handleDeleteBill = async (bill: Bill) => {
-    if (bill.amount_paid > 0 || !['unpaid', 'declined', 'expired'].includes(bill.status)) {
+    if (!canDeleteWebInvoice(bill)) {
       alert('결제 또는 수납이 시작된 청구서는 삭제할 수 없습니다.');
       return;
     }
-    const label = bill.package_options
-      ? `${bill.package_options.packages?.name || '이용권'} (${bill.package_options.label})`
-      : bill.memo || '청구 항목';
-    if (!confirm(`${bill.academy_students?.student_name || '원생'}의 ${bill.bill_month}월 ${label} 청구서를 삭제할까요?\n이미 앱으로 발송된 미결제 청구서는 만료 처리됩니다.`)) return;
-
     if (billingBusyRef.current) return;
     billingBusyRef.current = true;
     setActionLoading(true);
@@ -1612,8 +1717,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         next.delete(bill.id);
         return next;
       });
+      setDeletion(null);
+      setInvoiceNotice('미결제 청구서를 삭제했습니다.');
       await Promise.all([loadBills(), loadBillingTargets()]);
-      alert('미결제 청구서를 삭제했습니다.');
     } catch (error: unknown) {
       await handleError(error, 'BILL_DELETE_FAILED', { operation: 'billing.delete', transactionId: bill.id });
     } finally {
@@ -1623,14 +1729,10 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
   };
 
   const handleDeleteAppPaymentRequest = async (request: AppPaymentRequest) => {
-    if (request.issued_source !== 'admin_app' || !['pending', 'declined', 'expired', 'cancelled'].includes(request.status)) {
+    if (!canDeleteDirectInvoice(request)) {
       alert('삭제할 수 있는 미결제 앱 직접 청구가 아닙니다.');
       return;
     }
-    const title = request.request_title || '이용권 청구서';
-    const parentName = request.parent_name || '학부모';
-    if (!confirm(`${parentName}님에게 직접 발행한 '${title}' 어플 청구서를 삭제할까요?\n삭제 시 학부모 앱의 청구 내역에서도 삭제 처리됩니다.`)) return;
-
     if (billingBusyRef.current) return;
     billingBusyRef.current = true;
     setActionLoading(true);
@@ -1641,8 +1743,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
       });
       if (error) throw error;
       if (data?.success !== true || data.request_id !== request.id) throw new AppError('BILL_DELETE_FAILED');
+      setDeletion(null);
+      setInvoiceNotice('앱 직접 청구서를 삭제했습니다.');
       await loadBills();
-      alert('어플 직접 청구가 삭제되었습니다.');
     } catch (error: unknown) {
       await handleError(error, 'BILL_DELETE_FAILED', { operation: 'billing.app.delete', transactionId: request.id });
     } finally {
@@ -1871,6 +1974,177 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
     );
   }, [filteredBills]);
 
+  const openInvoiceDelete = (target: BillingDeletion) => {
+    if (billingBusyRef.current) return;
+    setInvoiceNotice('');
+    setDeletion(target);
+  };
+
+  const renderBillActions = (bill: Bill) => (
+    <div className="flex flex-wrap gap-1.5">
+      {bill.status === 'unpaid' && bill.amount_due > 0 && (
+        <button type="button" onClick={() => openPayModal(bill)} disabled={actionLoading}
+          className={`${invoiceActionStyle} bg-emerald-50 text-emerald-800 hover:bg-emerald-100`}><CheckCircle2 size={14} aria-hidden="true" /> 수기 수납</button>
+      )}
+      {bill.status === 'unpaid' && bill.amount_due === 0 && !bill.payment_request_id && (
+        <button type="button" onClick={() => void handleFreeBill(bill)} disabled={actionLoading}
+          className={`${invoiceActionStyle} bg-violet-50 text-violet-800 hover:bg-violet-100`}>무료 처리 · 이용권 지급</button>
+      )}
+      {bill.status === 'unpaid' && bill.payment_request_id && (
+        <button type="button" onClick={() => void handleSendPaymentReminders([bill.payment_request_id as string])} disabled={actionLoading}
+          className={`${invoiceActionStyle} bg-amber-50 text-amber-900 hover:bg-amber-100`}><BellRing size={14} aria-hidden="true" /> 납부 알림</button>
+      )}
+      {canDeleteWebInvoice(bill) && (
+        <button type="button" onClick={() => openInvoiceDelete({ kind: 'web', bill })} disabled={actionLoading}
+          className={`${invoiceActionStyle} bg-rose-50 text-rose-800 hover:bg-rose-100`}><Trash2 size={14} aria-hidden="true" /> 청구서 삭제</button>
+      )}
+    </div>
+  );
+
+  const renderDirectActions = (request: AppPaymentRequest) => (
+    <div className="flex flex-wrap gap-1.5">
+      {request.status === 'pending' && (
+        <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading}
+          className={`${invoiceActionStyle} bg-amber-50 text-amber-900 hover:bg-amber-100`}><BellRing size={14} aria-hidden="true" /> 납부 알림</button>
+      )}
+      {canDeleteDirectInvoice(request) && (
+        <button type="button" onClick={() => openInvoiceDelete({ kind: 'app', request })} disabled={actionLoading}
+          className={`${invoiceActionStyle} bg-rose-50 text-rose-800 hover:bg-rose-100`}><Trash2 size={14} aria-hidden="true" /> 청구서 삭제</button>
+      )}
+    </div>
+  );
+
+  const canSendBill = (bill: Bill) => bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id
+    && !bill.academy_students?.archived_at && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
+  const renderBillCheckbox = (bill: Bill, studentName: string) => canSendBill(bill) && (
+    <label className="inline-flex min-h-9 items-center gap-2 text-xs text-indigo-800">
+      <input type="checkbox" checked={selectedAppBillIds.has(bill.id)} onChange={() => toggleAppBill(bill.id)}
+        aria-label={`${studentName} ${invoiceTitle(bill)} 앱 발송 선택`}
+        className="h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300 accent-indigo-600" />
+      앱 발송 선택
+    </label>
+  );
+
+  const renderInvoiceDetails = (fields: [string, React.ReactNode][]) => (
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs leading-relaxed">
+      {fields.map(([label, value]) => <React.Fragment key={label}>
+        <dt className="font-medium text-slate-600">{label}</dt>
+        <dd className="min-w-0 break-words font-semibold text-slate-900">{value}</dd>
+      </React.Fragment>)}
+    </dl>
+  );
+
+  const invoicePaymentMethod: Record<string, string> = {
+    free: '무료 처리', app_card: '앱 카드결제', app_vbank: '앱 가상계좌', offline_card: '현장 카드',
+    cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체',
+  };
+  const invoiceClass = (bill: Bill) => {
+    const connected = bill.memo?.match(/연결 수업:\s*(.+)$/)?.[1]?.trim();
+    return bill.class_schedules?.target_class || (connected && connected !== '없음' ? connected : '수업 미지정');
+  };
+  const currentInvoiceCount = filteredBills.length + filteredAppPaymentRequests.length;
+  type InvoiceRow = {
+    id: string; name: string; identityNote?: string; title: string; source: string;
+    date: string; period: string; amount: number; paid?: number; status: string;
+    details: [string, React.ReactNode][]; actions: React.ReactNode; selection?: React.ReactNode;
+  };
+  const webInvoiceRows: InvoiceRow[] = filteredBillStudents.flatMap((student) => {
+    const amount = student.bills.reduce((sum, bill) => sum + bill.amount_due, 0);
+    return student.bills.map((bill, index): InvoiceRow => {
+      const validity = billingMonthPeriod(bill.bill_month);
+      const adjusted = Number(bill.original_amount ?? bill.amount_due) !== Number(bill.amount_due);
+      return {
+        id: bill.id, name: student.studentName,
+        identityNote: [bill.academy_students?.archived_at ? '퇴원' : '', index === 0 ? `${student.bills.length}건 합계 ${invoiceAmount(amount)}` : ''].filter(Boolean).join(' · '),
+        title: invoiceTitle(bill), source: bill.payment_request_id ? '웹 발행 · 앱 전송' : '웹 관리자 청구',
+        date: issuedDate(bill.app_sent_at || bill.billing_date), period: bill.bill_month,
+        amount: bill.amount_due, paid: bill.amount_paid, status: bill.status,
+        selection: renderBillCheckbox(bill, student.studentName), actions: renderBillActions(bill),
+        details: [
+          ['연결 수업', invoiceClass(bill)], ['청구월', bill.bill_month], ['이용 기간', `${validity.start} ~ ${validity.end}`],
+          ['실 수납액', invoiceAmount(bill.amount_paid)],
+          ['수납 수단', bill.payment_method ? invoicePaymentMethod[bill.payment_method] || bill.payment_method : '—'],
+          ['최종 수납일', issuedDate(bill.payment_date)],
+          ...(adjusted ? [
+            ['조정 전 금액', invoiceAmount(bill.original_amount)],
+            [Number(bill.discount_amount) < 0 ? '추가 금액' : '할인 금액', invoiceAmount(Math.abs(Number(bill.discount_amount || 0)))],
+            ['조정 사유', bill.adjustment_reason || '—'],
+          ] as [string, React.ReactNode][] : []),
+          ...(bill.reminder_count ? [['납부 알림', <ReminderDate count={bill.reminder_count} sentAt={bill.last_reminded_at} />]] as [string, React.ReactNode][] : []),
+        ],
+      };
+    });
+  });
+  const directInvoiceRows: InvoiceRow[] = filteredAppPaymentRequests.map((request) => ({
+    id: request.id, name: request.beneficiary_name || '가족 공용', identityNote: request.parent_name || '학부모',
+    title: request.request_title || '이용권 청구서', source: '앱 관리자 직접 발행',
+    date: issuedDate(request.created_at), period: request.billing_month?.slice(0, 7) || '',
+    amount: appInvoiceAmount(request), status: request.status, actions: renderDirectActions(request),
+    details: [
+      ...(request.billing_month ? [['청구월', request.billing_month.slice(0, 7)]] as [string, React.ReactNode][] : []),
+      ...(request.reminder_count ? [['납부 알림', <ReminderDate count={request.reminder_count} sentAt={request.last_reminded_at} />]] as [string, React.ReactNode][] : []),
+    ],
+  }));
+
+  const renderInvoiceCollection = (title: string, description: string, rows: InvoiceRow[], selectAll?: React.ReactNode) => (
+    <section aria-label={title} className={billingListFrame}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <div><h4 className="text-sm font-black text-slate-900">{title} <span className="ml-1 font-medium text-slate-600">{rows.length}건</span></h4><p className="mt-1 text-xs text-slate-600">{description}</p></div>
+        {selectAll}
+      </div>
+      {rows.length === 0 ? <p className="p-8 text-center text-sm text-slate-600">선택한 월과 조건에 맞는 청구서가 없습니다.</p> : <>
+        <div className={billingCards}>
+          {rows.map((row) => <article key={row.id} className="min-w-0 overflow-hidden rounded-xl border border-slate-200">
+            <div className="flex items-start justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <p className="break-words text-sm font-black text-slate-900">{row.name}</p>
+                <p className="mt-0.5 break-words text-xs text-slate-600">{row.title}</p>
+                {row.identityNote && <p className="mt-1 break-words text-xs text-slate-600">{row.identityNote}</p>}
+              </div>
+              <div className="shrink-0 space-y-1 text-right">
+                <InvoiceStatus status={row.status} amountPaid={row.paid} />
+                <p className="text-sm font-black tabular-nums text-slate-950">{invoiceAmount(row.amount)}</p>
+              </div>
+            </div>
+            <InvoiceDetails>
+              {renderInvoiceDetails([['발행 경로', row.source], ['발행일', row.date], ...row.details])}
+              {row.selection}
+              {row.actions}
+            </InvoiceDetails>
+          </article>)}
+        </div>
+        <div tabIndex={0} role="region" aria-label={`${title} 표`} className={billingTableRegion}>
+          <table className="w-full min-w-[56rem] border-separate border-spacing-0 text-left text-xs">
+            <caption className="sr-only">{title} 내역</caption>
+            <thead className="sticky top-0 z-20 bg-slate-100 text-slate-700"><tr>
+              {['원생 / 대상', '청구 항목', '청구액 / 실 수납액', '상태', '발행 정보', '관리'].map((label, index) => (
+                <th key={label} scope="col" className={`border-b border-slate-200 px-3 py-3 ${index === 0 ? pinnedBillingHeader : ''} ${index === 2 ? 'text-right' : ''}`}>{label}</th>
+              ))}
+            </tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.id} className="group hover:bg-slate-50 [&>td]:border-b [&>td]:border-slate-100 [&>td]:px-3 [&>td]:py-3">
+              <th scope="row" className={pinnedBillingRow}>
+                <p className="break-words text-sm font-black text-slate-900">{row.name}</p>
+                {row.identityNote && <p className="mt-1 text-[11px] font-medium text-slate-600">{row.identityNote}</p>}
+                {row.selection}
+              </th>
+              <td className="min-w-36"><p className="font-bold text-slate-800">{row.title}</p>{row.period && <p className="mt-1 text-slate-600">청구월 {row.period}</p>}</td>
+              <td className="whitespace-nowrap text-right tabular-nums">
+                <p className="text-sm font-black text-slate-950">{invoiceAmount(row.amount)}</p>
+                {row.paid != null && <p className="mt-1 text-[11px] text-slate-600">수납 {invoiceAmount(row.paid)}</p>}
+              </td>
+              <td><InvoiceStatus status={row.status} amountPaid={row.paid} /></td>
+              <td className="min-w-32 text-slate-600"><p className="font-semibold text-slate-800">{row.source}</p><p className="mt-1">{row.date}</p></td>
+              <td className="min-w-44">
+                {row.actions}
+                {row.details.length > 0 && <div className="mt-2"><InvoiceDetails>{renderInvoiceDetails(row.details)}</InvoiceDetails></div>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </>}
+    </section>
+  );
+
   // Calculate sums
   const stats = React.useMemo(() => {
     const webDue = bills.reduce((sum, bill) => sum + Number(bill.amount_due || 0), 0);
@@ -1930,7 +2204,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
         {/* Sub-menu Toggle Tabs */}
         <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl self-start sm:self-center">
-          <button 
+          <button
+            type="button"
+            aria-pressed={subTab === 'targets'}
             onClick={() => setSubTab('targets')}
             className={`px-4 py-2 text-xs font-bold rounded-lg transition ${
               subTab === 'targets' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-700'
@@ -1938,7 +2214,9 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
           >
             👥 청구대상 관리 (기본 배정)
           </button>
-          <button 
+          <button
+            type="button"
+            aria-pressed={subTab === 'invoices'}
             onClick={() => setSubTab('invoices')}
             className={`px-4 py-2 text-xs font-bold rounded-lg transition ${
               subTab === 'invoices' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-700'
@@ -1951,16 +2229,17 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
       {/* RENDER VIEW 1: BILLING TARGETS (👥 청구대상 관리) */}
       {subTab === 'targets' ? (
-        <div className="space-y-4">
-          <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-black text-slate-900">매월 1일 자동 청구</span>
+        <div className="space-y-5">
+          <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 sm:items-center sm:px-5">
+            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-600"><CalendarClock size={18} aria-hidden="true" /></span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-slate-900">매월 1일 자동 청구</span>
                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${autoBillingEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                   {autoBillingEnabled ? 'ON' : 'OFF'}
                 </span>
               </div>
-              <p className="mt-1 text-xs font-medium text-slate-500">
+              <p className="mt-1 text-xs leading-relaxed text-slate-600">
                 체크한 원생에게만 발송하며, 갱신 완료 또는 이미 청구된 대상은 자동으로 제외합니다.
                 <b className="ml-1 text-emerald-700">현재 대상 {autoBillingTargetStudentIds.size}명</b>
                 {autoBillingLastRun ? ` 최근 실행: ${new Date(autoBillingLastRun).toLocaleString('ko-KR')}` : ''}
@@ -1969,6 +2248,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             <button
               type="button"
               role="switch"
+              aria-label="매월 1일 자동 청구"
               aria-checked={autoBillingEnabled}
               onClick={() => void toggleAutoBilling()}
               disabled={!activeBranchId || activeBranchId === 'all' || autoBillingSaving}
@@ -1978,59 +2258,64 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               <span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow-sm transition-all ${autoBillingEnabled ? 'left-7' : 'left-1'}`} />
             </button>
           </div>
-          <div className="flex justify-between items-center bg-blue-50 border border-blue-100/60 p-4 rounded-2xl">
-            <div className="text-xs text-blue-800 font-medium">
-              💡 <b>청구대상 관리:</b> 학원에 재학 중인 원생들의 수업반 요금 배정 장부입니다. <br />
-              원생을 한 명 또는 여러 명 선택해 이번 달 또는 다음 달 고지서를 발행할 수 있습니다. 결제 완료 시 이용권은 청구 대상 월의 1일부터 말일까지 사용할 수 있습니다.
+          <div className="flex flex-col items-start justify-between gap-4 rounded-2xl border border-indigo-100 bg-indigo-50/65 px-4 py-4 sm:px-5 lg:flex-row lg:items-center">
+            <div className="min-w-0">
+              <h3 className="text-base font-bold text-slate-950">학원비 청구</h3>
+              <p className="mt-1 text-sm leading-relaxed text-slate-600">청구월과 이용권을 선택한 뒤 청구서를 생성하세요.</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-600">결제를 완료한 이용권은 청구월 1일부터 말일까지 사용할 수 있습니다.</p>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="inline-flex gap-0.5 rounded-xl border border-indigo-100 bg-white p-0.5">
               <button
                 type="button"
                 onClick={() => setSelectedMonth(billingMonthByOffset(0))}
-                className={`rounded-xl px-3 py-2 text-xs font-black transition ${selectedMonth === billingMonthByOffset(0) ? 'bg-blue-100 text-blue-700' : 'border border-slate-200 bg-white text-slate-600'}`}
+                aria-pressed={selectedMonth === billingMonthByOffset(0)}
+                className="min-h-8 rounded-lg px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 aria-pressed:bg-indigo-100 aria-pressed:text-indigo-800"
               >
                 이번 달
               </button>
               <button
                 type="button"
                 onClick={() => setSelectedMonth(billingMonthByOffset(1))}
-                className={`rounded-xl px-3 py-2 text-xs font-black transition ${selectedMonth === billingMonthByOffset(1) ? 'bg-indigo-100 text-indigo-700' : 'border border-slate-200 bg-white text-slate-600'}`}
+                aria-pressed={selectedMonth === billingMonthByOffset(1)}
+                className="min-h-8 rounded-lg px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 aria-pressed:bg-indigo-100 aria-pressed:text-indigo-800"
               >
                 다음 달
               </button>
+              </div>
               <input
                 type="month"
                 value={selectedMonth}
                 onChange={(event) => setSelectedMonth(event.target.value)}
                 aria-label="청구 대상 기준 월"
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700"
+                className="min-h-10 max-w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-800"
               />
               <button
                 type="button"
                 onClick={() => handleGenerateBills(selectedMonth)}
-                disabled={actionLoading || selectedBillingTargets.length === 0}
-                className="flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2 text-xs font-black shadow-sm shrink-0"
+                disabled={loading || actionLoading || !selectedMonth || selectedBillingTargets.length === 0}
+                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl bg-indigo-700 px-3.5 text-sm font-semibold text-white shadow-xs transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-600 disabled:shadow-none"
               >
-                {actionLoading ? <Loader2 size={12} className="animate-spin" /> : null}
+                {actionLoading ? <Loader2 size={15} aria-hidden="true" className="animate-spin" /> : <FileText size={15} aria-hidden="true" />}
                 {selectedMonth.slice(5)}월 학원비 청구
               </button>
             </div>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-xs">
-            <div className="flex flex-col gap-1 border-b border-violet-100 bg-violet-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div id="billing-amount-review" tabIndex={-1} className="scroll-mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+            <div className="flex flex-col gap-1 border-b border-slate-200 bg-white px-4 py-4 sm:px-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h3 className="text-sm font-black text-slate-900">🎁 청구 금액 조정</h3>
-                <p className="mt-1 text-[11px] font-medium text-slate-500">선택한 이용권별 청구 금액을 조정하고 미리 확인합니다.</p>
+                <h3 className="flex items-center gap-2 text-base font-bold text-slate-950"><SlidersHorizontal size={16} aria-hidden="true" className="text-indigo-700" /> 청구 금액 조정</h3>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">선택한 이용권의 할인과 최종 청구액을 확인하세요.</p>
               </div>
-              <span className="mt-2 self-start rounded-full bg-white px-3 py-1 text-[10px] font-black text-violet-700 sm:mt-0">
+              <span className="mt-2 self-start rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 sm:mt-0">
                 선택 {selectedBillingStudentCount}명 · 이용권 {billingAmountPreview.targetCount}건
               </span>
             </div>
 
-            <div className="grid gap-5 p-5 lg:grid-cols-[1fr_320px]">
+            <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_minmax(15rem,19rem)]">
               <div>
-                <p className="mb-2 text-[11px] font-black text-slate-500">할인 방식</p>
+                <p className="mb-2 text-sm font-semibold text-slate-700">할인 방식</p>
                 <div className="flex flex-wrap gap-2">
                   {[
                     ['none', '기본 0%'],
@@ -2043,7 +2328,8 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       key={value}
                       type="button"
                       onClick={() => setPreviewDiscountMode(value as typeof previewDiscountMode)}
-                      className={`rounded-full px-3.5 py-2 text-xs font-black transition ${previewDiscountMode === value ? 'bg-violet-600 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:border-violet-300 hover:text-violet-700'}`}
+                      aria-pressed={previewDiscountMode === value}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 aria-pressed:border-indigo-200 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-800"
                     >
                       {label}
                     </button>
@@ -2052,7 +2338,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
                 {previewDiscountMode === 'custom_percent' && (
                   <div className="mt-4 flex max-w-xs items-center gap-2">
-                    <input type="number" min="0" max="100" value={previewDiscountPercent} onChange={(event) => setPreviewDiscountPercent(event.target.value)} placeholder="예: 15" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100" />
+                    <input type="number" min="0" max="100" value={previewDiscountPercent} onChange={(event) => setPreviewDiscountPercent(event.target.value)} placeholder="예: 15" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" />
                     <span className="text-sm font-black text-slate-500">%</span>
                   </div>
                 )}
@@ -2064,7 +2350,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                       const targetKey = billingTargetKey(target);
                       const value = previewFinalAmounts[targetKey] ?? String(target.price || 0);
                       return (
-                        <label key={targetKey} className="flex items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/40 px-3 py-2">
+                        <label key={targetKey} className="flex items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-2">
                           <span className="min-w-0 flex-1 truncate text-[11px] font-black text-slate-700">
                             {target.studentName} · {target.packageName} ({target.optionLabel})
                           </span>
@@ -2077,7 +2363,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                               [targetKey]: event.target.value.replace(/[^0-9]/g, ''),
                             }))}
                             aria-label={`${target.studentName} ${target.packageName} 최종 청구 금액`}
-                            className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right text-sm font-black text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                            className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right text-sm font-black text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
                           />
                           <span className="text-xs font-black text-slate-500">원</span>
                         </label>
@@ -2093,22 +2379,21 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
                     onChange={(event) => setPreviewAdjustmentReason(event.target.value)}
                     maxLength={100}
                     placeholder="할인 사유 (예: 형제 할인, 장기 등록 할인)"
-                    className="mt-4 w-full max-w-lg rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                    className="mt-4 w-full max-w-lg rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
                   />
                 )}
 
-                <p className="mt-4 text-[10px] font-bold text-emerald-600">할인율은 선택한 이용권의 총 청구액에서 계산한 뒤, 이용권별 청구서에 합계가 맞도록 배분해 저장됩니다.</p>
+                <p className="mt-4 text-xs leading-relaxed text-slate-600">할인율은 소수 둘째 자리까지 적용하며, 원 단위 차이는 이용권별로 조정해 최종 청구액과 맞춥니다.</p>
               </div>
 
-              <div className="rounded-2xl bg-slate-950 p-4 text-white">
-                <p className="mb-2 text-[11px] text-slate-300">할인율은 총 청구액 기준으로 소수 둘째 자리까지 적용합니다. 배분 과정의 원 단위 차이는 이용권별 청구액에 반영되며, 합계는 최종 청구액과 일치합니다.</p>
-                <div className="flex items-center justify-between text-xs"><span className="font-bold text-slate-400">기본 청구액</span><span className="font-black">{billingAmountPreview.originalAmount.toLocaleString()}원</span></div>
+              <div className="self-start rounded-xl border border-indigo-100 bg-indigo-50/70 p-4 text-slate-950">
+                <div className="flex items-center justify-between text-xs"><span className="font-bold text-slate-600">기본 청구액</span><span className="font-black">{billingAmountPreview.originalAmount.toLocaleString()}원</span></div>
                 <div className="mt-3 flex items-center justify-between text-xs">
-                  <span className={`font-bold ${billingAmountPreview.discountAmount < 0 ? 'text-sky-300' : 'text-rose-300'}`}>{billingAmountPreview.discountAmount < 0 ? '추가 금액' : '할인 금액'}</span>
-                  <span className={`font-black ${billingAmountPreview.discountAmount < 0 ? 'text-sky-300' : 'text-rose-300'}`}>{billingAmountPreview.discountAmount < 0 ? '+' : '-'}{Math.abs(billingAmountPreview.discountAmount).toLocaleString()}원</span>
+                  <span className={`font-bold ${billingAmountPreview.discountAmount < 0 ? 'text-sky-800' : 'text-rose-700'}`}>{billingAmountPreview.discountAmount < 0 ? '추가 금액' : '할인 금액'}</span>
+                  <span className={`font-bold tabular-nums ${billingAmountPreview.discountAmount < 0 ? 'text-sky-800' : billingAmountPreview.discountAmount > 0 ? 'text-rose-700' : 'text-slate-700'}`}>{billingAmountPreview.discountAmount < 0 ? '+' : billingAmountPreview.discountAmount > 0 ? '−' : ''}{Math.abs(billingAmountPreview.discountAmount).toLocaleString()}원</span>
                 </div>
-                <div className="my-4 border-t border-slate-700" />
-                <div className="flex items-end justify-between gap-3"><span className="text-xs font-black text-violet-300">최종 청구액</span><strong className="text-2xl font-black tracking-tight">{billingAmountPreview.finalAmount.toLocaleString()}원</strong></div>
+                <div className="my-3 border-t border-indigo-200" />
+                <div className="flex items-end justify-between gap-3"><span className="text-xs font-semibold text-indigo-800">최종 청구액</span><strong className="text-2xl font-bold tracking-tight tabular-nums">{billingAmountPreview.finalAmount.toLocaleString()}원</strong></div>
               </div>
             </div>
           </div>
@@ -2120,277 +2405,185 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
               value={billingSearch}
               onChange={(event) => setBillingSearch(event.target.value)}
               placeholder="원생명, 수업반, 이용권 검색"
+              aria-label="청구 대상 검색"
               className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             {[
-              { filter: 'all' as const, label: '전체 재원생', count: billingSummary.total, style: 'border-slate-200 bg-white text-slate-700', selected: 'ring-slate-400' },
-              { filter: 'none' as const, label: '청구 대상 없음', count: billingSummary.noTarget, style: 'border-amber-200 bg-amber-50 text-amber-700', selected: 'ring-amber-400' },
-              { filter: 'pending' as const, label: '청구 예정', count: billingSummary.pending, style: 'border-blue-200 bg-blue-50 text-blue-700', selected: 'ring-blue-400' },
-              { filter: 'renewed' as const, label: '갱신 완료', count: billingSummary.renewed, style: 'border-emerald-200 bg-emerald-50 text-emerald-700', selected: 'ring-emerald-400' },
-              { filter: 'billed' as const, label: '청구 처리됨', count: billingSummary.billed, style: 'border-violet-200 bg-violet-50 text-violet-700', selected: 'ring-violet-400' },
-            ].map(({ filter, label, count, style, selected }) => (
+              { filter: 'all' as const, label: '전체 재원생', count: billingSummary.total, dot: 'bg-slate-500' },
+              { filter: 'none' as const, label: '청구 대상 없음', count: billingSummary.noTarget, dot: 'bg-amber-600' },
+              { filter: 'pending' as const, label: '청구 예정', count: billingSummary.pending, dot: 'bg-blue-600' },
+              { filter: 'renewed' as const, label: '갱신 완료', count: billingSummary.renewed, dot: 'bg-emerald-600' },
+              { filter: 'billed' as const, label: '청구 처리됨', count: billingSummary.billed, dot: 'bg-indigo-600' },
+            ].map(({ filter, label, count, dot }) => (
               <button
                 key={filter}
                 type="button"
                 onClick={() => setBillingSummaryFilter(filter)}
                 aria-pressed={billingSummaryFilter === filter}
-                className={`rounded-xl border px-3 py-2 text-left transition hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${style} ${billingSummaryFilter === filter ? `ring-2 ${selected} shadow-sm` : ''}`}
+                className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left text-slate-800 transition hover:border-slate-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 aria-pressed:border-indigo-300 aria-pressed:bg-indigo-50/65"
               >
-                <div className="text-[10px] font-bold">{label}</div>
-                <div className="mt-0.5 text-lg font-black">{count}명</div>
+                <div className="flex items-center gap-2 text-xs font-semibold"><span aria-hidden="true" className={'size-1.5 shrink-0 rounded-full ' + dot} />{label}</div>
+                <div className="mt-1 text-xl font-bold tabular-nums">{count}명</div>
               </button>
             ))}
           </div>
 
           {/* Always render table structure so column headers show even when empty */}
-          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs text-slate-600">
-                <thead className="bg-slate-100/80 text-[11px] font-black uppercase text-slate-700 border-b border-slate-200">
-                  <tr className="whitespace-nowrap">
-                    <th scope="col" className="w-12 px-4 py-3.5 text-center">
-                      <div className="flex flex-col items-center gap-1">
-                        <span>이번 청구</span>
-                        <input
-                          type="checkbox"
-                          checked={allBillingTargetsSelected}
-                          onChange={toggleAllBillingTargets}
-                          disabled={selectableBillingTargets.length === 0}
-                          aria-label="청구 이용권 전체 선택"
-                          className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600"
-                        />
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
+              <div>
+                <h3 className="flex items-center gap-2 text-base font-bold text-slate-950"><ListChecks size={17} aria-hidden="true" className="text-indigo-700" /> 청구 대상 <span className="ml-1 text-sm font-medium text-slate-600">{visibleBillingTargetStudents.length}명</span></h3>
+                <p className="mt-1 text-sm text-slate-700" role="status">
+                  선택 <strong>{selectedBillingStudentCount}명 · 이용권 {selectedBillingTargets.length}건</strong>
+                  {selectedBillingTargets.length > visibleSelectedBillingCount && <span className="ml-1 font-semibold text-amber-800">(현재 조회 밖 {selectedBillingTargets.length - visibleSelectedBillingCount}건 포함)</span>}
+                </p>
+              </div>
+              {selectedBillingTargets.length > 0 && <div className="flex flex-wrap items-center gap-2">
+                <button type="button" disabled={actionLoading} onClick={() => setSelectedBillingTargetIds(new Set())}
+                  className={invoiceActionStyle + ' text-slate-700 hover:bg-slate-100'}>선택 해제</button>
+                <a href="#billing-amount-review" className={invoiceActionStyle + ' bg-indigo-50 text-indigo-800 hover:bg-indigo-100'}>선택 {selectedBillingTargets.length}건 금액 확인</a>
+              </div>}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+                <label className="inline-flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-bold text-indigo-900 hover:bg-indigo-100 has-disabled:cursor-not-allowed has-disabled:border-slate-200 has-disabled:bg-slate-100 has-disabled:text-slate-600">
+                  <input type="checkbox" checked={allBillingTargetsSelected} onChange={toggleAllBillingTargets}
+                    disabled={loading || actionLoading || selectableBillingTargets.length === 0}
+                    ref={(input) => { if (input) input.indeterminate = visibleSelectedBillingCount > 0 && !allBillingTargetsSelected; }}
+                    aria-label="이번 청구 전체 선택"
+                    className="size-5 shrink-0 accent-indigo-700 disabled:opacity-50" />
+                  <span>이번 청구 전체 선택</span>
+                  <span className="text-xs font-semibold tabular-nums">{visibleSelectedBillingCount}/{selectableBillingTargets.length}건</span>
+                </label>
+                <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 has-disabled:cursor-not-allowed has-disabled:bg-slate-100 has-disabled:text-slate-600">
+                  <input type="checkbox" checked={allAutoBillingStudentsSelected} onChange={toggleAllAutoBillingStudents}
+                    disabled={visibleBillingTargetStudents.length === 0 || autoBillingTargetSaving || !activeBranchId || activeBranchId === 'all'}
+                    className="size-5 shrink-0 accent-emerald-700 disabled:opacity-50" />
+                  <span>자동 청구 전체 선택</span>
+                </label>
+                {(!activeBranchId || activeBranchId === 'all') && <p className="text-xs text-slate-600">자동 청구는 지점을 선택한 뒤 설정할 수 있습니다.</p>}
+            </div>
+            <div role="region" aria-label="청구 대상 목록" tabIndex={0} className="@container/targets max-h-[min(65vh,42rem)] min-w-0 overflow-y-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-indigo-600">
+              <table role="table" aria-label="원생별 청구 이용권" className="block w-full border-separate border-spacing-0 text-left text-xs @min-[42rem]/targets:table @min-[42rem]/targets:table-fixed">
+                <thead role="rowgroup" className="sticky top-0 z-10 hidden bg-slate-100 text-xs font-semibold text-slate-800 @min-[42rem]/targets:table-header-group">
+                  <tr role="row">
+                    <th scope="col" className="w-[28%] border-b border-slate-200 px-4 py-2.5">원생 · 자동 청구</th>
+                    <th scope="col" className="border-b border-slate-200 px-4 py-2.5">
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,8rem)_6rem] gap-3">
+                        <span>이번 청구 · 이용권 / 수업</span><span>청구 상태</span><span className="text-right">교습비</span>
                       </div>
                     </th>
-                    <th scope="col" className="w-20 px-3 py-3.5 text-center">
-                      <div className="flex flex-col items-center gap-1">
-                        <span>자동 청구</span>
-                        <input
-                          type="checkbox"
-                          checked={allAutoBillingStudentsSelected}
-                          onChange={toggleAllAutoBillingStudents}
-                          disabled={visibleBillingTargetStudents.length === 0 || autoBillingTargetSaving || activeBranchId === 'all'}
-                          aria-label="자동 청구 대상 전체 선택"
-                          className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
-                        />
-                      </div>
-                    </th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[140px]">연결 수업</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[150px]">이용권 요금제</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[150px] text-center">선택 월 청구 상태</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[100px] text-center">기간 방식</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[100px] text-center">수납 일자</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[90px] text-center">사전 발송</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[120px] text-right">교습비</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[140px] text-center">내역 생성</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[90px] text-center">자동 발송</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[100px] text-center">연결 수업 수</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 border-t border-slate-100">
-                  {loading ? (
-                    <tr>
-                      <td colSpan={12} className="text-center py-16">
-                        <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
-                        <span className="text-xs font-bold text-slate-400 block mt-2">청구 대상 목록 조회 중...</span>
-                      </td>
-                    </tr>
-                  ) : visibleBillingTargetStudents.length > 0 ? (
-                    visibleBillingTargetStudents.map((student) => {
-                      const billingPlanLocked = isStudentBillingPlanLocked(student);
-                      const studentState = getStudentBillingState(student);
-                      const additionalChargeRequired = billingPlanLocked
-                        || !['none', 'pending'].includes(studentState);
-                      const additionalChargeMonthAllowed = [billingMonthByOffset(0), billingMonthByOffset(1)]
-                        .includes(selectedMonth);
-                      const studentStateMeta = {
-                        none: { label: '청구 대상 없음', row: 'bg-amber-50/50', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
-                        mismatch: { label: '이용권 불일치', row: 'bg-rose-50/80', badge: 'border-rose-200 bg-rose-100 text-rose-700' },
-                        renewed: { label: '갱신 완료', row: 'bg-violet-50/80', badge: 'border-violet-200 bg-violet-100 text-violet-700' },
-                        completed: { label: '처리 완료', row: 'bg-emerald-50/70', badge: 'border-emerald-200 bg-emerald-100 text-emerald-700' },
-                        paid: { label: '완납', row: 'bg-emerald-50/80', badge: 'border-emerald-200 bg-emerald-100 text-emerald-700' },
-                        partial: { label: '일부 수납', row: 'bg-amber-50/80', badge: 'border-amber-200 bg-amber-100 text-amber-700' },
-                        sent: { label: '앱 발송됨', row: 'bg-sky-50/80', badge: 'border-sky-200 bg-sky-100 text-sky-700' },
-                        issued: { label: '청구서 생성됨', row: 'bg-blue-50/80', badge: 'border-blue-200 bg-blue-100 text-blue-700' },
-                        pending: { label: '청구 예정', row: 'bg-slate-50/80', badge: 'border-slate-200 bg-white text-slate-600' },
-                      }[studentState];
-                      return (
-                      <React.Fragment key={student.studentId}>
-                        <tr className={`border-t border-slate-200 ${studentStateMeta.row}`}>
-                          <td className="px-4 py-2.5 text-center text-[10px] font-bold text-slate-400">이용권별</td>
-                          <td className="px-3 py-2.5 text-center">
-                            <input
-                              type="checkbox"
-                              checked={autoBillingTargetStudentIds.has(student.studentId)}
+                <tbody role="rowgroup" className="block @min-[42rem]/targets:table-row-group">
+                  {loading ? <tr role="row" className="block @min-[42rem]/targets:table-row">
+                    <td role="cell" colSpan={2} className="block p-8 text-center @min-[42rem]/targets:table-cell">
+                      <p role="status">청구 대상 목록 조회 중...</p>
+                    </td>
+                  </tr> : visibleBillingTargetStudents.length === 0 ? <tr role="row" className="block @min-[42rem]/targets:table-row">
+                    <td role="cell" colSpan={2} className="block p-8 text-center text-slate-600 @min-[42rem]/targets:table-cell">
+                      {billingSearch || billingSummaryFilter !== 'all' ? '선택한 검색·상태 조건에 맞는 원생이 없습니다.' : '배정된 청구 대상이 없습니다. 학생 관리에서 이용권을 배정해 주세요.'}
+                    </td>
+                  </tr> : visibleBillingTargetStudents.map((student) => {
+                    const studentState = getStudentBillingState(student);
+                    const additionalChargeRequired = isStudentBillingPlanLocked(student) || !['none', 'pending'].includes(studentState);
+                    const additionalChargeMonthAllowed = [billingMonthByOffset(0), billingMonthByOffset(1)].includes(selectedMonth);
+                    return <tr role="row" key={student.studentId} className="block border-b border-slate-300 @min-[42rem]/targets:table-row">
+                      <th scope="row" role="rowheader" className="block min-w-0 bg-slate-50 px-4 py-3 align-top @min-[42rem]/targets:table-cell @min-[42rem]/targets:border-r @min-[42rem]/targets:border-b @min-[42rem]/targets:border-slate-300">
+                        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                          <span className="text-base font-bold text-slate-950 [overflow-wrap:anywhere]">{student.studentName}</span>
+                          <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                            <input type="checkbox" checked={autoBillingTargetStudentIds.has(student.studentId)}
                               onChange={() => toggleAutoBillingStudent(student.studentId)}
-                              disabled={autoBillingTargetSaving || activeBranchId === 'all'}
-                              aria-label={`${student.studentName} 자동 청구 대상 선택`}
-                              className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
-                            />
-                          </td>
-                          <td colSpan={10} className="px-4 py-2.5">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                 <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
-                                 <span className={`ml-2 rounded-full border px-2 py-0.5 text-[10px] font-black ${studentStateMeta.badge}`}>
-                                   {studentStateMeta.label}
-                                 </span>
-                                 <span className="ml-2 text-[11px] font-bold text-blue-600 bg-blue-100/60 px-2 py-0.5 rounded-full">
-                                  이용권 {student.packages.length}개
-                                </span>
-                              </div>
-                              <div className="flex flex-wrap items-center justify-end gap-2">
-                                {additionalChargeRequired && (
-                                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700">
-                                    기존 청구 잠김 · 추가 청구만 가능
-                                  </span>
-                                )}
-                                <select
-                                  value={packageOptionToAddByStudent[student.studentId] || ''}
-                                  onChange={(event) => setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: event.target.value }))}
-                                  disabled={actionLoading || activeBranchId === 'all' || (additionalChargeRequired && !additionalChargeMonthAllowed)}
-                                  aria-label={`${student.studentName} ${additionalChargeRequired ? '추가 청구' : '청구'} 이용권 선택`}
-                                  title={additionalChargeRequired && !additionalChargeMonthAllowed ? '추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.' : undefined}
-                                  className={`max-w-[230px] rounded-lg border bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 ${additionalChargeRequired ? 'border-amber-300' : 'border-slate-200'}`}
-                                >
-                                  <option value="">{additionalChargeRequired ? '추가 청구 이용권 선택…' : '청구 이용권 추가…'}</option>
-                                  {billingPackageOptions
-                                    .filter((option) => !student.packages.some((item) =>
-                                      item.optionId === option.id
-                                      || billingCommercialIdentity(item) === billingCommercialIdentity(option)
-                                    ))
-                                    .map((option) => <option key={option.id} value={option.id}>[{option.packageName}] {option.label} ({option.price.toLocaleString()}원)</option>)}
-                                </select>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleAddBillingPackage(student, additionalChargeRequired)}
-                                  disabled={actionLoading || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (additionalChargeRequired && !additionalChargeMonthAllowed)}
-                                  title={additionalChargeRequired && !additionalChargeMonthAllowed ? '추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.' : undefined}
-                                  className={`rounded-lg px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${additionalChargeRequired ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
-                                >
-                                  {additionalChargeRequired ? '+ 추가 청구' : '+ 추가'}
-                                </button>
-                                <span className="text-xs font-black text-slate-800">
-                                  예상 교습비 <b className="text-blue-600">{student.packages.reduce((sum, item) => sum + (item.hasTargetMonthPackage ? 0 : item.price), 0).toLocaleString()}</b>원
-                                </span>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                        {student.packages.length === 0 && (
-                          <tr className="border-l-4 border-l-amber-300 bg-amber-50/30">
-                            <td className="px-4 py-3" aria-hidden="true" />
-                            <td className="px-3 py-3" aria-hidden="true" />
-                            <td colSpan={10} className="px-4 py-3 text-xs font-bold text-amber-700">
-                              이번 달에 저장된 청구 예정 이용권·발행된 이용권·청구서가 없습니다. 학생관리에서 이번 달 청구 이용권을 등록하면 여기에 표시됩니다.
-                            </td>
-                          </tr>
-                        )}
-                        {student.packages.map((ownedPackage) => {
-                          const packageName = ownedPackage.packageName;
-                          const packageLabel = ownedPackage.optionLabel;
-                          const normalizedVoucherType = (ownedPackage.voucherType || '').toLowerCase();
-                          const normalizedPackageName = packageName.toLowerCase();
-                          const voucherTypeLabel = normalizedVoucherType.includes('shuttle') || normalizedVoucherType.includes('bus') || normalizedVoucherType.includes('vehicle') || /버스|차량|셔틀/.test(normalizedPackageName)
-                            ? '버스 이용권'
-                            : normalizedVoucherType.includes('single') || normalizedVoucherType.includes('one') || /단품|1회/.test(normalizedPackageName)
-                              ? '단품 이용권'
-                              : '수업 이용권';
-                          const price = ownedPackage.price > 0 ? `${ownedPackage.price.toLocaleString()}원` : '단가 미지정';
-                          const dayNum = (ownedPackage.paymentDay || '1일').replace(/[^0-9]/g, '') || '01';
-                          const formattedDay = dayNum.padStart(2, '0');
-                          const statusForMonth = (month: string) => targetBillStatuses[
-                            `${ownedPackage.studentId}:${ownedPackage.optionId || 'none'}:${month}`
-                          ];
-                          const selectedBillStatus = statusForMonth(selectedMonth);
-                          const rowState = ownedPackage.entitlementMismatch
-                            ? 'mismatch'
-                            : ownedPackage.hasTargetMonthPackage
-                            ? 'renewed'
-                            : selectedBillStatus?.status === 'paid'
-                              ? 'paid'
-                              : selectedBillStatus?.status === 'partial'
-                                ? 'partial'
-                                : selectedBillStatus?.status === 'cancelled' || selectedBillStatus?.status === 'canceled'
-                                  ? 'cancelled'
-                                  : selectedBillStatus?.paymentRequestId
-                                    ? 'sent'
-                                    : selectedBillStatus
-                                      ? 'issued'
-                                      : 'pending';
-                          const rowStyle = {
-                            mismatch: 'border-l-4 border-l-rose-500 bg-rose-50/50 hover:bg-rose-50/80',
-                            renewed: 'border-l-4 border-l-violet-500 bg-violet-50/40 hover:bg-violet-50/80',
-                            paid: 'border-l-4 border-l-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/80',
-                            partial: 'border-l-4 border-l-amber-500 bg-amber-50/40 hover:bg-amber-50/80',
-                            cancelled: 'border-l-4 border-l-rose-400 bg-rose-50/30 hover:bg-rose-50/70',
-                            sent: 'border-l-4 border-l-sky-500 bg-sky-50/40 hover:bg-sky-50/80',
-                            issued: 'border-l-4 border-l-blue-500 bg-blue-50/30 hover:bg-blue-50/70',
-                            pending: 'border-l-4 border-l-slate-200 bg-white hover:bg-slate-50',
-                          }[rowState];
-                          const renderBillStatus = (monthLabel: string, month: string) => {
-                            if (ownedPackage.entitlementMismatch && month === selectedMonth) {
-                              return <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-black text-rose-700">계획·이용권 불일치</span>;
-                            }
-                            if (ownedPackage.hasTargetMonthPackage && month === selectedMonth) {
-                              return <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">{monthLabel} 이용권 보유</span>;
-                            }
-                            const billStatus = statusForMonth(month);
-                            if (!billStatus) {
-                              return <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-400">{monthLabel} 미청구</span>;
-                            }
-                            const paid = billStatus.status === 'paid';
-                            const partial = billStatus.status === 'partial';
-                            const cancelled = billStatus.status === 'cancelled' || billStatus.status === 'canceled';
-                            const label = paid
-                              ? `${monthLabel} 완납`
-                              : partial
-                                ? `${monthLabel} 일부수납`
-                                : cancelled
-                                  ? `${monthLabel} 취소`
-                                  : `${monthLabel} 청구됨${billStatus.paymentRequestId ? ' · 앱발송' : ''}`;
-                            return <span className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${paid ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : partial ? 'border-amber-200 bg-amber-50 text-amber-700' : cancelled ? 'border-rose-200 bg-rose-50 text-rose-600' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>{label}</span>;
-                          };
-                          return (
-                            <tr key={ownedPackage.userPackageId} className={`font-bold text-slate-700 transition whitespace-nowrap ${rowStyle}`}>
-                              <td className="px-4 py-3 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedBillingTargetIds.has(billingTargetKey(ownedPackage))}
-                                  onChange={() => toggleBillingTarget(ownedPackage)}
-                                  disabled={!isSelectableBillingTarget(ownedPackage)}
-                                  aria-label={`${student.studentName} ${packageName} 청구 이용권 선택`}
-                                  className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-                                />
-                              </td>
-                              <td className="px-3 py-3" aria-hidden="true" />
-                              <td className="px-4 py-3"><div className="flex max-w-xs flex-wrap gap-1">{ownedPackage.isShared ? <span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-black text-amber-700">가족 공용</span> : ownedPackage.classNames.length > 0 ? ownedPackage.classNames.map((className) => <span key={className} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600 font-bold">{className}</span>) : <span className="text-[10px] text-slate-400">연결 수업 없음</span>}</div></td>
-                              <td className="px-4 py-3"><div className="flex items-center gap-1.5"><span className="text-xs font-black text-slate-900">{packageName}</span><span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{voucherTypeLabel}</span></div><div className="text-[10px] text-slate-400 font-medium">{packageLabel}</div></td>
-                              <td className="px-4 py-3 text-center">
-                                {renderBillStatus(`${Number(selectedMonth.slice(5))}월`, selectedMonth)}
-                              </td>
-                              <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{ownedPackage.billingCycle}</td>
-                              <td className="px-4 py-3 text-xs text-slate-500 text-center font-medium">{ownedPackage.paymentDay}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-400 text-center">없음</td>
-                              <td className="px-4 py-3 font-black text-blue-600 text-right">₩ {price}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-700 text-center">{ownedPackage.entitlementMismatch ? <div className="flex flex-col items-center gap-1"><span className="inline-flex rounded bg-rose-100 px-2 py-0.5 font-black text-rose-700">이용권 불일치</span><span className="text-[10px] font-bold text-rose-600">실제: {ownedPackage.actualOptionLabel || '옵션 확인 필요'}</span><span className="text-[9px] font-bold text-slate-500">학생관리에서 정정</span></div> : ownedPackage.hasTargetMonthPackage ? <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 font-black text-emerald-700">갱신 완료</span> : rowState === 'paid' ? <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 font-black text-emerald-700">결제 완료</span> : rowState === 'partial' ? <span className="inline-flex rounded bg-amber-50 px-2 py-0.5 font-black text-amber-700">일부 수납</span> : rowState === 'sent' ? <span className="inline-flex rounded bg-sky-50 px-2 py-0.5 font-black text-sky-700">앱 발송됨</span> : rowState === 'issued' ? <span className="inline-flex rounded bg-blue-50 px-2 py-0.5 font-black text-blue-700">청구서 생성됨</span> : <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded font-bold">{selectedMonth}-{formattedDay} 청구예정 <ArrowRight size={10} className="text-slate-400" /></span>}</td>
-                              <td className="px-4 py-3 text-center">{ownedPackage.hasTargetMonthPackage || rowState !== 'pending' ? <span className="text-slate-300">-</span> : <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${student.isSmsEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400'}`}>{student.isSmsEnabled ? '발송' : '미발송'}</span>}</td>
-                              <td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1.5">{ownedPackage.isShared ? <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700">공용 차량</span> : <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700 font-black">{ownedPackage.classNames.length}개 수업</span>}{rowState === 'pending' && ownedPackage.userPackageId.startsWith('plan:') && <button type="button" onClick={() => void handleDeleteBillingPackage(student, ownedPackage)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300" aria-label={`${packageName} 청구 예정 삭제`}><Trash2 size={10}/> 삭제</button>}</div></td>
-                            </tr>
-                          );
-                        })}
-                      </React.Fragment>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td colSpan={12} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
-                        {billingSearch || billingSummaryFilter !== 'all' ? '선택한 검색·상태 조건에 맞는 원생이 없습니다.' : '배정된 청구 대상이 없습니다. [학생 관리] 탭에서 학생을 등록하고 반과 요금제를 매핑해 주세요!'}
+                              disabled={autoBillingTargetSaving || !activeBranchId || activeBranchId === 'all'}
+                              aria-label={student.studentName + ' 자동 청구 대상 선택'}
+                              className="h-4 w-4 shrink-0 accent-emerald-600 disabled:opacity-40" />
+                            자동 청구
+                          </label>
+                        </div>
+                        <div className="mt-2 flex min-w-0 flex-col gap-1.5">
+                      <select
+                        value={packageOptionToAddByStudent[student.studentId] || ''}
+                        onChange={(event) => setPackageOptionToAddByStudent((current) => ({ ...current, [student.studentId]: event.target.value }))}
+                        disabled={actionLoading || activeBranchId === 'all' || (additionalChargeRequired && !additionalChargeMonthAllowed)}
+                        aria-label={`${student.studentName} ${additionalChargeRequired ? '추가 청구' : '청구'} 이용권 선택`}
+                        title={additionalChargeRequired && !additionalChargeMonthAllowed ? '추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.' : undefined}
+                        className={`w-full min-w-0 rounded-lg border bg-white px-2 py-1.5 text-[10px] font-bold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 ${additionalChargeRequired ? 'border-amber-300' : 'border-slate-200'}`}
+                      >
+                        <option value="">{additionalChargeRequired ? '추가 청구 이용권 선택…' : '청구 이용권 추가…'}</option>
+                        {billingPackageOptions
+                          .filter((option) => !student.packages.some((item) =>
+                            item.optionId === option.id
+                            || billingCommercialIdentity(item) === billingCommercialIdentity(option)
+                          ))
+                          .map((option) => <option key={option.id} value={option.id}>[{option.packageName}] {option.label} ({option.price.toLocaleString()}원)</option>)}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void handleAddBillingPackage(student, additionalChargeRequired)}
+                        disabled={actionLoading || !activeBranchId || activeBranchId === 'all' || !packageOptionToAddByStudent[student.studentId] || (additionalChargeRequired && !additionalChargeMonthAllowed)}
+                        title={additionalChargeRequired && !additionalChargeMonthAllowed ? '추가 청구는 이번 달 또는 다음 달에만 등록할 수 있습니다.' : undefined}
+                        className={`self-start rounded-lg px-2.5 py-1.5 text-[10px] font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${additionalChargeRequired ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                      >
+                        {additionalChargeRequired ? '+ 추가 청구' : '+ 추가'}
+                      </button>
+                        </div>
+                      </th>
+                      <td role="cell" className="block min-w-0 align-top @min-[42rem]/targets:table-cell @min-[42rem]/targets:border-b @min-[42rem]/targets:border-slate-300">
+                        {student.packages.length === 0 ? <p className="px-4 py-3 text-sm text-slate-600">이번 달에 배정된 이용권이 없습니다.</p>
+                          : <ul className="divide-y divide-slate-100">
+                            {student.packages.map((target) => {
+                              const bill = targetBillStatuses[billStatusKey(target)];
+                              const state = target.entitlementMismatch ? 'mismatch' : target.hasTargetMonthPackage ? 'renewed'
+                                : bill?.status === 'paid' ? 'paid' : bill?.status === 'partial' ? 'partial'
+                                : bill?.status === 'cancelled' || bill?.status === 'canceled' ? 'cancelled'
+                                : bill?.paymentRequestId ? 'sent' : bill ? 'issued' : 'pending';
+                              const statusText = {
+                                mismatch: '이용권 불일치', renewed: '갱신 완료', paid: '완납', partial: '일부 수납',
+                                cancelled: '취소', sent: '앱 발송됨', issued: '청구서 생성됨', pending: '청구 예정',
+                              }[state];
+                              const statusStyle = state === 'mismatch' || state === 'cancelled' ? 'bg-rose-50 text-rose-700'
+                                : state === 'paid' || state === 'renewed' ? 'bg-emerald-50 text-emerald-700'
+                                : state === 'partial' ? 'bg-amber-50 text-amber-800'
+                                : state === 'sent' || state === 'issued' ? 'bg-indigo-50 text-indigo-800' : 'bg-slate-100 text-slate-700';
+                              const isSelected = selectedBillingTargetIds.has(billingTargetKey(target));
+                              return <li key={billingTargetKey(target)} className={'min-w-0 px-4 py-3 ' + (isSelected ? 'bg-indigo-50 shadow-[inset_3px_0_0_#6366f1]' : 'bg-white')}>
+                                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 @min-[42rem]/targets:grid-cols-[minmax(0,1fr)_minmax(0,8rem)_6rem]">
+                                  <div className="col-span-2 min-w-0 @min-[42rem]/targets:col-span-1">
+                                    <label className="flex min-h-7 min-w-0 cursor-pointer items-start gap-2 text-sm font-semibold text-slate-950 has-disabled:cursor-default">
+                                      <input type="checkbox" checked={isSelected}
+                                        onChange={() => toggleBillingTarget(target)} disabled={actionLoading || !isSelectableBillingTarget(target)}
+                                        aria-label={[student.studentName, target.packageName, target.optionLabel, '청구 이용권 선택'].join(' ')}
+                                        className="mt-0.5 size-[1.125rem] shrink-0 accent-indigo-700 disabled:opacity-40" />
+                                      <span className="[overflow-wrap:anywhere]">{target.packageName} · {target.optionLabel}</span>
+                                    </label>
+                                    <p className="ml-[1.625rem] text-slate-600 [overflow-wrap:anywhere]">
+                                      {target.isShared ? '가족 공용 차량' : target.classNames.join(' · ') || '연결 수업 없음'}
+                                    </p>
+                                  </div>
+                                  <span className={'w-fit max-w-full rounded-full px-2.5 py-1 font-bold [overflow-wrap:anywhere] ' + statusStyle}><span aria-hidden="true" className="mr-1.5 inline-block size-1.5 rounded-full bg-current align-middle opacity-75" />{statusText}</span>
+                                  <strong className="text-right text-base font-bold tabular-nums text-slate-950 [overflow-wrap:anywhere]">{target.price > 0 ? invoiceAmount(target.price) : '단가 미지정'}</strong>
+                                </div>
+                                <InvoiceDetails label="이용권 상세">
+                                  {renderInvoiceDetails([
+                                    ['기간 방식', target.billingCycle || '—'],
+                                    ['수납 일자', target.paymentDay || '—'],
+                                    ...(state === 'pending' ? [['문자 발송 설정', student.isSmsEnabled ? '사용' : '사용 안 함']] as [string, React.ReactNode][] : []),
+                                    ...(target.entitlementMismatch ? [['실제 이용권', target.actualOptionLabel || '옵션 확인 필요'], ['정정 위치', '학생 관리']] as [string, React.ReactNode][] : []),
+                                  ])}
+                                  {state === 'pending' && target.userPackageId.startsWith('plan:') &&
+                                    <button type="button" onClick={() => void handleDeleteBillingPackage(student, target)} disabled={actionLoading}
+                                      aria-label={target.packageName + ' 청구 예정 삭제'}
+                                      className={invoiceActionStyle + ' text-rose-700 hover:bg-rose-50'}><Trash2 size={14} aria-hidden="true" /> 삭제</button>}
+                                </InvoiceDetails>
+                              </li>;
+                            })}
+                          </ul>}
                       </td>
-                    </tr>
-                  )}
+                    </tr>;
+                  })}
                 </tbody>
               </table>
             </div>
@@ -2514,191 +2707,28 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
             </div>
           </div>
 
-          {/* Always render table structure so column headers show even when empty */}
-          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs text-slate-600">
-                <thead className="bg-slate-100/80 text-[11px] font-black uppercase text-slate-700 border-b border-slate-200">
-                  <tr className="whitespace-nowrap">
-                    <th scope="col" className="px-4 py-3.5 w-12 text-center">
-                      <input
-                        type="checkbox"
-                        checked={allAppSendableBillsSelected}
-                        onChange={toggleAllAppBills}
-                        aria-label="앱 발송 가능한 고지서 전체 선택"
-                        className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-indigo-600"
-                      />
-                    </th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[220px]">연결 수업 / 보유 이용권</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[180px] text-center">청구월 / 이용기간</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-right">청구액</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-right">실 수납액</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">청구일</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">수납 수단</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">최종 수납일</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[90px] text-center">상태</th>
-                    <th scope="col" className="px-4 py-3.5 min-w-[110px] text-center">청구 출처</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 border-t border-slate-100">
-                  {loading ? (
-                    <tr>
-                      <td colSpan={10} className="text-center py-16">
-                        <Loader2 className="animate-spin text-blue-500 mx-auto" size={24} />
-                        <span className="text-xs font-bold text-slate-400 block mt-2">고지 정보 및 수납 목록 조회 중...</span>
-                      </td>
-                    </tr>
-                  ) : filteredBillStudents.length > 0 ? (
-                    filteredBillStudents.map((student) => (
-                      <React.Fragment key={student.studentId}>
-                        <tr className="border-t border-slate-200 bg-blue-50/60">
-                          <td colSpan={10} className="px-4 py-2.5">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <span className="font-black text-slate-900 text-sm">{student.studentName}</span>
-                                <span className="ml-2 text-[11px] font-bold text-blue-600 bg-blue-100/60 px-2 py-0.5 rounded-full">
-                                  청구 이용권 {student.bills.length}개
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-black text-slate-800">
-                                  총 청구액 <b className="text-blue-600">{student.bills.reduce((sum, bill) => sum + bill.amount_due, 0).toLocaleString()}</b>원
-                                </span>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                        {student.bills.map((bill) => {
-                          const validity = billingMonthPeriod(bill.bill_month);
-                          const connectedClassText = bill.memo?.match(/연결 수업:\s*(.+)$/)?.[1]?.trim();
-                          const className = bill.class_schedules?.target_class
-                            || (connectedClassText && connectedClassText !== '없음' ? connectedClassText : '수업 미지정');
-                          const packageLabel = bill.package_options ? `[${bill.package_options.packages?.name || ''}] ${bill.package_options.label}` : bill.memo || '수강 정보 연동 안 됨';
-                          const isPaid = bill.status === 'paid';
-                          const canSendToApp = bill.status === 'unpaid' && bill.amount_due > 0 && !bill.payment_request_id && !bill.academy_students?.archived_at && Boolean(bill.academy_students?.parent_user_id) && Boolean(bill.package_option_id);
-                          const isDeclined = bill.status === 'declined';
-                          const isExpired = bill.status === 'expired';
-                          const hasAmountAdjustment = Number(bill.original_amount ?? bill.amount_due) !== Number(bill.amount_due);
-                          const canDeleteBill = bill.amount_paid === 0 && ['unpaid', 'declined', 'expired'].includes(bill.status);
-                          const methodText: Record<string, string> = { free: '무료 처리', app_card: '어플 카드결제', app_vbank: '어플 가상계좌', offline_card: '현장 카드', cash: '현금 수납', bank_transfer: '계좌 이체', offline_transfer: '현장 계좌이체' };
-                          const billDateText = bill.app_sent_at
-                            ? new Date(bill.app_sent_at).toLocaleDateString('ko-KR')
-                            : bill.billing_date
-                            ? new Date(bill.billing_date).toLocaleDateString('ko-KR')
-                            : '-';
-                          return (
-                            <tr key={bill.id} className="font-bold text-slate-700 hover:bg-slate-50 transition whitespace-nowrap">
-                              <td className="px-4 py-3 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedAppBillIds.has(bill.id)}
-                                  onChange={() => toggleAppBill(bill.id)}
-                                  disabled={!canSendToApp}
-                                  aria-label={`${student.studentName} 고지서 앱 발송 선택`}
-                                  className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
-                                />
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex flex-col">
-                                  <span className="text-xs font-black text-slate-800">{className}</span>
-                                  <span className="text-[10px] font-medium text-slate-500">보유 이용권: {packageLabel}</span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                <div className="text-xs font-black text-slate-800">{bill.bill_month}월분</div>
-                                <div className="mt-0.5 text-[10px] font-medium text-slate-400">{validity.start} ~ {validity.end}</div>
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                {hasAmountAdjustment && <div className="text-[10px] font-bold text-slate-400 line-through">{Number(bill.original_amount).toLocaleString()}원</div>}
-                                <div className="font-black text-slate-800">{bill.amount_due.toLocaleString()}원</div>
-                                {hasAmountAdjustment && (
-                                  <div className={`mt-0.5 text-[9px] font-black ${Number(bill.discount_amount) < 0 ? 'text-sky-600' : 'text-rose-500'}`} title={bill.adjustment_reason || undefined}>
-                                    {Number(bill.discount_amount) < 0 ? '추가' : '할인'} {Math.abs(Number(bill.discount_amount || 0)).toLocaleString()}원
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 text-slate-800 font-bold text-right">{isPaid ? `${bill.amount_paid.toLocaleString()}원` : '-'}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-600 text-center">
-                                {billDateText}
-                                <ReminderDate count={bill.reminder_count} sentAt={bill.last_reminded_at} />
-                              </td>
-                              <td className="px-4 py-3 text-xs text-center">{bill.payment_method ? <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700 font-bold text-[11px]">{methodText[bill.payment_method] || bill.payment_method}</span> : '-'}</td>
-                              <td className="px-4 py-3 text-xs font-medium text-slate-500 text-center">{bill.payment_date ? new Date(bill.payment_date).toLocaleDateString('ko-KR') : '-'}</td>
-                              <td className="px-4 py-3 text-center">
-                                {isPaid
-                                  ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-black text-emerald-700"><CheckCircle2 size={11} /> 완납</span>
-                                  : isDeclined
-                                    ? <span className="inline-flex items-center gap-1 rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700"><AlertCircle size={11} /> 학부모 거절</span>
-                                    : isExpired
-                                      ? <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600"><AlertCircle size={11} /> 기한 만료</span>
-                                      : <span className="inline-flex items-center gap-1 rounded-full border border-amber-100 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black text-amber-700"><AlertCircle size={11} /> 미납</span>}
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                <div className="flex flex-col items-center gap-1.5">
-                                  {isDeclined ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-rose-100 bg-rose-50 px-2.5 py-0.5 text-[10px] font-black text-rose-700">📱 어플 거절됨</span>
-                                  ) : isExpired ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-600">⌛ 기한 만료</span>
-                                  ) : bill.payment_request_id ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-black text-indigo-700 shadow-2xs">
-                                      📱 어플 청구서 전송
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50/80 px-2.5 py-0.5 text-[10px] font-black text-blue-700 shadow-2xs">
-                                      💻 웹 관리자 청구
-                                    </span>
-                                  )}
-                                  {bill.status === 'unpaid' && bill.amount_due > 0 && <button type="button" onClick={() => openPayModal(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700 hover:bg-emerald-100 disabled:text-slate-300"><CheckCircle2 size={10}/> 수기 수납</button>}
-                                  {bill.status === 'unpaid' && bill.amount_due === 0 && !bill.payment_request_id && <button type="button" onClick={() => void handleFreeBill(bill)} disabled={actionLoading} className="rounded-md bg-violet-50 px-2 py-1 text-[11px] font-black text-violet-700 hover:bg-violet-100 disabled:opacity-50">무료 처리 · 이용권 지급</button>}
-                                  {canDeleteBill && <button type="button" onClick={() => void handleDeleteBill(bill)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}
-                                  {bill.status === 'unpaid' && bill.payment_request_id && <button type="button" onClick={() => void handleSendPaymentReminders([bill.payment_request_id as string])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </React.Fragment>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={9} className="text-center py-20 text-slate-400 font-bold text-xs bg-slate-50/30">
-                        {selectedMonth}월분으로 생성된 수납 고지서가 없습니다. [청구대상 관리]에서 해당 월 학원비를 청구해 주세요.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+          <section aria-labelledby="invoice-list-heading" className="min-w-0 space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 id="invoice-list-heading" ref={invoiceHeading} tabIndex={-1} className="rounded-sm text-base font-black text-slate-950 focus-visible:outline-2 focus-visible:outline-indigo-600">청구내역</h3>
+                <p className="mt-1 text-sm text-slate-600">{selectedMonth || '—'}{!loading && ` · 조회 결과 ${currentInvoiceCount.toLocaleString('ko-KR')}건`}</p>
+              </div>
+              <p role="status" className={invoiceNotice ? 'rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800' : 'sr-only'}>{invoiceNotice}</p>
             </div>
-          </div>
-
-          <div className="overflow-hidden rounded-3xl border border-violet-200 bg-white shadow-xs">
-            <div className="flex items-center justify-between border-b border-violet-100 bg-violet-50/70 px-5 py-4">
-              <div><h3 className="text-sm font-black text-slate-900">📱 어플 관리자 직접 청구</h3><p className="mt-0.5 text-[10px] font-medium text-slate-500">어플에서 학부모에게 직접 보낸 청구서이며 웹 청구와 중복된 건은 제외됩니다.</p></div>
-              <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-black text-violet-700">{filteredAppPaymentRequests.length}건</span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs text-slate-600">
-                <thead className="border-b border-slate-200 bg-slate-100/80 text-[11px] font-black text-slate-700"><tr className="whitespace-nowrap"><th className="px-4 py-3">학부모 / 대상</th><th className="px-4 py-3">청구 이용권</th><th className="px-4 py-3 text-center">발행 경로</th><th className="px-4 py-3 text-center">발행일</th><th className="px-4 py-3 text-right">청구액</th><th className="px-4 py-3 text-center">상태</th><th className="px-4 py-3 text-center">관리</th></tr></thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredAppPaymentRequests.length > 0 ? filteredAppPaymentRequests.map((request) => {
-                    const statusMeta = request.status === 'paid'
-                      ? { label: '완납', style: 'bg-emerald-50 text-emerald-700' }
-                      : request.status === 'declined'
-                        ? { label: '거절', style: 'bg-rose-50 text-rose-700' }
-                        : request.status === 'expired'
-                          ? { label: '만료', style: 'bg-slate-100 text-slate-600' }
-                          : request.status === 'cancelled'
-                            ? { label: '취소', style: 'bg-slate-100 text-slate-500' }
-                            : { label: '결제 대기', style: 'bg-amber-50 text-amber-700' };
-                     const canDeleteRequest = request.issued_source === 'admin_app' && ['pending', 'declined', 'expired', 'cancelled'].includes(request.status);
-return <tr key={request.id} className="whitespace-nowrap hover:bg-slate-50"><td className="px-4 py-3"><div className="font-black text-slate-800">{request.parent_name || '학부모'}</div><div className="text-[10px] text-slate-400">{request.beneficiary_name || '가족 공용'}</div></td><td className="px-4 py-3 font-bold text-slate-700">{request.request_title || '이용권 청구서'}</td><td className="px-4 py-3 text-center"><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-black text-violet-700">어플 직접 발행</span></td><td className="px-4 py-3 text-center text-slate-500">{new Date(request.created_at).toLocaleDateString('ko-KR')}<ReminderDate count={request.reminder_count} sentAt={request.last_reminded_at} /></td><td className="px-4 py-3 text-right font-black text-slate-800">{Number(request.final_amount ?? request.total_amount ?? 0).toLocaleString()}원</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusMeta.style}`}>{statusMeta.label}</span></td><td className="px-4 py-3 text-center"><div className="flex items-center justify-center gap-1">{request.status === 'pending' && <button type="button" onClick={() => void handleSendPaymentReminders([request.id])} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 hover:bg-amber-100 disabled:text-slate-300"><BellRing size={10}/> 납부 알림</button>}{canDeleteRequest && <button type="button" onClick={() => void handleDeleteAppPaymentRequest(request)} disabled={actionLoading} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-rose-600 hover:bg-rose-50 disabled:text-slate-300"><Trash2 size={10}/> 삭제</button>}</div></td></tr>;
-                  }) : <tr><td colSpan={7} className="py-12 text-center text-xs font-bold text-slate-400">선택한 월에 어플에서 직접 발행한 청구서가 없습니다.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </div>
+            {loading ? <p role="status" className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-600"><Loader2 aria-hidden="true" size={18} className="animate-spin text-indigo-600" />청구내역을 불러오는 중입니다.</p> : <>
+              {renderInvoiceCollection('웹에서 발행한 청구', '앱으로 전송한 웹 청구도 여기에 표시됩니다.', webInvoiceRows,
+                appSendableBills.length > 0 && <label className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-bold text-indigo-800">
+                  <input type="checkbox" checked={allAppSendableBillsSelected} onChange={toggleAllAppBills} className="h-4 w-4 accent-indigo-600" />
+                  앱 발송 가능 {appSendableBills.length}건 전체 선택
+                </label>)}
+              {renderInvoiceCollection('앱 관리자 직접 청구', '앱에서 직접 발행한 청구만 표시됩니다.', directInvoiceRows)}
+            </>}
+          </section>
         </div>
       )}
+
+      {deletion && <InvoiceDeleteDialog target={deletion} busy={actionLoading} onClose={() => setDeletion(null)}
+        onConfirm={() => { if (deletion.kind === 'web') void handleDeleteBill(deletion.bill); else void handleDeleteAppPaymentRequest(deletion.request); }} />}
 
       {/* Manual Payment Modal */}
       {isPayModalOpen && selectedBill && (

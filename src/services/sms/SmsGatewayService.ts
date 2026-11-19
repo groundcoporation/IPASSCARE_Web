@@ -49,6 +49,7 @@ export class SmsGatewayError extends Error {
 export const SmsGatewayService = {
   async send(request: SendSmsRequest): Promise<SendSmsResponse> {
     try {
+      if (environmentConfig.environment === 'preview') throw new AppError('PREVIEW_EXTERNAL_DISABLED');
       if (environmentConfig.databaseTarget === 'local') throw new AppError('LOCAL_EXTERNAL_DISABLED');
       if (!relayUrl) {
         throw new SmsGatewayError('문자 중계 서버 주소(VITE_SMS_RELAY_URL)가 설정되지 않았습니다.');

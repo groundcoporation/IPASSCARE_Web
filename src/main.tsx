@@ -1,8 +1,12 @@
 import './lib/localNetwork'
-import React, { Component, ErrorInfo, ReactNode } from 'react'
+import React, { Component, ErrorInfo, ReactNode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import App from './App.tsx'
+import { environmentConfig } from './lib/environment'
+import { isTesterPath, mayOpenTestLogin } from './tester/access'
+
+const App = lazy(() => import('./App.tsx'))
+const PreviewAdminEntry = lazy(() => import('./tester/PreviewAdminEntry'))
 
 interface Props {
   children: ReactNode;
@@ -60,8 +64,21 @@ class ErrorBoundary extends Component<Props, State> {
   }
 }
 
+const currentPath = window.location.pathname
+const rootView = isTesterPath(currentPath)
+  ? mayOpenTestLogin(environmentConfig.environment, import.meta.env.VITE_TESTER_ISOLATION_VERIFIED === 'true', currentPath)
+    ? <PreviewAdminEntry />
+    : <main className="mx-auto max-w-lg px-4 py-16 text-slate-900">
+      <h1 className="text-xl font-bold">체험 페이지를 열 수 없습니다.</h1>
+      <p className="mt-2 text-sm text-slate-700">테스트 전용 Preview 주소인지 확인해 주세요. Preview 환경은 외부 결제·발송 격리 확인 후 열립니다.</p>
+      <a className="mt-4 inline-block font-semibold text-indigo-800 underline" href="/">홈으로 이동</a>
+    </main>
+  : <App />
+
 createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>
-    <App />
+    <Suspense fallback={<p role="status" className="p-6 text-sm text-slate-600">화면을 불러오는 중입니다.</p>}>
+      {rootView}
+    </Suspense>
   </ErrorBoundary>,
 )
