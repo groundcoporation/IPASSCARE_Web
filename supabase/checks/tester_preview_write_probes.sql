@@ -36,7 +36,8 @@ begin
   begin
     execute statement;
     get diagnostics affected=row_count;
-    ok:=not denied and affected=expected_rows;
+    -- RLS may deny UPDATE/DELETE by hiding the row rather than raising 42501.
+    ok:=affected=expected_rows and (not denied or affected=0);
     raise exception using errcode='PZ001',message='TESTER_PROBE_ROLLBACK';
   exception
     when sqlstate 'PZ001' then null;
@@ -128,6 +129,8 @@ set local role anon;
 select pg_temp.tester_probe('anonymous_attendance_insert_denied',
   'insert into public.attendance_logs(id,child_id,branch_id,date) select -9000000000001,own_child,own_branch,date ''2099-01-01'' from tester_probe_context',0,true);
 reset role;
+
+-- TESTER_MANUAL_PROBES
 
 select json_build_object(
   'core_read_scope_passed',true,
