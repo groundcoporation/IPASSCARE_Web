@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { TESTER_PROJECT_REF } from '../config/tester-target.mjs';
+import { testerRpcRules, patchTesterRpc } from './tester-rpc-rules.mjs';
 
 const web = new URL('../', import.meta.url);
 const app = new URL('../../IPASSCARE/app/', web);
@@ -35,15 +36,8 @@ export function buildWriteCheck(core, probes, metadata) {
   // No network-enabled SQL/function body is accepted by this limited experiment.
   if (metadata.functions.some(f => /net\.http|http_post|http_get|dblink|extensions\.http|pg_net|https?:\/\//i.test(f.definition)))
     throw new Error('TESTER_EXTERNAL_SQL_REVIEW_REQUIRED');
-  const guardedRpc = metadata.functions.filter(f => ['update_member_role(uuid,text)','list_role_manageable_members(text)'].includes(f.signature));
-  const patches = guardedRpc.map(f => {
-    const boundary = /\r?\nbegin\r?\n/i;
-    if (!boundary.test(f.definition) || !/security definer/i.test(f.definition)) throw new Error('TESTER_RPC_LAYOUT_CHANGED');
-    return f.definition.replace(boundary, () => `\nbegin\n  if ipasscare_preview_access.is_tester_actor()
-      and ipasscare_preview_access.core_scope()='' then
-    raise exception using errcode='42501',message='[PERMISSION_DENIED]';
-  end if;\n`)+';';
-  }).join('\n');
+  const guardedRpc = metadata.functions.filter(f => testerRpcRules.has(f.signature));
+  const patches = guardedRpc.map(f => patchTesterRpc(f.definition,testerRpcRules.get(f.signature))).join('\n');
   core = core.replace('-- Read-only fixture queries', () => patches+'\n-- Read-only fixture queries');
   const literal = v => "'" + String(v).replaceAll("'", "''") + "'";
   const md5 = v => createHash('md5').update(v).digest('hex');
@@ -98,7 +92,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       sql = manualMode ? buildManualWriteCheck(sql,probes,metadata,
         readFileSync(new URL('supabase/migrations/202611170002_register_manual_ledger_attendance.sql', web),'utf8'),
         readFileSync(new URL('supabase/checks/tester_preview_manual_attendance_probes.sql', web),'utf8')+'\n'+
-        readFileSync(new URL('supabase/checks/tester_preview_extended_probes.sql', web),'utf8'))
+        readFileSync(new URL('supabase/checks/tester_preview_extended_probes.sql', web),'utf8')+'\n'+
+        readFileSync(new URL('supabase/checks/tester_preview_rpc_probes.sql', web),'utf8'))
         : buildWriteCheck(sql,probes,metadata);
     }
     const ref = readFileSync(new URL('supabase/.temp/project-ref', workdir), 'utf8');
