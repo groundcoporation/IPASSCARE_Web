@@ -93,7 +93,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         readFileSync(new URL('supabase/migrations/202611170002_register_manual_ledger_attendance.sql', web),'utf8'),
         readFileSync(new URL('supabase/checks/tester_preview_manual_attendance_probes.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_extended_probes.sql', web),'utf8')+'\n'+
-        readFileSync(new URL('supabase/checks/tester_preview_rpc_probes.sql', web),'utf8'))
+        readFileSync(new URL('supabase/checks/tester_preview_rpc_probes.sql', web),'utf8')+'\n'+
+        readFileSync(new URL('supabase/checks/tester_preview_virtual_billing.sql', web),'utf8')+'\n'+
+        readFileSync(new URL('supabase/checks/tester_preview_virtual_billing_probes.sql', web),'utf8'))
         : buildWriteCheck(sql,probes,metadata);
     }
     const ref = readFileSync(new URL('supabase/.temp/project-ref', workdir), 'utf8');

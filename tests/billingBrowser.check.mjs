@@ -25,6 +25,11 @@ fixtures.students[0].academy_student_classes.push({
 });
 const fake = `
   let rows = ${JSON.stringify(fixtures)};
+  if(new URLSearchParams(location.search).get('virtual')==='1') {
+    rows.bills=[{...rows.bills[0],id:'virtual-send',payment_request_id:null,
+      academy_students:{...rows.bills[0].academy_students,student_name:'가상 발송 원생'}}];
+    rows.requests=[];
+  }
   window.fixtureCalls = [];
   export const supabase = {
     from(table) {
@@ -42,6 +47,10 @@ const fake = `
     },
     async rpc(name, payload) {
       window.fixtureCalls.push({ name, payload });
+      if(name==='simulate_tester_billing_notification') {
+        if(payload.p_operation==='send-academy-bills') rows.bills[0].payment_request_id='virtual-payment';
+        return {data:{testMode:true,externalDelivery:false,created:1,skipped:0,sent:1,failed:0,results:[]},error:null};
+      }
       if (name === 'delete_unpaid_academy_bill') {
         rows.bills = rows.bills.filter((row) => row.id !== payload.p_bill_id);
         return { data: { success: true }, error: null };
@@ -56,6 +65,7 @@ const fake = `
 `;
 const server = await createServer({
   root, configFile: false, server: { host: '127.0.0.1', port: 0 },
+  define:{__IPASSCARE_ENVIRONMENT__:JSON.stringify({environment:'preview',databaseTarget:'cloud',projectRef:'msvwhvonafmeycmcvarv'})},
   plugins: [react(), tailwindcss(), {
     name: 'billing-browser-fixtures',
     enforce: 'pre',
@@ -63,7 +73,7 @@ const server = await createServer({
     load(id) { if (id === '\0test:supabase') return fake; },
     configureServer(vite) {
       vite.middlewares.use(async (req, res, next) => {
-        if (req.url !== '/__billing-check') return next();
+        if (req.url?.split('?')[0] !== '/__billing-check') return next();
         const html = await vite.transformIndexHtml('/__billing-check', '<!doctype html><html lang="ko"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/fixtures/billingBrowserFixture.tsx"></script></body></html>');
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.end(html);
@@ -172,7 +182,23 @@ try {
     [name, payload.p_bill_id ?? payload.p_request_id]), [
     ['delete_unpaid_academy_bill', 'web-only'], ['delete_unpaid_app_payment_request', 'app-only'],
   ]);
-  console.log('Billing target selection and review, mobile layout, sticky row header, dialog focus and mocked delete routing passed.');
+  const messages=[];
+  page.on('dialog',async dialog=>{messages.push(dialog.message());await dialog.accept();});
+  await page.goto(origin+'/__billing-check?virtual=1');
+  await page.getByRole('button',{name:/청구내역 조회/}).click();
+  await page.getByRole('checkbox',{name:/가상 발송 원생.*앱 발송 선택/}).check();
+  const sentDialog=page.waitForEvent('dialog',dialog=>dialog.type()==='alert');
+  await page.getByRole('button',{name:'선택 1건 앱으로 발송',exact:true}).click();
+  assert.match((await sentDialog).message(),/가상 청구서 처리 결과 — 실제 발송 없음/);
+  const remindDialog=page.waitForEvent('dialog',dialog=>dialog.type()==='alert');
+  await page.getByRole('button',{name:'조회된 미납 1건 재알림',exact:true}).click();
+  assert.match((await remindDialog).message(),/가상 재알림 처리 결과 — 실제 발송 없음/);
+  assert.ok(messages.filter(m=>m.includes('실제')).length>=4);
+  assert.deepEqual((await page.evaluate(()=>window.fixtureCalls)).map(c=>[c.name,c.payload.p_operation]),[
+    ['simulate_tester_billing_notification','send-academy-bills'],
+    ['simulate_tester_billing_notification','send-payment-reminders'],
+  ]);
+  console.log('Billing UI regression and virtual send/reminder routing passed; no hosted DB or delivery calls.');
 } finally {
   await browser?.close();
   await server.close();

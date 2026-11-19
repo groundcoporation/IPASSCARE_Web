@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useId, useMemo, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import {dispatchBillingNotification,virtualBillingNotifications} from '../../services/notifications/BillingNotificationService';
 import { AppError, formatError, normalizeError, logError } from '../../errors/appError';
 import { handleError } from '../../errors/handleError';
 import { allocateDiscountedBillAmounts, discountedBillAmount, normalizeDiscountPercent } from '../../utils/billingAmount';
@@ -1891,16 +1892,15 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   const handleSendBillsToApp = async () => {
     if (selectedAppBillIds.size === 0) return alert('앱으로 발송할 미납 고지서를 선택해 주세요.');
-    if (!confirm(`선택한 고지서 ${selectedAppBillIds.size}건을 학부모 앱으로 발송하시겠습니까?`)) return;
+    if (!confirm(virtualBillingNotifications
+      ? `선택한 고지서 ${selectedAppBillIds.size}건을 가상 발송 처리할까요? 실제 학부모에게 발송하지 않습니다.`
+      : `선택한 고지서 ${selectedAppBillIds.size}건을 학부모 앱으로 발송하시겠습니까?`)) return;
 
     if (billingBusyRef.current) return;
     billingBusyRef.current = true;
     setActionLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('send-academy-bills', {
-        body: { academy_bill_ids: Array.from(selectedAppBillIds) },
-      });
-      if (error) throw error;
+      const data=await dispatchBillingNotification('send-academy-bills',Array.from(selectedAppBillIds));
 
       const created = Number(data?.created ?? 0);
       const skipped = Number(data?.skipped ?? 0);
@@ -1910,7 +1910,7 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
         : [];
 
       alert([
-        `앱 청구서 발송 결과`,
+        data?.testMode ? '가상 청구서 처리 결과 — 실제 발송 없음' : '앱 청구서 발송 결과',
         `- 발송: ${created}건`,
         `- 기존 발송 건너뜀: ${skipped}건`,
         `- 실패: ${failed}건`,
@@ -1928,27 +1928,24 @@ export const AdminBillingTab: React.FC<AdminBillingTabProps> = ({ activeBranchId
 
   const handleSendPaymentReminders = async (paymentRequestIds: string[]) => {
     if (!paymentRequestIds.length) return alert('재알림할 미납 청구서가 없습니다.');
-    if (!confirm(`미납 청구서 ${paymentRequestIds.length}건의 납부 알림을 다시 보내시겠습니까?`)) return;
+    if (!confirm(virtualBillingNotifications
+      ? `미납 청구서 ${paymentRequestIds.length}건의 가상 재알림 기록을 남길까요? 실제 알림은 발송하지 않습니다.`
+      : `미납 청구서 ${paymentRequestIds.length}건의 납부 알림을 다시 보내시겠습니까?`)) return;
     if (billingBusyRef.current) return;
     billingBusyRef.current = true;
     setActionLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('send-payment-reminders', {
-        body: { payment_request_ids: paymentRequestIds },
-      });
-      if (error) throw error;
+      const data=await dispatchBillingNotification('send-payment-reminders',paymentRequestIds);
       const sent = Number(data?.sent ?? 0);
       const failed = Number(data?.failed ?? 0);
       const failedMessages = Array.isArray(data?.results)
         ? data.results
             .filter((result: any) => !result.success)
             .map((result: any) =>
-              result.error
-                ? `• ${result.error}`
-                : formatError(normalizeError({ code: result.code, message: result.error }, 'BILL_SEND_FAILED'))
+              formatError(normalizeError({ code: result.code, message: result.error }, 'BILL_SEND_FAILED'))
             )
         : [];
-      alert([`미납 알림 재발송 결과`, `- 발송: ${sent}건`, `- 실패/제외: ${failed}건`, failedMessages.length ? `\n${failedMessages.slice(0, 3).join('\n')}` : ''].filter(Boolean).join('\n'));
+      alert([data?.testMode ? '가상 재알림 처리 결과 — 실제 발송 없음' : '미납 알림 재발송 결과', `- 발송: ${sent}건`, `- 실패/제외: ${failed}건`, failedMessages.length ? `\n${failedMessages.slice(0, 3).join('\n')}` : ''].filter(Boolean).join('\n'));
       await loadBills();
     } catch (err: unknown) {
       await handleError(err, 'BILL_REMINDER_FAILED', { operation: 'billing.remind' });
