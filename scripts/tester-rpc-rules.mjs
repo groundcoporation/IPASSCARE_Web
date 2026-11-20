@@ -19,7 +19,29 @@ const optionsScope = (...arrays) => `if exists(select 1 from unnest(${arrays.map
       and p.branch_id=ipasscare_preview_access.core_scope())) then ${denied} end if;`;
 const allMonthsScope = studentScope + classesScope('p_current_schedule_ids','p_next_schedule_ids')
   + optionsScope('p_current_package_option_ids','p_next_package_option_ids');
+const planScope = `if not exists(select 1 from public.academy_student_monthly_plans p
+  join public.academy_students s on s.id=p.student_id
+  where p.id=p_plan_id and p.branch_id=ipasscare_preview_access.core_scope() and s.branch_id=p.branch_id)
+  then ${denied} end if;`;
+const memberChildScope = `if not exists(select 1 from public.children c join public.users u on u.id=c.parent_id
+  where c.id=p_child_id and c.parent_id=p_user_id and c.branch_id=ipasscare_preview_access.core_scope()
+    and u.branch_id=c.branch_id) then ${denied} end if;`;
+export const testerPackageGrantScope = memberChildScope+optionsScope('array[p_package_option_id]')+classesScope('p_schedule_ids');
 export const testerRpcRules = new Map([
+  ['add_current_month_student_additional_billing_plan(uuid,uuid)', studentScope+optionsScope('array[p_package_option_id]')],
+  ['delete_planned_additional_student_billing_item(uuid)', planScope],
+  ['correct_billing_plan_to_owned_package(uuid,uuid)', planScope+`if not exists(select 1 from public.user_packages u
+    join public.academy_student_monthly_plans p on p.id=p_plan_id
+    join public.academy_students s on s.id=p.student_id
+    join public.package_options o on o.id=u.option_id join public.packages product on product.id=o.package_id
+    where u.id=p_user_package_id and u.branch_id=ipasscare_preview_access.core_scope()
+      and u.child_id=s.child_id and u.user_id=s.parent_user_id
+      and o.branch_id=u.branch_id and product.branch_id=u.branch_id) then ${denied} end if;`],
+  // Testers must use the request-ID wrapper. The legacy API has no idempotency key.
+  ['grant_member_package_with_schedule(uuid,uuid,uuid,date,uuid[])', denied],
+  ['sync_current_month_child_schedule_with_package(uuid,uuid,uuid,uuid[])', memberChildScope+classesScope('p_schedule_ids')+`if not exists(
+    select 1 from public.user_packages u where u.id=p_package_id and u.user_id=p_user_id
+      and u.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
   ['save_student_schedule_and_billing_all_months(uuid,uuid[],uuid[],boolean,date,uuid[],uuid[],boolean)', allMonthsScope],
   ['save_student_schedule_and_billing_all_months(uuid,uuid[],uuid[],boolean,date,uuid[],uuid[])', allMonthsScope],
   ['save_current_month_student_schedule_and_billing(uuid,uuid[],boolean,uuid[])', studentScope+classesScope('p_schedule_ids')+optionsScope('p_package_option_ids')],

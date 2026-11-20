@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { TESTER_PROJECT_REF } from '../config/tester-target.mjs';
 import { testerRpcRules, patchTesterRpc } from './tester-rpc-rules.mjs';
+import { buildTesterPackageGrant } from './tester-package-grant.mjs';
 
 const web = new URL('../', import.meta.url);
 const app = new URL('../../IPASSCARE/app/', web);
@@ -100,7 +101,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         readFileSync(new URL('supabase/checks/tester_preview_virtual_activity_probes.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_catalog_probes.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_menu_probes.sql', web),'utf8')+'\n'+
-        readFileSync(new URL('supabase/checks/tester_preview_monthly_probes.sql', web),'utf8'))
+        readFileSync(new URL('supabase/checks/tester_preview_monthly_probes.sql', web),'utf8')+'\n'+
+        buildTesterPackageGrant(metadata,readFileSync(new URL('supabase/checks/tester_preview_package_grant.sql', web),'utf8'))+'\n'+
+        readFileSync(new URL('supabase/checks/tester_preview_package_probes.sql', web),'utf8'))
         : buildWriteCheck(sql,probes,metadata);
     }
     const ref = readFileSync(new URL('supabase/.temp/project-ref', workdir), 'utf8');

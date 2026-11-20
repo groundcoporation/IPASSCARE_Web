@@ -172,6 +172,17 @@ create policy preview_bill_link_guard on public.academy_bills as restrictive
     or ipasscare_preview_access.valid_student_link(student_id,branch_id));
 
 -- Monthly plans may not forge a same-branch row with foreign references.
+create policy preview_correction_log_scope on public.academy_billing_plan_correction_logs as restrictive
+  for all to authenticated
+  using(coalesce((select ipasscare_preview_access.core_scope()) in ('*',nullif(branch_id,'')),false))
+  with check((select ipasscare_preview_access.core_scope())='*');
+-- Pass writes must not claim a foreign parent or option via a same-branch string.
+create policy preview_pass_catalog_guard on public.user_packages as restrictive
+  for all to authenticated using(true) with check((select ipasscare_preview_access.core_scope())='*' or (
+    exists(select 1 from public.users u where u.id=user_id and u.branch_id=user_packages.branch_id)
+    and (package_id is null or exists(select 1 from public.packages p where p.id=package_id and p.branch_id=user_packages.branch_id))
+    and (option_id is null or exists(select 1 from public.package_options o where o.id=option_id
+      and o.branch_id=user_packages.branch_id and (user_packages.package_id is null or o.package_id=user_packages.package_id)))));
 create function ipasscare_preview_access.valid_plan_origin(target uuid, target_branch text, target_student uuid)
 returns boolean language sql stable security definer set search_path='' as $$
   select target is null or exists(select 1 from public.academy_student_monthly_plans p
