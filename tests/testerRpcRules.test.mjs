@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testerRpcRules,patchTesterRpc } from '../scripts/tester-rpc-rules.mjs';
 test('reviewed RPC rules keep a server-controlled active tester gate and preserve the old body', () => {
-  assert.equal(testerRpcRules.size,34);
+  assert.equal(testerRpcRules.size,36);
   const original='CREATE FUNCTION public.synthetic() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $body$\nBEGIN\n  perform original_action();\nEND\n$body$';
   for(const [signature,rule] of testerRpcRules) {
     const patched=patchTesterRpc(original,rule);

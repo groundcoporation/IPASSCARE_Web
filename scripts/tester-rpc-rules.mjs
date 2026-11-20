@@ -28,6 +28,10 @@ const memberChildScope = `if not exists(select 1 from public.children c join pub
     and u.branch_id=c.branch_id) then ${denied} end if;`;
 export const testerPackageGrantScope = memberChildScope+optionsScope('array[p_package_option_id]')+classesScope('p_schedule_ids');
 export const testerRpcRules = new Map([
+  // Original ledger RPCs already validate child/package/branch relations. The
+  // shared preamble additionally rejects suspended/revoked tester sessions.
+  ['register_manual_ledger_attendance(uuid,date,uuid)', ''],
+  ['cancel_attendance_ledger_entry(uuid,date,uuid,uuid,timestamp with time zone)', ''],
   ['list_offline_payments(text,text)', `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;`],
   ['schedule_offline_payment(uuid,integer,text,timestamp with time zone,text)', `if not exists(select 1 from public.academy_bills b
     where b.id=p_bill_id and b.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],

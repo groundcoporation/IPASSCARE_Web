@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { TESTER_PROJECT_REF } from '../config/tester-target.mjs';
 import { testerRpcRules, patchTesterRpc } from './tester-rpc-rules.mjs';
 import { buildTesterPackageGrant } from './tester-package-grant.mjs';
+import { guardTesterManualAttendance } from './tester-manual-attendance.mjs';
 
 const web = new URL('../', import.meta.url);
 const app = new URL('../../IPASSCARE/app/', web);
@@ -68,12 +69,7 @@ export function buildManualWriteCheck(core, probes, metadata, migration, manualP
   if (!/^begin;\s/i.test(migration) || !/commit;$/i.test(migration)
     || metadata.functions.some(f => f.signature.startsWith('register_manual_ledger_attendance(')))
     throw new Error('TESTER_MANUAL_BASELINE_REVIEW_REQUIRED');
-  const body = migration.replace(/^begin;\s*/i, '').replace(/\s*commit;$/i, '');
-  if (/\bcommit\s*;|\brollback\s*;|net\.http|https?:\/\//i.test(body)
-    || (body.match(/create or replace function/gi) ?? []).length !== 1
-    || !body.includes('function public.register_manual_ledger_attendance(')
-    || !body.includes('revoke all on function public.register_manual_ledger_attendance(uuid,date,uuid) from public, anon;'))
-    throw new Error('TESTER_MANUAL_MIGRATION_INVALID');
+  const body = guardTesterManualAttendance(migration);
   if (probes.split('-- TESTER_MANUAL_PROBES').length !== 2) throw new Error('TESTER_MANUAL_LAYOUT_CHANGED');
   const expanded = probes.replace('-- TESTER_MANUAL_PROBES', () => body+'\n'+manualProbes)
     .replace("'core_read_scope_passed',true,", "'core_read_scope_passed',true,'temporary_manual_rpc',true,");

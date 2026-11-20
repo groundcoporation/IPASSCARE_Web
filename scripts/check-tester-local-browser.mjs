@@ -10,6 +10,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import {buildTesterLocalSchema} from './tester-local-schema.mjs';
 import {testerRpcRules,patchTesterRpc} from './tester-rpc-rules.mjs';
+import {guardTesterManualAttendance} from './tester-manual-attendance.mjs';
 const web=new URL('../',import.meta.url);
 // scripts/ is one level below the web root.
 const appRoot=new URL('../../IPASSCARE/app/',web);
@@ -118,7 +119,7 @@ enabled = false
   const beforeAcl=acl();sql(partialFix);const fixedHash=definitionHash();sql(partialFix);
   check('partial_fix_preserves_function_acl_security',acl()===beforeAcl);
   check('partial_fix_idempotent_apply',definitionHash()===fixedHash);
-  sql(readFileSync(new URL('supabase/migrations/202611170002_register_manual_ledger_attendance.sql',web),'utf8'));
+  sql('begin;\n'+guardTesterManualAttendance(readFileSync(new URL('supabase/migrations/202611170002_register_manual_ledger_attendance.sql',web),'utf8'))+'\ncommit;');
   phase='synthetic-auth';
   const email='local-e2e-'+run+'@example.com',password='T3st!'+randomBytes(24).toString('hex');
   const created=await admin.auth.admin.createUser({email,password,email_confirm:true,app_metadata:{ipasscare_tester:true,ipasscare_test_branch:branch}});
@@ -398,6 +399,53 @@ enabled = false
   await attendanceRow().getByRole('button',{name:/출석 기록 보기$/}).waitFor();
   check('shared_lesson_api_reflected_in_ledger',await attendanceRow().getByText('잔여 2회',{exact:true}).count()===1);
   check('shared_lesson_refresh_does_not_register_again',registrations===previousRegistrations);
+  phase='tester-attendance-revoked-token';
+  sql(`update public.users set status='active' where id=${lit(created.data.user.id)}::uuid;`);
+  const cachedTester=await page.evaluate(async()=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');
+    const f=window.liveFixture;const r=await supabase.auth.signInWithPassword({email:f.email,password:f.password});
+    return !r.error&&r.data.user?.app_metadata?.ipasscare_tester===true;
+  });
+  check('tester_attendance_cached_token_prepared',cachedTester);
+  const activeUsage=JSON.parse(sql(`select json_build_object('id',id,'at',consumed_at) from public.package_usage_logs where user_package_id=${lit(attendancePass)}::uuid and status='consumed';`).trim());
+  const activeRoundtrip=await page.evaluate(async({child,pass,date,usage})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');
+    const cancelled=await supabase.rpc('cancel_attendance_ledger_entry',{
+      p_child_id:child,p_date:date,p_package_id:pass,p_usage_id:usage.id,p_expected_consumed_at:usage.at});
+    if(cancelled.error||cancelled.data?.cancelled!==true)return false;
+    const registered=await supabase.rpc('register_manual_ledger_attendance',{p_child_id:child,p_date:date,p_package_id:pass});
+    return !registered.error&&registered.data?.status==='registered';
+  },{child,pass:attendancePass,date:today,usage:activeUsage});
+  check('tester_active_attendance_cancel_register_allowed',activeRoundtrip&&remaining()===2&&consumed()===1);
+  sql(`update auth.users set raw_app_meta_data=raw_app_meta_data-'ipasscare_tester'-'ipasscare_test_branch' where id=${lit(created.data.user.id)}::uuid;`);
+  const cachedClaim=await page.evaluate(async()=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const {data}=await supabase.auth.getSession();
+    const payload=data.session?.access_token?.split('.')[1];
+    return !!payload&&JSON.parse(atob(payload.replace(/-/g,'+').replace(/_/g,'/'))).app_metadata?.ipasscare_tester===true;
+  });
+  check('tester_attendance_revocation_keeps_cached_jwt_claim',cachedClaim);
+  const currentUsage=JSON.parse(sql(`select json_build_object('id',id,'at',consumed_at) from public.package_usage_logs where user_package_id=${lit(attendancePass)}::uuid and status='consumed';`).trim());
+  const revokedCancel=await page.evaluate(async({child,pass,date,usage})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc('cancel_attendance_ledger_entry',{
+      p_child_id:child,p_date:date,p_package_id:pass,p_usage_id:usage.id,p_expected_consumed_at:usage.at});
+    return r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]');
+  },{child,pass:attendancePass,date:today,usage:currentUsage});
+  check('tester_revoked_attendance_cancel_denied',revokedCancel);
+  const deniedRegistration=()=>page.evaluate(async({child,pass,date})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc('register_manual_ledger_attendance',{p_child_id:child,p_date:date,p_package_id:pass});
+    return r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]');
+  },{child,pass:attendancePass,date:today});
+  check('tester_revoked_attendance_register_denied',await deniedRegistration());
+  check('tester_revoked_attendance_state_unchanged',remaining()===2&&consumed()===1);
+  sql(`update auth.users set raw_app_meta_data=coalesce(raw_app_meta_data,'{}'::jsonb)||jsonb_build_object('ipasscare_tester',true,'ipasscare_test_branch',${lit(branch)}) where id=${lit(created.data.user.id)}::uuid;
+    update public.users set status='deleted' where id=${lit(created.data.user.id)}::uuid;`);
+  check('tester_suspended_attendance_register_denied',await deniedRegistration());
+  const suspendedCancellation=await page.evaluate(async({child,pass,date,usage})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc('cancel_attendance_ledger_entry',{
+      p_child_id:child,p_date:date,p_package_id:pass,p_usage_id:usage.id,p_expected_consumed_at:usage.at});
+    return r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]');
+  },{child,pass:attendancePass,date:today,usage:currentUsage});
+  check('tester_suspended_attendance_cancel_denied',suspendedCancellation&&remaining()===2&&consumed()===1);
   check('no_cloud_business_requests',unexpectedBlocked===0);
   check('external_font_requests_blocked',fontBlocked>0);
 } catch(error) {failure=error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'TESTER_LOCAL_BROWSER_FAILED';}
