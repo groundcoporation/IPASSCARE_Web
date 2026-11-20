@@ -27,6 +27,8 @@ export const errorMessages = {
   JOURNAL_LOAD_FAILED: "학습·상담일지를 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.",
   JOURNAL_SAVE_FAILED: "일지를 저장하지 못했습니다. 저장 상태를 확인한 후 다시 시도해 주세요.",
   JOURNAL_NOTIFICATION_FAILED: "일지는 저장되었지만 알림을 전송하지 못했습니다. 일지를 다시 작성하지 마세요.",
+  NOTICE_SAVE_FAILED: "공지 저장 결과를 확인하지 못했습니다. 공지 목록을 확인한 후 다시 시도해 주세요.",
+  NOTICE_NOTIFICATION_FAILED: "공지는 저장되었지만 알림 결과를 확인하지 못했습니다. 공지를 다시 등록하지 마세요.",
   BILL_LOAD_FAILED: "청구내역을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.",
   BILL_CREATE_FAILED: "청구서 처리를 완료하지 못했습니다. 일부 생성되었을 수 있으니 청구내역을 먼저 확인해 주세요.",
   BILL_SEND_FAILED: "청구서 발송 결과를 확인하지 못했습니다. 청구내역을 확인한 후 다시 시도해 주세요.",

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { BookOpen, Download, RefreshCw, Save } from 'lucide-react';
 import { focusJournalSection, JournalEntry, JournalSearch, JournalSelection, JournalSort, JournalStudentPicker, JournalVisibility, journalButton, journalField, journalLabel, journalPanel, journalPrimary } from './JournalUi';
 import { supabase } from '../../lib/supabaseClient';
+import {invokeActivityNotification,activityNotificationText} from '../../services/notifications/ActivityNotificationService';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
 
@@ -132,9 +133,9 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
         setLogs((current) => current.map((item) => item.id === editingId ? data : item));
         if (notifyParent) {
           try {
-            const { data: notificationResult, error: notificationError } = await supabase.functions.invoke('send-journal-notification', { body: { journalType: 'study', journalId: data.id, notificationKind: 'updated' } });
+            const { data: notificationResult, error: notificationError } = await invokeActivityNotification('send-journal-notification', { body: { journalType: 'study', journalId: data.id, notificationKind: 'updated' } });
             if (notificationError || notificationResult?.success !== true) throw notificationError || notificationResult;
-            alert(notificationResult.targetCount > 0 ? '수정 내용을 저장하고 학부모에게 다시 알림을 보냈습니다.' : '수정 내용은 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+            alert(activityNotificationText(notificationResult,notificationResult.targetCount > 0 ? '수정 내용을 저장하고 학부모에게 다시 알림을 보냈습니다.' : '수정 내용은 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
           } catch (notificationError: unknown) {
             await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.study.update-notification' });
           }
@@ -147,9 +148,9 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
         setLogs((current) => [data, ...current]);
         if (notifyParent) {
           try {
-            const result = await supabase.functions.invoke('send-journal-notification', { body: { journalType: 'study', journalId: data.id } });
+            const result = await invokeActivityNotification('send-journal-notification', { body: { journalType: 'study', journalId: data.id } });
             if (result.error || result.data?.success !== true) throw result.error || result.data;
-            alert(result.data.targetCount > 0 ? `${selectedStudent?.student_name || '원생'} 학부모에게 학습일지와 알림을 전송했습니다.` : '학습일지는 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+            alert(activityNotificationText(result.data,result.data.targetCount > 0 ? `${selectedStudent?.student_name || '원생'} 학부모에게 학습일지와 알림을 전송했습니다.` : '학습일지는 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
           } catch (error: unknown) { await handleError(error, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.study.notify' }); }
         } else alert('학습일지를 학원 내부용으로 저장했습니다.');
       }
@@ -167,9 +168,9 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
       if (error) throw error;
       setLogs((current) => current.map((item) => item.id === log.id ? { ...item, is_parent_visible: true } : item));
       try {
-        const result = await supabase.functions.invoke('send-journal-notification', { body: { journalType: 'study', journalId: log.id } });
+        const result = await invokeActivityNotification('send-journal-notification', { body: { journalType: 'study', journalId: log.id } });
         if (result.error || result.data?.success !== true) throw result.error || result.data;
-        alert(result.data.targetCount > 0 ? '학부모 앱에 일지를 공개하고 알림을 발송했습니다.' : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+        alert(activityNotificationText(result.data,result.data.targetCount > 0 ? '학부모 앱에 일지를 공개하고 알림을 발송했습니다.' : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
       } catch (error: unknown) { await handleError(error, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.study.publish.notify' }); }
     } catch (error: unknown) { await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.study.publish' }); }
     finally { setPublishingId(null); }

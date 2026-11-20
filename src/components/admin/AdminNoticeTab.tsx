@@ -1,5 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import {invokeActivityNotification,activityNotificationText} from '../../services/notifications/ActivityNotificationService';
+import {handleError} from '../../errors/handleError';
+import {AppError} from '../../errors/appError';
 import { 
   Bell, Plus, Pencil, Trash2, Search, Loader2,
   Send, Pin, Home, Building2, Eye, X, CheckCircle2, RefreshCw
@@ -45,6 +48,7 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [selectedNotice, setSelectedNotice] = useState<Notice | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
+  const saveInFlight=useRef(false);
 
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -116,34 +120,28 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
   };
 
   const sendPushToAppUsers = async (noticeId: string) => {
-    const { data, error } = await supabase.functions.invoke('send-notice-push', {
+    const { data, error } = await invokeActivityNotification('send-notice-push', {
       body: { noticeId },
     });
-    if (error) {
-      let detail = error.message || '공지 푸시 발송에 실패했습니다.';
-      try {
-        const errorBody = await (error as any)?.context?.json?.();
-        detail = errorBody?.error || detail;
-      } catch {
-        // 응답 본문을 읽지 못하면 Supabase 기본 오류 메시지를 사용합니다.
-      }
-      throw new Error(detail);
-    }
-    if (!data?.success) throw new Error(data?.error || '공지 푸시 발송에 실패했습니다.');
-    return data as { targetCount: number; sentCount: number; failedCount: number };
+    if (error) throw error;
+    return data;
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saveInFlight.current) return;
     if (!title.trim() || !content.trim()) {
       alert('제목과 내용을 모두 입력해 주세요.');
       return;
     }
 
+    saveInFlight.current=true;
     setSaveLoading(true);
     let noticeSaved = false;
     try {
-      const { data: authData } = await supabase.auth.getUser();
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!authData?.user) throw new AppError('AUTH_REQUIRED');
       const realName = profile?.name?.trim()
         || authData?.user?.user_metadata?.name?.trim()
         || authData?.user?.email?.split('@')[0]
@@ -186,7 +184,7 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
       }
       noticeSaved = true;
 
-      let pushResult: { targetCount: number; sentCount: number; failedCount: number } | null = null;
+      let pushResult: any = null;
       if (!editingId && isSendNotification && savedId) {
         pushResult = await sendPushToAppUsers(savedId);
       }
@@ -194,17 +192,16 @@ export const AdminNoticeTab: React.FC<AdminNoticeTabProps> = ({
       if (editingId) {
         alert('공지사항이 수정되었습니다.');
       } else if (pushResult) {
-        alert(`공지사항이 등록되었습니다.\n푸시 요청 성공 ${pushResult.sentCount}명 / 실패 ${pushResult.failedCount}명`);
+        alert(activityNotificationText(pushResult,`공지사항이 등록되었습니다.\n푸시 요청 성공 ${pushResult.sentCount}명 / 실패 ${pushResult.failedCount}명`));
       } else {
         alert('공지사항이 등록되어 학부모 앱 공지 목록에 반영되었습니다.');
       }
       setIsModalOpen(false);
       loadNotices();
-    } catch (err: any) {
-      alert(noticeSaved
-        ? `공지는 저장되었지만 푸시 발송에 실패했습니다: ${err.message || '알 수 없는 오류'}`
-        : `공지 저장 실패: ${err.message || '알 수 없는 오류'}`);
+    } catch (err: unknown) {
+      await handleError(err,noticeSaved?'NOTICE_NOTIFICATION_FAILED':'NOTICE_SAVE_FAILED',{operation:'notice.save'});
     } finally {
+      saveInFlight.current=false;
       setSaveLoading(false);
     }
   };

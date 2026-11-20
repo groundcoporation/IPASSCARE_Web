@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useId } from 'react';
 import { MessageSquare, RefreshCw, Save } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
+import {invokeActivityNotification,activityNotificationText} from '../../services/notifications/ActivityNotificationService';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
 import { AppError } from '../../errors/appError';
@@ -238,14 +239,14 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
         setEditingLogId(null);
         if (sendParentNotification) {
           try {
-            const { data: notificationResult, error: notificationError } = await supabase.functions.invoke(
+            const { data: notificationResult, error: notificationError } = await invokeActivityNotification(
               'send-journal-notification',
               { body: { journalType: 'counsel', journalId: data.id, notificationKind: 'updated' } },
             );
             if (notificationError || notificationResult?.success !== true) throw notificationError || notificationResult;
-            alert(notificationResult.targetCount > 0
+            alert(activityNotificationText(notificationResult,notificationResult.targetCount > 0
               ? '수정 내용을 저장하고 학부모에게 다시 알림을 보냈습니다.'
-              : '수정 내용은 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+              : '수정 내용은 저장했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
           } catch (notificationError: unknown) {
             await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.counsel.update-notification' });
           }
@@ -265,14 +266,14 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
 
         if (sendParentNotification) {
           try {
-            const { data: notificationResult, error: notificationError } = await supabase.functions.invoke(
+            const { data: notificationResult, error: notificationError } = await invokeActivityNotification(
               'send-journal-notification',
               { body: { journalType: 'counsel', journalId: data.id } },
             );
             if (notificationError || notificationResult?.success !== true) throw notificationError || notificationResult;
-            alert(notificationResult.targetCount > 0
+            alert(activityNotificationText(notificationResult,notificationResult.targetCount > 0
               ? '상담일지가 등록되고 학부모에게 알림이 발송되었습니다.'
-              : '상담일지가 등록되었습니다. 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+              : '상담일지가 등록되었습니다. 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
           } catch (notificationError: unknown) {
             await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.counsel.notify' });
           }
@@ -305,13 +306,13 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
 
       setCounselLogs(prev => prev.map(item => item.id === log.id ? { ...item, is_parent_visible: true } : item));
       try {
-        const { data, error } = await supabase.functions.invoke('send-journal-notification', {
+        const { data, error } = await invokeActivityNotification('send-journal-notification', {
           body: { journalType: 'counsel', journalId: log.id },
         });
         if (error || data?.success !== true) throw error || data;
-        alert(data.targetCount > 0
+        alert(activityNotificationText(data,data.targetCount > 0
           ? '학부모 앱에 일지를 공개하고 알림을 발송했습니다.'
-          : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.');
+          : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
       } catch (notificationError: unknown) {
         await handleError(notificationError, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.counsel.publish.notify' });
       }

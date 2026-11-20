@@ -6,6 +6,7 @@ import {
   History, Clock, Coins, Bell, Megaphone
 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
+import {invokeActivityNotification} from '../../services/notifications/ActivityNotificationService';
 import { AppError, formatError, logError, normalizeError } from "../../errors/appError";
 import { handleError } from "../../errors/handleError";
 import { loadActiveAppSchedulesByChild } from "../../lib/adminScheduleAssignments";
@@ -165,7 +166,7 @@ const sendAttendanceNotification = async (
   serviceDate: string,
   action: AttendanceNotificationAction,
 ) => {
-  const { data, error } = await supabase.functions.invoke('send-attendance-notification', {
+  const { data, error } = await invokeActivityNotification('send-attendance-notification', {
     body: {
       child_id: childId,
       branch_id: branchId,
@@ -2136,6 +2137,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onBackToSite, onLoginSucce
           <div className="flex flex-col">
             <span className="text-base font-black text-slate-900 tracking-tight leading-none group-hover:text-blue-600 transition-colors">IPASSCARE</span>
             <span className="text-[10px] text-slate-500 font-extrabold tracking-wider mt-1">{testLogin ? '테스트 · 가상 지점' : '관리자 모드'}</span>
+            {testLogin && <span className="mt-1 text-[10px] font-semibold text-indigo-700">가상 처리 · 실제 알림/결제 전송 없음</span>}
           </div>
         </div>
 

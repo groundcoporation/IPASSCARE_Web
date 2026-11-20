@@ -38,15 +38,17 @@ const fake = `
       const proxy = new Proxy(query, { get(target, key) { return target[key] ?? (() => proxy); } });
       return proxy;
     },
-    functions: { async invoke(name, args) {
-      window.notifications.push({ name, ...args.body });
-      return { data: { success: true, targetCount: 1 }, error: null };
-    } },
+    async rpc(name,args) {
+      window.notifications.push({name,...args.p_payload});
+      return {data:{success:true,testMode:true,externalDelivery:false,targetCount:1},error:null};
+    },
+    functions: {async invoke(){throw new Error('Preview must not invoke Edge delivery');}},
   };
 `;
 
 const server = await createServer({
   root: fileURLToPath(new URL('..', import.meta.url)), configFile: false,
+  define:{__IPASSCARE_ENVIRONMENT__:JSON.stringify({environment:'preview',databaseTarget:'cloud',projectRef:'msvwhvonafmeycmcvarv'})},
   server: { host: '127.0.0.1', port: 0 },
   plugins: [react(), tailwindcss(), {
     name: 'journal-fixture',
@@ -93,11 +95,13 @@ try {
     if (!counsel) await page.getByRole('textbox', { name: '일지 제목 *', exact: true }).fill('새 학습 기록');
     await page.getByRole('textbox', { name: counsel ? '상담 내용 *' : '학습 내용 및 수업 진도 *', exact: true }).fill('테스트 저장 내용');
     if (counsel) await visibility.check();
-    page.once('dialog', (alert) => alert.accept());
+    let notificationMessage='';
+    page.once('dialog', (alert) => {notificationMessage=alert.message();return alert.accept();});
     await page.getByRole('button', { name: counsel ? '저장하고 알림 보내기' : /내부용으로 저장/, exact: true }).click();
     await page.getByText('테스트 저장 내용', { exact: true }).waitFor();
     assert.deepEqual(await page.evaluate(() => window.saves), [{ table: counsel ? 'academy_counsel_logs' : 'academy_study_logs', student: 'student-a', visible: counsel }]);
-    assert.deepEqual(await page.evaluate(() => window.notifications), counsel ? [{ name: 'send-journal-notification', journalType: 'counsel', journalId: 'saved' }] : []);
+    assert.deepEqual(await page.evaluate(() => window.notifications), counsel ? [{ name: 'simulate_tester_activity_notification', journalType: 'counsel', journalId: 'saved' }] : []);
+    if(counsel)assert.match(notificationMessage,/실제 알림은 발송하지 않았습니다/);
   }
   console.log('Study and counsel UI, responsive layout, and private/public save flows passed.');
 } finally {
