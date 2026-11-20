@@ -6,6 +6,13 @@ const reservationScope = `if not exists(select 1 from public.reservations r
 const catalogScope = `if not exists(select 1 from public.packages p
   where p.id=p_package_id and p.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`;
 export const testerRpcRules = new Map([
+  ['save_shuttle_route_with_assignments(uuid,text,text,text,text,uuid,text,double precision,double precision,jsonb)',
+    `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;
+    if p_route_id is not null and not exists(select 1 from public.shuttle_routes r
+      where r.id=p_route_id and r.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
+  ['save_member_shuttle_settings(uuid,jsonb,jsonb)',
+    `if not exists(select 1 from public.users u where u.id=p_user_id
+      and u.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
   ['save_package_catalog(uuid,text,text,text,text,integer,boolean,boolean,text,jsonb)',
     `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;
     if p_package_id is not null then ${catalogScope} end if;`],

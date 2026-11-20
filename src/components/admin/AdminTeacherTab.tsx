@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { loadStaffRecords, saveStaffMember, removeStaffMember } from '../../services/admin/StaffManagementService';
+import { handleError } from '../../errors/handleError';
 import { 
   Plus, Pencil, Trash2, Phone, Mail, FileText, Loader2, 
   ShieldCheck, GraduationCap, Bus, Crown, RefreshCw, Search, CheckCircle2, UserCheck
@@ -41,6 +42,7 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
   const [memo, setMemo] = useState('');
   const [selectedBranchId, setSelectedBranchId] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
+  const mutationBusy = useRef(false);
 
   // Load all staff from users table (with roles) + academy_teachers
   const loadStaff = useCallback(async () => {
@@ -50,17 +52,8 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
       const seenIds = new Set<string>();
 
       // 1. Fetch staff members with role in ('director', 'teacher', 'coach', 'driver') from users
-      let usersQuery = supabase
-        .from('users')
-        .select('id, name, phone, email, role, branch_id, created_at')
-        .in('role', ['director', 'teacher', 'coach', 'driver']);
-
-      if (activeBranchId) {
-        usersQuery = usersQuery.eq('branch_id', activeBranchId);
-      }
-
-      const { data: userData, error: userError } = await usersQuery;
-      if (!userError && userData) {
+      const { members: userData, manual: teacherData } = await loadStaffRecords(activeBranchId);
+      if (userData) {
         userData.forEach((u: any) => {
           seenIds.add(u.id);
           mergedList.push({
@@ -78,11 +71,6 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
       }
 
       // 2. Fetch from academy_teachers (manual roster)
-      let teachersQuery = supabase.from('academy_teachers').select('*');
-      if (activeBranchId) {
-        teachersQuery = teachersQuery.eq('branch_id', activeBranchId);
-      }
-      const { data: teacherData } = await teachersQuery;
       if (teacherData) {
         teacherData.forEach((t: any) => {
           // Avoid duplicate if matching by phone or name
@@ -104,8 +92,9 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
       }
 
       setStaffList(mergedList);
-    } catch (err) {
-      console.error('Error loading staff list:', err);
+    } catch (error: unknown) {
+      setStaffList([]);
+      await handleError(error, 'STAFF_LOAD_FAILED', { operation: 'staff.load' });
     } finally {
       setLoading(false);
     }
@@ -167,74 +156,48 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
   // Save Staff
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (mutationBusy.current || !canManageStaff) return;
     if (!name.trim()) return alert('임직원 성함을 입력해주세요.');
     if (!selectedBranchId) return alert('지점을 선택해주세요.');
 
+    mutationBusy.current = true;
     setSaveLoading(true);
     try {
-      // If editing existing user role
-      if (editingId) {
-        const staff = staffList.find(s => s.id === editingId);
-        if (staff?.source === 'user') {
-          // Update role via RPC or direct update
-          await supabase.rpc('update_member_role', {
-            p_user_id: editingId,
-            p_role: role
-          });
-        } else {
-          await supabase.from('academy_teachers').update({
-            name: name.trim(),
-            phone: phone.trim() || null,
-            email: email.trim() || null,
-            memo: memo.trim() || null,
-            branch_id: selectedBranchId
-          }).eq('id', editingId);
-        }
-      } else {
-        // Insert into academy_teachers
-        await supabase.from('academy_teachers').insert([{
-          name: name.trim(),
-          phone: phone.trim() || null,
-          email: email.trim() || null,
-          memo: memo.trim() || null,
-          branch_id: selectedBranchId
-        }]);
-      }
+      await saveStaffMember({ id: editingId, source: staffList.find(s => s.id === editingId)?.source,
+        branchId: selectedBranchId, name, phone, email, memo, role });
 
       setIsModalOpen(false);
-      loadStaff();
+      await loadStaff();
       alert('임직원 정보가 저장되었습니다.');
-    } catch (err: any) {
-      alert(`저장에 실패했습니다: ${err.message}`);
+    } catch (error: unknown) {
+      await handleError(error, 'STAFF_SAVE_FAILED', { operation: 'staff.save' });
     } finally {
+      mutationBusy.current = false;
       setSaveLoading(false);
     }
   };
 
   // Revoke / Delete Staff
   const handleDelete = async (staff: StaffMember) => {
+    if (mutationBusy.current || !canManageStaff) return;
     const roleLabel = getRoleLabel(staff.role);
-    if (!confirm(`정말 ${staff.name} 님의 '${roleLabel}' 권한을 회수하시겠습니까?\n회수 시 일반 회원으로 안전하게 전환되며 관리자 접근이 차단됩니다.`)) return;
+    const prompt = staff.source === 'user'
+      ? `정말 ${staff.name} 님의 '${roleLabel}' 권한을 회수하시겠습니까?\n회수 시 일반 회원으로 전환됩니다.`
+      : '수동 등록한 직원 정보를 삭제하시겠습니까? 로그인 계정의 권한은 변경되지 않습니다.';
+    if (!confirm(prompt)) return;
 
+    mutationBusy.current = true;
+    setSaveLoading(true);
     try {
-      if (staff.source === 'user') {
-        // Demote role to 'user'
-        const { error } = await supabase.rpc('update_member_role', {
-          p_user_id: staff.id,
-          p_role: 'user'
-        });
-        if (error) {
-          // Fallback direct update
-          await supabase.from('users').update({ role: 'user' }).eq('id', staff.id);
-        }
-      } else {
-        await supabase.from('academy_teachers').delete().eq('id', staff.id);
-      }
+      await removeStaffMember(staff.id, staff.source);
 
-      loadStaff();
-      alert(`${staff.name} 님의 권한이 안전하게 회수되었습니다.`);
-    } catch (err: any) {
-      alert(`권한 회수 실패: ${err.message}`);
+      await loadStaff();
+      alert(staff.source === 'user' ? '직원 권한이 회수되었습니다.' : '수동 등록한 직원 정보가 삭제되었습니다.');
+    } catch (error: unknown) {
+      await handleError(error, 'STAFF_REMOVE_FAILED', { operation: 'staff.remove' });
+    } finally {
+      mutationBusy.current = false;
+      setSaveLoading(false);
     }
   };
 
@@ -422,6 +385,7 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
                 <div className="flex justify-end gap-1.5 border-t border-slate-100 pt-3">
                   <button
                     onClick={() => openModal(staff)}
+                    disabled={saveLoading}
                     className="flex items-center justify-center px-3 py-1.5 text-blue-600 hover:bg-blue-50 rounded-xl text-xs font-bold transition"
                   >
                     <Pencil size={13} className="mr-1" />
@@ -429,10 +393,11 @@ export const AdminTeacherTab: React.FC<AdminTeacherTabProps> = ({ activeBranchId
                   </button>
                   <button
                     onClick={() => handleDelete(staff)}
+                    disabled={saveLoading}
                     className="flex items-center justify-center px-3 py-1.5 text-rose-500 hover:bg-rose-50 rounded-xl text-xs font-bold transition"
                   >
                     <Trash2 size={13} className="mr-1" />
-                    권한 회수
+                    {staff.source === 'user' ? '권한 회수' : '직원 삭제'}
                   </button>
                 </div>
               )}

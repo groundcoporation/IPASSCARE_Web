@@ -15,6 +15,19 @@
 
 ### 현재 공개 보류
 
+#### 2026-11-20 후속: 셔틀·수업·직원 관리 격리 및 오류 처리
+
+- Develop의 `class_schedules`·`pickup_spots`·`pickup_settings`·`shuttle_status`는 RLS가 비활성이었다. 롤백 후보에서 RLS를 활성화하고, 기존 직원·노선·수업배정·셔틀 알림 이력 정책에도 테스터 지점 제한을 덧붙였다. 로그인 전체 조회 정책이 있는 노선/노선배정도 다른 지점은 보이지 않는다.
+- 수업→강사, 승하차 설정→자녀/정류장, 노선배정→노선/수업/자녀/정류장 연결을 검증한다. 자기 지점 문자열로 다른 지점의 식별자를 연결할 수 없다. 관리자 웹이 조회만 하는 차량 운행 상태는 테스터의 직접 생성·수정·삭제를 차단했다. 기사 앱의 운행 체험 기능을 구현했다는 뜻은 아니다.
+- `save_shuttle_route_with_assignments`·`save_member_shuttle_settings`에 활성 테스터·서버 권한 표식·소속 지점·기존 대상 지점 검사를 먼저 하는 후보를 추가했다. 검토한 기존 RPC는 **14개**이며, 나머지 RPC에는 별도 검토가 필요하다.
+- 정상 직원/수업/정류장 생성·삭제, 자기 지점 수정, 셔틀 노선 및 회원 승하차 설정의 반복 저장 결과, 타 지점 조회/수정·연결 위조·권한 상승·정지·권한 회수 후 기존 토큰·비로그인 요청 등 **70개를 추가해 DB 총 201개 통과**했다. 초기 검증 SQL의 시간 자료형 오류를 수정한 후 전체 재검사를 통과했다. 검사 전후 읽기 전용 메타데이터 해시가 동일했고, 임시 정책·함수·데이터는 모두 롤백했다. sequence 값은 롤백되지 않을 수 있다.
+- 직원 관리 화면의 Supabase 오류 무시 및 RPC 실패 후 직접 `users` 수정 우회를 제거했다. 서비스에서 공통 오류로 정규화하고 화면에서 안전한 메시지를 표시한다. 변경된 행/권한 응답이 없으면 성공 처리하지 않으며, 요청 중 중복 실행을 막고 `finally`에서 해제한다. 목록 조회 오류도 일부 직원만 표시하는 대신 오류로 안내한다.
+- 수동 등록 직원 삭제는 로그인 권한 회수가 아님을 확인창·버튼·결과창에 명시했다. 새 `STAFF_LOAD_FAILED`/`STAFF_SAVE_FAILED`/`STAFF_REMOVE_FAILED`는 앱·웹 카탈로그 사본을 함께 수정하고 동기화 검사를 통과했다. **앱 카탈로그 수정은 앱 저장소의 로컬 변경이며 웹 커밋과 별도다.**
+- 관련 로컬 테스트 **54개**, 운영용·Preview 빌드 통과. 기존 ExcelJS 청크 경고는 유지된다. 이번 단계에 실제 DB와 연결한 화면 E2E·동시 요청·기사 앱 동작 검증은 포함하지 않았다.
+- 운영 DB·main에는 반영하지 않았으며, Develop에도 영구 배포하지 않았다. 테스터 공개 플래그는 계속 비활성이다.
+
+검사 파일: `supabase/checks/tester_preview_menu_probes.sql`. 다음은 수업/이용권 배정·월별 청구 동기화 RPC, 기타 운영 설정/셔틀 진단 데이터 접근, 실제 DB를 연결한 브라우저 저장 E2E와 Develop 전용 배포 계획이다.
+
 #### 2026-11-20 후속: 상품·이용권 카탈로그 격리 검증
 
 - Develop 메타데이터에서 `packages`·`package_options`는 RLS가 비활성인 상태였다. 롤백용 후보에 두 테이블의 지점 격리와 옵션→상품 지점 일치 검사를 추가했다. 클라이언트가 자기 지점 문자열을 넣어 다른 지점 상품에 옵션을 연결하는 요청도 거부한다.
@@ -92,7 +105,7 @@ node scripts/check-tester-storage.mjs --run
 #### 후속: 고위험 RPC 검증 확대 — 총 86개 통과
 
 - 기존 60개에 원생/예약 삭제·취소·보강·이용권 대상 변경·추천 포인트·정지/회수 세션 검사 26개를 추가해 **DB 검사 86개 통과**. 로컬 단위 검사 21개도 통과했다.
-- 테스터 후보에서 보호하는 기존 RPC는 12개다: `update_member_role`, `list_role_manageable_members`, `soft_delete_child`, `soft_delete_reservation`, `cancel_class_reservation`, `process_referral_points`, `grant_makeup_credit`, `assign_user_package_beneficiary`, `process_lesson_check_in`, `save_package_catalog`, `set_package_catalog_active`, `retire_or_delete_package_catalog`. 검토 목록은 `scripts/tester-rpc-rules.mjs`에서 관리한다.
+- 테스터 후보에서 보호하는 기존 RPC는 14개다: `update_member_role`, `list_role_manageable_members`, `soft_delete_child`, `soft_delete_reservation`, `cancel_class_reservation`, `process_referral_points`, `grant_makeup_credit`, `assign_user_package_beneficiary`, `process_lesson_check_in`, `save_package_catalog`, `set_package_catalog_active`, `retire_or_delete_package_catalog`, `save_shuttle_route_with_assignments`, `save_member_shuttle_settings`. 검토 목록은 `scripts/tester-rpc-rules.mjs`에서 관리한다.
 - 원본 `soft_delete_child`/`soft_delete_reservation`의 직원 판정에는 지점 제한이 없었다. 후보는 서버의 테스터 지점과 대상 행의 지점을 비교해 타 지점 삭제를 거부한다. 자기 지점 가상 원생·예약의 정상 삭제도 검증했다.
 - 원본 `cancel_class_reservation`은 전달받은 사용자 ID를 사용하고 `remaining_count+1`을 수행했다. 테스터 후보에서는 대상 소유자·지점을 확인하고 홀딩 해제를 처리하는 soft cancellation 경로를 사용한다. 같은 예약을 반복 취소해도 잔여 횟수가 3회를 넘지 않는 것을 검증했다. 일반 운영 사용자용 원본 함수가 수정된 것은 아니다.
 - 같은 지점 보강 승인과 동일 보강 중복 생성 방지, 같은 지점 이용권 대상 지정은 유지했다. 타 지점 대상·위조 자녀 연결은 차단했다.

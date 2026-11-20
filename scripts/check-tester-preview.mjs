@@ -98,7 +98,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         readFileSync(new URL('supabase/checks/tester_preview_virtual_billing_probes.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_virtual_activity.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_virtual_activity_probes.sql', web),'utf8')+'\n'+
-        readFileSync(new URL('supabase/checks/tester_preview_catalog_probes.sql', web),'utf8'))
+        readFileSync(new URL('supabase/checks/tester_preview_catalog_probes.sql', web),'utf8')+'\n'+
+        readFileSync(new URL('supabase/checks/tester_preview_menu_probes.sql', web),'utf8'))
         : buildWriteCheck(sql,probes,metadata);
     }
     const ref = readFileSync(new URL('supabase/.temp/project-ref', workdir), 'utf8');
@@ -124,8 +125,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         const diagnostic = result.stderr || result.stdout || '';
         const sqlState = diagnostic.match(/ERROR:\s*([0-9A-Z]{5}):/)?.[1];
         const token = diagnostic.match(/syntax error at or near "([a-zA-Z_$]{1,40})"/)?.[1];
+        // Identifiers/type names only; never expose SQL values or raw server text.
+        const typeMismatch = diagnostic.match(/column "([a-z_]{1,63})" is of type ([a-z_ ]{1,63}) but expression is of type ([a-z_ ]{1,63})/i);
+        const errorCategory = ['UNION types','argument of AND','argument of OR','argument of NOT',
+          'argument of WITH CHECK','argument of policy','structure of query does not match','datatype mismatch']
+          .find(category => diagnostic.includes(category));
+        const sqlLine = diagnostic.match(/LINE (\d+):/)?.[1];
         console.error(JSON.stringify({ passed: false, sqlState: sqlState ?? 'CLI_FAILED',
           ...(token ? { syntaxToken: token } : {}),
+          ...(typeMismatch ? { column: typeMismatch[1], expectedType: typeMismatch[2].trim(), actualType: typeMismatch[3].trim() } : {}),
+          ...(errorCategory ? { errorCategory } : {}), ...(sqlLine ? { sqlLine: Number(sqlLine) } : {}),
           nextAction: 'Check rollback and metadata before any retry. Raw response suppressed.' }));
         process.exitCode = 1;
       } else {

@@ -83,3 +83,15 @@ test('catalogue candidate scopes direct rows and prevents cross-branch option li
     'catalog_suspended_','catalog_revoked_','catalog_anon_toggle_denied']) assert.ok(probes.includes(label));
   assert.doesNotMatch(probes,/\bcommit\s*;|https?:\/\//i);
 });
+
+test('management menus keep cross-branch links isolated and telemetry read-only for testers', () => {
+  assert.match(sql,/create policy preview_class_teacher_guard/);
+  assert.match(sql,/create policy preview_pickup_links_guard/);
+  assert.match(sql,/create policy preview_route_assignment_scope/);
+  for(const operation of ['insert','update','delete']) assert.ok(sql.includes('create policy preview_telemetry_'+operation+'_guard'));
+  const probes=readFileSync(new URL('../supabase/checks/tester_preview_menu_probes.sql',import.meta.url),'utf8');
+  for(const label of ['menu_own_route_rpc','menu_own_member_shuttle_rpc','menu_class_foreign_teacher_denied',
+    'menu_assignment_foreign_route_denied','menu_revoked_','menu_suspended_',
+    'menu_manual_teacher_create_delete','menu_admin_role_escalation_denied']) assert.ok(probes.includes(label));
+  assert.doesNotMatch(probes,/\bcommit\s*;|https?:\/\//i);
+});

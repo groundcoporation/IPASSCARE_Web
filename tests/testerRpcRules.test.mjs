@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testerRpcRules,patchTesterRpc } from '../scripts/tester-rpc-rules.mjs';
 test('reviewed RPC rules keep a server-controlled active tester gate and preserve the old body', () => {
-  assert.equal(testerRpcRules.size,12);
+  assert.equal(testerRpcRules.size,14);
   const original='CREATE FUNCTION public.synthetic() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $body$\nBEGIN\n  perform original_action();\nEND\n$body$';
   for(const [signature,rule] of testerRpcRules) {
     const patched=patchTesterRpc(original,rule);
@@ -33,4 +33,11 @@ test('catalogue RPCs check both the supplied branch and stored package scope', (
     'set_package_catalog_active(uuid,boolean)','retire_or_delete_package_catalog(uuid)']) {
     assert.match(testerRpcRules.get(signature),/p.id=p_package_id and p.branch_id=ipasscare_preview_access.core_scope/);
   }
+});
+
+test('shuttle RPCs validate server scope and stored route/member ownership', () => {
+  const route=testerRpcRules.get('save_shuttle_route_with_assignments(uuid,text,text,text,text,uuid,text,double precision,double precision,jsonb)');
+  assert.match(route,/p_branch_id is distinct from ipasscare_preview_access.core_scope/);
+  assert.match(route,/r.id=p_route_id and r.branch_id=ipasscare_preview_access.core_scope/);
+  assert.match(testerRpcRules.get('save_member_shuttle_settings(uuid,jsonb,jsonb)'),/u.id=p_user_id/);
 });

@@ -171,6 +171,54 @@ create policy preview_bill_link_guard on public.academy_bills as restrictive
   with check ((select ipasscare_preview_access.core_scope()) = '*'
     or ipasscare_preview_access.valid_student_link(student_id,branch_id));
 
+-- Management menus: keep existing policies and add restrictive tester guards.
+do $menus$
+declare t text;
+begin
+  foreach t in array array['class_schedules','pickup_spots','pickup_settings','shuttle_status'] loop
+    execute format('alter table public.%I enable row level security',t);
+    execute format('create policy preview_menu_authenticated on public.%I for all to authenticated using(true) with check(true)',t);
+  end loop;
+  foreach t in array array['class_schedules','academy_teachers','pickup_spots','pickup_settings',
+    'shuttle_routes','student_schedule_assignments','shuttle_status','shuttle_notification_logs'] loop
+    execute format('create policy preview_menu_branch_guard on public.%I as restrictive for all to authenticated
+      using(coalesce((select ipasscare_preview_access.core_scope()) in (''*'',nullif(branch_id,'''')),false))
+      with check(coalesce((select ipasscare_preview_access.core_scope()) in (''*'',nullif(branch_id,'''')),false))',t);
+  end loop;
+end $menus$;
+create policy preview_class_teacher_guard on public.class_schedules as restrictive
+  for all to authenticated using(true) with check(
+    (select ipasscare_preview_access.core_scope())='*' or teacher_id is null or exists(
+      select 1 from public.academy_teachers t where t.id=teacher_id and t.branch_id=class_schedules.branch_id));
+create policy preview_pickup_links_guard on public.pickup_settings as restrictive
+  for all to authenticated using(true) with check(
+    (select ipasscare_preview_access.core_scope())='*' or (
+      ipasscare_preview_access.valid_child_link(child_id,branch_id)
+      and (pickup_spot_id is null or exists(select 1 from public.pickup_spots s where s.id=pickup_spot_id and s.branch_id=pickup_settings.branch_id))
+      and (dropoff_spot_id is null or exists(select 1 from public.pickup_spots s where s.id=dropoff_spot_id and s.branch_id=pickup_settings.branch_id))));
+create policy preview_schedule_links_guard on public.student_schedule_assignments as restrictive
+  for all to authenticated using(true) with check(
+    (select ipasscare_preview_access.core_scope())='*' or (
+      exists(select 1 from public.users u where u.id=user_id and u.branch_id=student_schedule_assignments.branch_id)
+      and ipasscare_preview_access.valid_child_link(child_id,branch_id)
+      and exists(select 1 from public.class_schedules s where s.id=schedule_id and s.branch_id=student_schedule_assignments.branch_id)));
+create policy preview_route_assignment_scope on public.shuttle_route_assignments as restrictive
+  for all to authenticated using(
+    (select ipasscare_preview_access.core_scope())='*' or exists(
+      select 1 from public.shuttle_routes r where r.id=route_id and r.branch_id=(select ipasscare_preview_access.core_scope())))
+  with check((select ipasscare_preview_access.core_scope())='*' or exists(
+    select 1 from public.shuttle_routes r where r.id=route_id and r.branch_id=(select ipasscare_preview_access.core_scope())
+      and ipasscare_preview_access.valid_child_link(child_id,r.branch_id)
+      and exists(select 1 from public.class_schedules s where s.id=class_schedule_id and s.branch_id=r.branch_id)
+      and (pickup_spot_id is null or exists(select 1 from public.pickup_spots p where p.id=pickup_spot_id and p.branch_id=r.branch_id))));
+-- The admin web reads driver telemetry; it must not forge a driving status.
+create policy preview_telemetry_insert_guard on public.shuttle_status as restrictive
+  for insert to authenticated with check((select ipasscare_preview_access.core_scope())='*');
+create policy preview_telemetry_update_guard on public.shuttle_status as restrictive
+  for update to authenticated using((select ipasscare_preview_access.core_scope())='*') with check((select ipasscare_preview_access.core_scope())='*');
+create policy preview_telemetry_delete_guard on public.shuttle_status as restrictive
+  for delete to authenticated using((select ipasscare_preview_access.core_scope())='*');
+
 -- Read-only fixture queries using a transaction-local tester identity. No tester
 -- permissions or fixtures are changed on the project after rollback.
 do $check$
