@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testerRpcRules,patchTesterRpc } from '../scripts/tester-rpc-rules.mjs';
 test('reviewed RPC rules keep a server-controlled active tester gate and preserve the old body', () => {
-  assert.equal(testerRpcRules.size,30);
+  assert.equal(testerRpcRules.size,34);
   const original='CREATE FUNCTION public.synthetic() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $body$\nBEGIN\n  perform original_action();\nEND\n$body$';
   for(const [signature,rule] of testerRpcRules) {
     const patched=patchTesterRpc(original,rule);
@@ -63,4 +63,14 @@ test('monthly entry points and direct dependencies validate student, timetable a
   assert.match(unified,/o.branch_id=ipasscare_preview_access.core_scope/);
   assert.match(unified,/p.branch_id=ipasscare_preview_access.core_scope/);
   assert.match(testerRpcRules.get('sync_current_month_child_schedule(uuid,uuid,uuid[])'),/c.parent_id=p_user_id/);
+});
+
+test('offline management RPC candidates validate the server branch and linked payment owner',()=>{
+  assert.match(testerRpcRules.get('list_offline_payments(text,text)'),/p_branch_id is distinct from/);
+  assert.match(testerRpcRules.get('schedule_offline_payment(uuid,integer,text,timestamp with time zone,text)'),/b.id=p_bill_id/);
+  for(const signature of ['confirm_offline_payment(uuid,text)','cancel_offline_payment(uuid,text)']) {
+    assert.match(testerRpcRules.get(signature),/p.id=p_payment_id/);
+    assert.match(testerRpcRules.get(signature),/u.branch_id=p.branch_id/);
+    assert.match(testerRpcRules.get(signature),/b.branch_id=p.branch_id/);
+  }
 });

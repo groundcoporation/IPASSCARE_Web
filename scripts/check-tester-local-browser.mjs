@@ -125,14 +125,41 @@ enabled = false
     values(${lit(otherStudy)}::uuid,${lit(other)},${lit(otherStudent)}::uuid,'가상 반','다른 지점 학습','다른 지점 기록',false);
     insert into public.academy_counsel_logs(id,branch_id,student_id,content,is_parent_visible)
     values(${lit(otherCounsel)}::uuid,${lit(other)},${lit(otherStudent)}::uuid,'다른 지점 기록',false);`);
+  phase='seed-local-payments';
+  const parentIds=[];
+  for(const suffix of ['own','other']) {
+    const actor=await admin.auth.admin.createUser({email:`local-parent-${run}-${suffix}@example.com`,email_confirm:true});
+    if(actor.error||!actor.data.user?.id)throw new Error('TESTER_LOCAL_PARENT_CREATE_FAILED');
+    parentIds.push(actor.data.user.id);
+  }
+  const bill=randomUUID(),otherBill=randomUUID();
+  for(const [i,student,b,receipt] of [[0,ownStudent,branch,bill],[1,otherStudent,other,otherBill]]) {
+    const child=randomUUID(),product=randomUUID(),option=randomUUID();
+    sql(`insert into public.users(id,name,role,status,branch_id) values(${lit(parentIds[i])}::uuid,${lit(i?'다른 지점 수납 보호자':'E2E 수납 보호자')},'user','active',${lit(b)});
+      insert into public.children(id,parent_id,branch_id,child_name,child_birth) values(${lit(child)}::uuid,${lit(parentIds[i])}::uuid,${lit(b)},'E2E 수납 자녀','20180101');
+      update public.academy_students set parent_user_id=${lit(parentIds[i])}::uuid,child_id=${lit(child)}::uuid where id=${lit(student)}::uuid;
+      insert into public.packages(id,branch_id,name,voucher_type,is_active) values(${lit(product)}::uuid,${lit(b)},'E2E 수납 이용권','lesson',true);
+      insert into public.package_options(id,package_id,branch_id,label,price,total_count) values(${lit(option)}::uuid,${lit(product)}::uuid,${lit(b)},'E2E 3회',100,3);
+      insert into public.academy_student_classes(student_id,package_option_id,status) values(${lit(student)}::uuid,${lit(option)}::uuid,'active');
+      insert into public.academy_bills(id,student_id,branch_id,bill_month,amount_due,original_amount)
+      values(${lit(receipt)}::uuid,${lit(student)}::uuid,${lit(b)},to_char(now() at time zone 'Asia/Seoul','YYYY-MM'),100,100);`);
+  }
+  // Seed scheduled receipts via the same reviewed RPC. Only fake local money is recorded.
+  sql(`begin; select set_config('request.jwt.claims',json_build_object('sub',${lit(created.data.user.id)},'role','authenticated')::text,true);
+    select public.schedule_offline_payment(${lit(bill)}::uuid,100,'CASH',now(),'E2E 가상 수납');
+    commit;
+    insert into public.payments(user_id,branch_id,total_amount,final_amount,payment_method,status,source,academy_bill_id)
+    values(${lit(parentIds[1])}::uuid,${lit(other)},100,100,'CASH','scheduled','onsite',${lit(otherBill)}::uuid);`);
+  const payment=sql(`select id from public.payments where academy_bill_id=${lit(bill)}::uuid;`).trim();
+  const foreignPayment=sql(`select id from public.payments where academy_bill_id=${lit(otherBill)}::uuid;`).trim();
   phase='browser';
   const {chromium}=require(process.env.IPASSCARE_BROWSER_RUNTIME||'playwright');
   const config={environment:'development',databaseTarget:'local',projectRef:'local',supabaseUrl:api,supabaseAnonKey:status.ANON_KEY};
   vite=await createServer({root:fileURLToPath(web),configFile:false,define:{__IPASSCARE_ENVIRONMENT__:JSON.stringify(config)},
     server:{host:'127.0.0.1',port:0},plugins:[react(),tailwindcss(),{name:'staff-local-e2e',configureServer(server){server.middlewares.use(async(req,res,next)=>{
       const path=req.url?.split('?')[0];
-      if(!['/__staff-live','/__journal-live'].includes(path))return next();
-      const fixture=path==='/__staff-live'?'staffLiveFixture.tsx':'journalLiveFixture.tsx';
+      if(!['/__staff-live','/__journal-live','/__offline-live'].includes(path))return next();
+      const fixture=path==='/__staff-live'?'staffLiveFixture.tsx':path==='/__offline-live'?'offlineLiveFixture.tsx':'journalLiveFixture.tsx';
       res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(path,`<html><div id="root"></div><script type="module" src="/tests/fixtures/${fixture}"></script></html>`));
     });}}]});
   await vite.listen();const origin='http://127.0.0.1:'+vite.httpServer.address().port;
@@ -210,6 +237,50 @@ enabled = false
     check(kind+'_foreign_row_unchanged',Number(sql(`select count(*) from public.${table} where id=${lit(foreignId)}::uuid and content='다른 지점 기록';`).trim())===1);
   }
   check('private_journals_not_copied_to_parent',Number(sql('select count(*) from public.parent_journal_entries;').trim())===0);
+  phase='offline-confirm';
+  await page.goto(origin+'/__offline-live');
+  await page.getByText('E2E 수납 보호자',{exact:true}).waitFor();
+  check('offline_other_branch_hidden',await page.getByText('다른 지점 수납 보호자',{exact:true}).count()===0);
+  let confirms=0;
+  page.on('request',r=>{if(new URL(r.url()).pathname==='/rest/v1/rpc/confirm_offline_payment')confirms++;});
+  await page.locator('article').getByRole('button',{name:'수납 완료',exact:true}).evaluate(b=>{b.click();b.click();});
+  await page.getByText('표시할 현장결제가 없습니다.',{exact:true}).waitFor();
+  await page.waitForLoadState('networkidle');
+  check('offline_confirm_one_request',confirms===1);
+  check('offline_payment_paid',Number(sql(`select count(*) from public.payments where id=${lit(payment)}::uuid and status='paid';`).trim())===1);
+  check('offline_bill_paid',Number(sql(`select count(*) from public.academy_bills where id=${lit(bill)}::uuid and status='paid' and amount_paid=100;`).trim())===1);
+  const issued=()=>Number(sql(`select count(*) from public.user_packages where payment_id=${lit(payment)}::uuid;`).trim());
+  check('offline_one_pass_issued',issued()===1);
+  const replay=await page.evaluate(async id=>{const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc('confirm_offline_payment',{p_payment_id:id,p_memo:null});return !r.error&&r.data?.already_paid===true;},payment);
+  check('offline_server_repeat_no_second_pass',replay&&issued()===1);
+  await page.getByRole('button',{name:'수납 완료',exact:true}).click();
+  await page.getByText('E2E 수납 보호자',{exact:true}).waitFor();
+  await page.reload();await page.getByRole('heading',{name:'현장결제 관리',exact:true}).waitFor();
+  // Reload defaults to scheduled; switch back to the persisted paid record.
+  await page.getByRole('button',{name:'수납 완료',exact:true}).click();
+  await page.getByText('E2E 수납 보호자',{exact:true}).waitFor();
+  check('offline_paid_reload',issued()===1);
+  phase='offline-cancel';
+  await page.locator('article').getByRole('button',{name:'결제 취소',exact:true}).click();
+  await page.getByText('표시할 현장결제가 없습니다.',{exact:true}).waitFor();
+  check('offline_cancel_persisted',Number(sql(`select count(*) from public.payments where id=${lit(payment)}::uuid and status='cancelled';`).trim())===1);
+  check('offline_unused_pass_recalled',Number(sql(`select count(*) from public.user_packages where payment_id=${lit(payment)}::uuid and status='cancelled' and remaining_count=0;`).trim())===1);
+  check('offline_bill_reset_unpaid',Number(sql(`select count(*) from public.academy_bills where id=${lit(bill)}::uuid and status='unpaid' and amount_paid=0;`).trim())===1);
+  const denied=await page.evaluate(async({branch,id})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');
+    const list=await supabase.rpc('list_offline_payments',{p_branch_id:branch,p_status:'all'});
+    const cancel=await supabase.rpc('cancel_offline_payment',{p_payment_id:id,p_reason:'synthetic forbidden attempt'});
+    return list.error?.code==='42501'&&cancel.error?.code==='42501';
+  },{branch:other,id:foreignPayment});
+  check('offline_foreign_rpc_denied',denied);
+  check('offline_foreign_receipt_preserved',Number(sql(`select count(*) from public.payments where id=${lit(foreignPayment)}::uuid and status='scheduled';`).trim())===1);
+  phase='offline-permission-revocation';
+  sql(`update public.users set status='deleted' where id=${lit(created.data.user.id)}::uuid;`);
+  const previousDialogs=dialogs.length;
+  await page.getByRole('button',{name:'새로고침',exact:true}).click();
+  await page.waitForFunction(count=>window.document.querySelector('section')&&!window.document.querySelector('article'),previousDialogs);
+  await page.waitForLoadState('networkidle');
+  check('offline_revoked_session_safe_error',dialogs.slice(previousDialogs).some(m=>m.includes('[PERMISSION_DENIED]')));
   check('no_cloud_business_requests',unexpectedBlocked===0);
   check('external_font_requests_blocked',fontBlocked>0);
 } catch(error) {failure=error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'TESTER_LOCAL_BROWSER_FAILED';}

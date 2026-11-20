@@ -52,6 +52,8 @@ export const errorMessages = {
   BILL_MONTH_CLOSED: "이미 지난 달의 청구 예정 이용권은 변경할 수 없습니다. 현재 달 또는 다음 달을 선택해 주세요.",
   BILL_DUPLICATE_OPTION: "같은 이용권이 이번 달 청구에 이미 포함되어 있습니다. 다른 이용권을 선택해 주세요.",
   PAYMENT_SAVE_FAILED: "수납 등록 결과를 확인하지 못했습니다. 결제 내역을 먼저 확인하고 중복 등록하지 마세요.",
+  OFFLINE_PAYMENT_LOAD_FAILED: "현장결제 내역을 불러오지 못했습니다. 지점과 조회 상태를 확인한 후 다시 조회해 주세요.",
+  PAYMENT_CANCEL_FAILED: "결제 취소 결과를 확인하지 못했습니다. 결제 상태와 이용권 회수 내역을 먼저 확인하고 중복 취소하지 마세요.",
   PAYMENT_CONFIRM_PENDING: "결제 예정 내역은 등록됐지만 수납 완료 결과를 확인하지 못했습니다. 기존 내역을 확인하고 새 결제를 등록하지 마세요.",
   PAYMENT_PACKAGE_PENDING: "수납은 완료됐지만 이용권 지급을 확인하지 못했습니다. 다시 결제하지 말고 지급 내역을 확인해 주세요.",
   PACKAGE_CATALOG_ACTION_FAILED: "이용권의 판매 상태를 변경하지 못했습니다. 최신 상품과 청구 연결 상태를 확인해 주세요.",

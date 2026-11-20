@@ -1,24 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { CalendarClock, CheckCircle2, Loader2, RefreshCw, Search, XCircle } from 'lucide-react';
-import { supabase } from '../../lib/supabaseClient';
-
-type OfflineStatus = 'scheduled' | 'paid' | 'cancelled';
-
-type OfflinePayment = {
-  id: string;
-  user_id: string;
-  user_name: string;
-  username?: string | null;
-  student_name?: string | null;
-  children_names?: string[] | null;
-  final_amount: number;
-  total_amount: number;
-  payment_method: string;
-  status: OfflineStatus;
-  scheduled_at?: string | null;
-  paid_at?: string | null;
-  memo?: string | null;
-};
+import {loadOfflinePayments,confirmOfflinePayment,cancelOfflinePayment,type OfflineStatus,type OfflinePayment} from '../../services/admin/OfflinePaymentService';
+import {handleError} from '../../errors/handleError';
 
 interface Props {
   activeBranchId: string | null;
@@ -42,52 +25,37 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
   const [loading, setLoading] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const mutationBusy = useRef(false);
+  const loadVersion = useRef(0);
+  const currentScope = useRef({branch:activeBranchId,status});
+  currentScope.current = {branch:activeBranchId,status};
 
   const loadPayments = useCallback(async () => {
+    // A mutation may finish after the surrounding page switches branches.
+    // Do not let its captured reload overwrite the new branch/status view.
+    if (currentScope.current.branch !== activeBranchId || currentScope.current.status !== status) return;
+    const version = ++loadVersion.current;
+    const isCurrent = () => version === loadVersion.current
+      && currentScope.current.branch === activeBranchId && currentScope.current.status === status;
     if (!activeBranchId || activeBranchId === 'all') {
       setPayments([]);
+      setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const { data, error } = await supabase.rpc('list_offline_payments', {
-        p_branch_id: activeBranchId,
-        p_status: status,
-      });
-      if (error) throw error;
-      const paymentRows = Array.isArray(data) ? data as OfflinePayment[] : [];
-      const userIds = [...new Set(paymentRows.map((payment) => payment.user_id).filter(Boolean))];
-      const { data: children, error: childrenError } = userIds.length
-        ? await supabase
-            .from('children')
-            .select('parent_id,child_name')
-            .in('parent_id', userIds)
-            .is('deleted_at', null)
-        : { data: [], error: null };
-      if (childrenError) throw childrenError;
-
-      const childrenByParent = new Map<string, string[]>();
-      (children || []).forEach((child: any) => {
-        if (!child.parent_id || !child.child_name) return;
-        const names = childrenByParent.get(child.parent_id) || [];
-        if (!names.includes(child.child_name)) names.push(child.child_name);
-        childrenByParent.set(child.parent_id, names);
-      });
-
-      setPayments(paymentRows.map((payment) => ({
-        ...payment,
-        children_names: childrenByParent.get(payment.user_id) || [],
-      })));
-    } catch (error: any) {
-      console.error('[OfflinePayment] 목록 조회 실패:', error);
-      alert(error?.message || '현장결제 내역을 불러오지 못했습니다.');
+      const rows = await loadOfflinePayments(activeBranchId,status);
+      if (isCurrent()) setPayments(rows);
+    } catch (error: unknown) {
+      if (!isCurrent()) return;
+      await handleError(error,'OFFLINE_PAYMENT_LOAD_FAILED',{operation:'offline.load'});
       setPayments([]);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [activeBranchId, status]);
 
-  useEffect(() => { void loadPayments(); }, [loadPayments]);
+  useEffect(() => { void loadPayments(); return () => { ++loadVersion.current; }; }, [loadPayments]);
 
   const filteredPayments = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -99,40 +67,37 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
   }, [payments, search]);
 
   const confirmPayment = async (payment: OfflinePayment) => {
+    if (mutationBusy.current) return;
     if (!confirm(`${payment.user_name}님의 현장결제를 실제로 수납했습니까?\n완료하면 이용권이 반영되며 포인트는 적립되지 않습니다.`)) return;
+    mutationBusy.current = true;
     setProcessingId(payment.id);
     try {
-      const { error } = await supabase.rpc('confirm_offline_payment', {
-        p_payment_id: payment.id,
-        p_memo: payment.memo || null,
-      });
-      if (error) throw error;
+      await confirmOfflinePayment(payment.id,payment.memo||null);
       await loadPayments();
-    } catch (error: any) {
-      alert(error?.message || '수납 완료 처리에 실패했습니다.');
+    } catch (error: unknown) {
+      await handleError(error,'PAYMENT_SAVE_FAILED',{operation:'offline.confirm',transactionId:payment.id});
     } finally {
+      mutationBusy.current = false;
       setProcessingId(null);
     }
   };
 
   const cancelPayment = async (payment: OfflinePayment) => {
+    if (mutationBusy.current) return;
     const isPaid = payment.status === 'paid';
     if (!confirm(isPaid
       ? `${payment.user_name}님의 수납 완료 현장결제를 취소할까요?\n미사용 이용권이 회수됩니다.`
       : `${payment.user_name}님의 현장결제 요청을 취소할까요?`)) return;
+    mutationBusy.current = true;
     setProcessingId(payment.id);
     try {
-      const { data, error } = await supabase.rpc('cancel_offline_payment', {
-        p_payment_id: payment.id,
-        p_reason: isPaid ? '관리자 웹 현장결제 취소' : '관리자 웹 현장결제 요청 취소',
-      });
-      if (error) throw error;
-      if (!data?.success) throw new Error('현장결제 취소 결과를 확인할 수 없습니다.');
+      await cancelOfflinePayment(payment.id,isPaid?'관리자 웹 현장결제 취소':'관리자 웹 현장결제 요청 취소');
       alert(isPaid ? '현장결제 취소와 미사용 이용권 회수가 완료되었습니다.' : '현장결제 요청이 취소되었습니다.');
       await loadPayments();
-    } catch (error: any) {
-      alert(error?.message || '현장결제 요청 취소에 실패했습니다.');
+    } catch (error: unknown) {
+      await handleError(error,'PAYMENT_CANCEL_FAILED',{operation:'offline.cancel',transactionId:payment.id});
     } finally {
+      mutationBusy.current = false;
       setProcessingId(null);
     }
   };
@@ -154,11 +119,11 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
         </div>
         <div className="flex gap-2">
           {tabs.map((tab) => (
-            <button key={tab.id} onClick={() => setStatus(tab.id)} className={`rounded-xl px-4 py-2.5 text-xs font-black transition ${status === tab.id ? 'bg-slate-950 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+            <button key={tab.id} disabled={Boolean(processingId)} onClick={() => setStatus(tab.id)} className={`rounded-xl px-4 py-2.5 text-xs font-black transition ${status === tab.id ? 'bg-slate-950 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
               {tab.label}
             </button>
           ))}
-          <button onClick={() => void loadPayments()} className="rounded-xl border border-slate-200 p-2.5 text-slate-500 hover:bg-slate-50" aria-label="새로고침">
+          <button disabled={loading || Boolean(processingId)} onClick={() => void loadPayments()} className="rounded-xl border border-slate-200 p-2.5 text-slate-500 hover:bg-slate-50" aria-label="새로고침">
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -183,7 +148,7 @@ export const AdminOfflinePaymentTab: React.FC<Props> = ({ activeBranchId }) => {
               const childNames = payment.student_name
                 ? [payment.student_name]
                 : (payment.children_names || []);
-              const processing = processingId === payment.id;
+              const processing = Boolean(processingId);
               const targetTime = payment.status === 'paid' ? payment.paid_at : payment.scheduled_at;
               return (
                 <article key={payment.id} className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center">

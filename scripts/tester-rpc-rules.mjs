@@ -28,6 +28,14 @@ const memberChildScope = `if not exists(select 1 from public.children c join pub
     and u.branch_id=c.branch_id) then ${denied} end if;`;
 export const testerPackageGrantScope = memberChildScope+optionsScope('array[p_package_option_id]')+classesScope('p_schedule_ids');
 export const testerRpcRules = new Map([
+  ['list_offline_payments(text,text)', `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;`],
+  ['schedule_offline_payment(uuid,integer,text,timestamp with time zone,text)', `if not exists(select 1 from public.academy_bills b
+    where b.id=p_bill_id and b.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
+  ...['confirm_offline_payment(uuid,text)','cancel_offline_payment(uuid,text)'].map(signature=>[signature,`if not exists(
+    select 1 from public.payments p join public.users u on u.id=p.user_id
+    where p.id=p_payment_id and p.branch_id=ipasscare_preview_access.core_scope() and u.branch_id=p.branch_id
+      and (p.academy_bill_id is null or exists(select 1 from public.academy_bills b where b.id=p.academy_bill_id and b.branch_id=p.branch_id)))
+    then ${denied} end if;`]),
   ['add_current_month_student_additional_billing_plan(uuid,uuid)', studentScope+optionsScope('array[p_package_option_id]')],
   ['delete_planned_additional_student_billing_item(uuid)', planScope],
   ['correct_billing_plan_to_owned_package(uuid,uuid)', planScope+`if not exists(select 1 from public.user_packages u
