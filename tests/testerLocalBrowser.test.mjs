@@ -38,3 +38,14 @@ test('journal E2E uses real components and native REST with persisted-row assert
   assert.match(runner,/supabase.from\(table\).update/);
   assert.match(runner,/page.waitForLoadState\('networkidle'\)/);
 });
+
+test('attendance E2E keeps normal local auth and checks real ledger writes and pass restoration',()=>{
+  const fixture=readFileSync(new URL('./fixtures/attendanceLiveFixture.tsx',import.meta.url),'utf8');
+  assert.match(fixture,/AdminPage/);assert.match(fixture,/supabase.auth.signInWithPassword/);
+  assert.doesNotMatch(fixture,/testLogin\s*=|app_metadata|mock/i);
+  const runner=readFileSync(new URL('../scripts/check-tester-local-browser.mjs',import.meta.url),'utf8');
+  for(const label of ['attendance_duplicate_click_one_rpc','attendance_consumes_once','attendance_usage_consumed_once',
+    'attendance_server_repeat_no_extra_use','attendance_cancel_restores_once',
+    'attendance_repeat_cancel_never_over_restores','attendance_foreign_child_rpc_denied']) assert.ok(runner.includes(label));
+  assert.match(runner,/202611170002_register_manual_ledger_attendance.sql/);
+});
