@@ -69,3 +69,17 @@ test('extended scope removes recursive dormant user policies and gates definer R
   assert.match(built,/select count\(\*\) from pg_policies/);
   for(const label of ['revoked_cached_token_list_rpc_denied','suspended_tester_role_rpc_denied','own_study_edit_allowed','forged_student_counsel_denied']) assert.ok(extended.includes(label));
 });
+
+test('catalogue candidate scopes direct rows and prevents cross-branch option links', () => {
+  assert.match(sql,/alter table public.packages enable row level security/);
+  assert.match(sql,/alter table public.package_options enable row level security/);
+  assert.match(sql,/create policy preview_catalog_link_guard/);
+  assert.match(sql,/p.id=package_id and p.branch_id=package_options.branch_id/);
+  const probes=readFileSync(new URL('../supabase/checks/tester_preview_catalog_probes.sql',import.meta.url),'utf8');
+  const runner=readFileSync(new URL('../scripts/check-tester-preview.mjs',import.meta.url),'utf8');
+  assert.ok(runner.includes('tester_preview_catalog_probes.sql'));
+  for(const label of ['catalog_create_edit_delete_rpc','catalog_referenced_retire_rpc',
+    'catalog_forged_option_link_denied','catalog_forged_branch_save_rpc_denied',
+    'catalog_suspended_','catalog_revoked_','catalog_anon_toggle_denied']) assert.ok(probes.includes(label));
+  assert.doesNotMatch(probes,/\bcommit\s*;|https?:\/\//i);
+});

@@ -3,7 +3,14 @@
 const denied = "raise exception using errcode='42501',message='[PERMISSION_DENIED]';";
 const reservationScope = `if not exists(select 1 from public.reservations r
   where r.id=p_reservation_id and r.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`;
+const catalogScope = `if not exists(select 1 from public.packages p
+  where p.id=p_package_id and p.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`;
 export const testerRpcRules = new Map([
+  ['save_package_catalog(uuid,text,text,text,text,integer,boolean,boolean,text,jsonb)',
+    `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;
+    if p_package_id is not null then ${catalogScope} end if;`],
+  ['set_package_catalog_active(uuid,boolean)', catalogScope],
+  ['retire_or_delete_package_catalog(uuid)', catalogScope],
   ['update_member_role(uuid,text)', ''],
   ['list_role_manageable_members(text)', ''],
   ['soft_delete_child(uuid)', `if not exists(select 1 from public.children c

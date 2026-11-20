@@ -121,6 +121,8 @@ alter table public.users enable row level security;
 alter table public.user_packages enable row level security;
 alter table public.reservations enable row level security;
 alter table public.api_keys enable row level security;
+alter table public.packages enable row level security;
+alter table public.package_options enable row level security;
 -- api_keys has no client policy: server-held credentials must not be readable.
 do $extended$
 declare t text; old_policy record;
@@ -132,10 +134,10 @@ begin
   for old_policy in select policyname from pg_policies where schemaname='public' and tablename='users' loop
     execute format('drop policy %I on public.users',old_policy.policyname);
   end loop;
-  foreach t in array array['users','user_packages','reservations'] loop
+  foreach t in array array['users','user_packages','reservations','packages','package_options'] loop
     execute format('create policy preview_existing_authenticated on public.%I for all to authenticated using (true) with check (true)',t);
   end loop;
-  foreach t in array array['users','user_packages','reservations','academy_study_logs','academy_counsel_logs','parent_journal_entries'] loop
+  foreach t in array array['users','user_packages','reservations','packages','package_options','academy_study_logs','academy_counsel_logs','parent_journal_entries'] loop
     execute format('create policy preview_extended_branch_guard on public.%I as restrictive for all to authenticated
       using (coalesce((select ipasscare_preview_access.core_scope()) in (''*'',nullif(branch_id,'''')),false))
       with check (coalesce((select ipasscare_preview_access.core_scope()) in (''*'',nullif(branch_id,'''')),false))',t);
@@ -151,6 +153,11 @@ begin
         or ipasscare_preview_access.valid_student_link(student_id,branch_id))',t);
   end loop;
 end $extended$;
+-- A forged branch_id must not attach an option to another branch's catalogue.
+create policy preview_catalog_link_guard on public.package_options as restrictive
+  for all to authenticated using (true)
+  with check ((select ipasscare_preview_access.core_scope())='*' or exists(
+    select 1 from public.packages p where p.id=package_id and p.branch_id=package_options.branch_id));
 create policy preview_attendance_link_guard on public.attendance_logs as restrictive
   for all to authenticated using (true)
   with check ((select ipasscare_preview_access.core_scope()) = '*'

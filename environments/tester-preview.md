@@ -15,6 +15,16 @@
 
 ### 현재 공개 보류
 
+#### 2026-11-20 후속: 상품·이용권 카탈로그 격리 검증
+
+- Develop 메타데이터에서 `packages`·`package_options`는 RLS가 비활성인 상태였다. 롤백용 후보에 두 테이블의 지점 격리와 옵션→상품 지점 일치 검사를 추가했다. 클라이언트가 자기 지점 문자열을 넣어 다른 지점 상품에 옵션을 연결하는 요청도 거부한다.
+- 기존 `save_package_catalog`·`set_package_catalog_active`·`retire_or_delete_package_catalog`의 사업 로직은 유지하고, 테스터일 때 서버가 확인한 활성 상태·권한 표식·상품 지점을 먼저 검사하는 후보를 추가했다. 이로써 검토한 기존 RPC는 12개이며, 전체 RPC 감사 완료를 뜻하지 않는다.
+- 자기 지점 상품 생성→옵션 수정→미사용 상품 삭제, 사용 이력이 있는 상품의 판매중지, 재활성화, 직접 옵션 수정은 정상 처리됐다. 타 지점 조회/변경·지점 이동·위조 옵션 연결·정지 계정·권한 회수 후 기존 토큰·비로그인 접근을 포함한 **25개 검사를 추가해 DB 총 131개 통과**했다.
+- 관련 로컬 검사 45개 통과. 전체 SQL 검사 후 읽기 전용 메타데이터를 다시 수집해 기존 해시가 동일함을 확인했다. 모든 정책·함수·가상 데이터 변경은 롤백했으며, sequence 값은 롤백되지 않을 수 있다.
+- 이번 작업은 서버 권한 후보와 회귀 검증이며 화면 디자인이나 운영 코드는 변경하지 않았다. **운영 DB·main·원격 브랜치에는 반영하지 않았고, Develop에도 영구 배포하지 않았다.** 공개 플래그는 계속 비활성이다.
+
+후보 검사: `supabase/checks/tester_preview_catalog_probes.sql`. 다음 검토 대상은 셔틀·수업·직원 설정의 직접 쓰기 및 RPC, 상품 묶음 참조 규칙, 실제 DB와 브라우저 저장 E2E다. 검토 전에는 모든 메뉴가 안전하게 체험 가능하다고 안내하지 않는다.
+
 #### 2026-11-20: 일지·출결·공지 알림의 가상 처리 연결
 
 - `ActivityNotificationService`를 통해 학습/상담일지·출결·공지 알림을 연결했다. 운영은 기존 Edge Function·payload를 유지하며, 지정 Develop Preview는 `simulate_tester_activity_notification` RPC만 호출한다. 다른 프로젝트·로컬에서는 외부 전송으로 우회하지 않는다.
@@ -82,7 +92,7 @@ node scripts/check-tester-storage.mjs --run
 #### 후속: 고위험 RPC 검증 확대 — 총 86개 통과
 
 - 기존 60개에 원생/예약 삭제·취소·보강·이용권 대상 변경·추천 포인트·정지/회수 세션 검사 26개를 추가해 **DB 검사 86개 통과**. 로컬 단위 검사 21개도 통과했다.
-- 테스터 후보에서 보호하는 기존 RPC는 9개다: `update_member_role`, `list_role_manageable_members`, `soft_delete_child`, `soft_delete_reservation`, `cancel_class_reservation`, `process_referral_points`, `grant_makeup_credit`, `assign_user_package_beneficiary`, `process_lesson_check_in`. 검토 목록은 `scripts/tester-rpc-rules.mjs`에서 관리한다.
+- 테스터 후보에서 보호하는 기존 RPC는 12개다: `update_member_role`, `list_role_manageable_members`, `soft_delete_child`, `soft_delete_reservation`, `cancel_class_reservation`, `process_referral_points`, `grant_makeup_credit`, `assign_user_package_beneficiary`, `process_lesson_check_in`, `save_package_catalog`, `set_package_catalog_active`, `retire_or_delete_package_catalog`. 검토 목록은 `scripts/tester-rpc-rules.mjs`에서 관리한다.
 - 원본 `soft_delete_child`/`soft_delete_reservation`의 직원 판정에는 지점 제한이 없었다. 후보는 서버의 테스터 지점과 대상 행의 지점을 비교해 타 지점 삭제를 거부한다. 자기 지점 가상 원생·예약의 정상 삭제도 검증했다.
 - 원본 `cancel_class_reservation`은 전달받은 사용자 ID를 사용하고 `remaining_count+1`을 수행했다. 테스터 후보에서는 대상 소유자·지점을 확인하고 홀딩 해제를 처리하는 soft cancellation 경로를 사용한다. 같은 예약을 반복 취소해도 잔여 횟수가 3회를 넘지 않는 것을 검증했다. 일반 운영 사용자용 원본 함수가 수정된 것은 아니다.
 - 같은 지점 보강 승인과 동일 보강 중복 생성 방지, 같은 지점 이용권 대상 지정은 유지했다. 타 지점 대상·위조 자녀 연결은 차단했다.
