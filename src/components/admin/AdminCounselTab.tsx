@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useId } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useId, useRef } from 'react';
 import { MessageSquare, RefreshCw, Save } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import {invokeActivityNotification,activityNotificationText} from '../../services/notifications/ActivityNotificationService';
@@ -51,6 +51,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   const [search, setSearch] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const mutationBusy = useRef(false);
   const [publishingId, setPublishingId] = useState<string | null>(null);
 
   // History Filter & Sorting
@@ -203,7 +204,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
   // Handle Save or Update Counsel Log
   const handleSaveCounsel = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (saving || publishingId) return;
+    if (mutationBusy.current || saving || publishingId) return;
     if (!selectedStudentId || !selectedStudent?.branch_id) {
       alert('상담을 작성할 학생을 먼저 선택해주세요.');
       return;
@@ -213,6 +214,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       return;
     }
 
+    mutationBusy.current = true;
     setSaving(true);
     try {
       const payload = {
@@ -288,13 +290,15 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
     } catch (error: unknown) {
       await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.save' });
     } finally {
+      mutationBusy.current = false;
       setSaving(false);
     }
   };
 
   const handlePublishCounselLog = async (log: CounselLog) => {
-    if (log.is_parent_visible || publishingId) return;
+    if (mutationBusy.current || saving || log.is_parent_visible || publishingId) return;
     if (!confirm('이 상담일지를 학부모 앱에 공개하고 알림을 보내시겠습니까?')) return;
+    mutationBusy.current = true;
     setPublishingId(log.id);
     try {
       const { data: published, error: publishError } = await supabase
@@ -319,6 +323,7 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
     } catch (error: unknown) {
       await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.publish' });
     } finally {
+      mutationBusy.current = false;
       setPublishingId(null);
     }
   };
@@ -336,7 +341,10 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
 
   // Handle Delete Click
   const handleDeleteClick = async (logId: string) => {
+    if (mutationBusy.current || saving || publishingId) return;
     if (!confirm('이 상담일지 기록을 삭제하시겠습니까?')) return;
+    mutationBusy.current = true;
+    setSaving(true);
     try {
       const { data, error } = await supabase.from('academy_counsel_logs').delete().eq('id', logId).select('id').maybeSingle();
       if (error) throw error;
@@ -348,6 +356,9 @@ export const AdminCounselTab: React.FC<AdminCounselTabProps> = ({ activeBranchId
       }
     } catch (error: unknown) {
       await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.counsel.delete' });
+    } finally {
+      mutationBusy.current = false;
+      setSaving(false);
     }
   };
 

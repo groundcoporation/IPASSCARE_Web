@@ -117,13 +117,23 @@ enabled = false
   if(created.error||!created.data.user?.id)throw new Error('TESTER_LOCAL_AUTH_CREATE_FAILED');
   sql(`insert into public.users(id,email,name,role,status,branch_id) values(${lit(created.data.user.id)}::uuid,${lit(email)},'가상 E2E 원장','director','active',${lit(branch)});
     insert into public.academy_teachers(branch_id,name) values(${lit(other)},'다른 지점 가상 직원');`);
+  const ownStudent=randomUUID(),otherStudent=randomUUID(),otherStudy=randomUUID(),otherCounsel=randomUUID();
+  sql(`insert into public.academy_students(id,branch_id,student_name,attendance_code,is_sms_enabled) values
+    (${lit(ownStudent)}::uuid,${lit(branch)},'E2E 가상 원생','E2E_LOCAL',false),
+    (${lit(otherStudent)}::uuid,${lit(other)},'다른 지점 가상 원생','E2E_OTHER',false);
+    insert into public.academy_study_logs(id,branch_id,student_id,class_name,title,content,is_parent_visible)
+    values(${lit(otherStudy)}::uuid,${lit(other)},${lit(otherStudent)}::uuid,'가상 반','다른 지점 학습','다른 지점 기록',false);
+    insert into public.academy_counsel_logs(id,branch_id,student_id,content,is_parent_visible)
+    values(${lit(otherCounsel)}::uuid,${lit(other)},${lit(otherStudent)}::uuid,'다른 지점 기록',false);`);
   phase='browser';
   const {chromium}=require(process.env.IPASSCARE_BROWSER_RUNTIME||'playwright');
   const config={environment:'development',databaseTarget:'local',projectRef:'local',supabaseUrl:api,supabaseAnonKey:status.ANON_KEY};
   vite=await createServer({root:fileURLToPath(web),configFile:false,define:{__IPASSCARE_ENVIRONMENT__:JSON.stringify(config)},
     server:{host:'127.0.0.1',port:0},plugins:[react(),tailwindcss(),{name:'staff-local-e2e',configureServer(server){server.middlewares.use(async(req,res,next)=>{
-      if(req.url?.split('?')[0]!=='/__staff-live')return next();
-      res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/__staff-live','<html><div id="root"></div><script type="module" src="/tests/fixtures/staffLiveFixture.tsx"></script></html>'));
+      const path=req.url?.split('?')[0];
+      if(!['/__staff-live','/__journal-live'].includes(path))return next();
+      const fixture=path==='/__staff-live'?'staffLiveFixture.tsx':'journalLiveFixture.tsx';
+      res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(path,`<html><div id="root"></div><script type="module" src="/tests/fixtures/${fixture}"></script></html>`));
     });}}]});
   await vite.listen();const origin='http://127.0.0.1:'+vite.httpServer.address().port;
   browser=await chromium.launch({channel:'msedge',headless:true,args:['--no-proxy-server']});
@@ -156,6 +166,50 @@ enabled = false
   await page.getByText('E2E 가상 직원',{exact:true}).waitFor({state:'detached'});
   check('real_rest_delete_persisted',count()===0);
   check('other_branch_row_preserved',Number(sql(`select count(*) from public.academy_teachers where branch_id=${lit(other)};`).trim())===1);
+  for(const counsel of [false,true]) {
+    const kind=counsel?'counsel':'study',table=counsel?'academy_counsel_logs':'academy_study_logs';
+    const foreignId=counsel?otherCounsel:otherStudy;
+    phase='journal-'+kind+'-create';
+    await page.goto(origin+'/__journal-live'+(counsel?'?counsel':''));
+    await page.getByRole('heading',{name:'E2E 가상 원생',exact:true}).waitFor();
+    check(kind+'_other_student_hidden',await page.getByText('다른 지점 가상 원생',{exact:true}).count()===0);
+    if(!counsel)await page.getByRole('textbox',{name:'일지 제목 *',exact:true}).fill('E2E 학습 제목');
+    const editor=()=>page.getByRole('textbox',{name:counsel?'상담 내용 *':'학습 내용 및 수업 진도 *',exact:true});
+    await editor().fill('E2E 내부 기록');
+    check(kind+'_private_default',!(await page.getByRole('checkbox',{name:'학부모 앱에 공개하고 알림 보내기'}).isChecked()));
+    await page.getByRole('button',{name:counsel?'내부용으로 저장':'학원 내부용으로 저장',exact:true}).evaluate(button=>{
+      // Two submissions in the same JS task exercise the synchronous request guard.
+      const form=button.closest('form');form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+      form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+    });
+    await page.getByText('E2E 내부 기록',{exact:true}).first().waitFor();
+    await page.waitForLoadState('networkidle');
+    const ownRows=()=>JSON.parse(sql(`select json_build_object('count',count(*),'private',coalesce(bool_and(not is_parent_visible),true)) from public.${table} where student_id=${lit(ownStudent)}::uuid;`).trim());
+    check(kind+'_double_submit_one_private_row',ownRows().count===1&&ownRows().private===true);
+    // Unfiltered reads and targeted foreign writes use the actual authenticated REST client.
+    const scope=await page.evaluate(async({table,foreignId})=>{
+      const {supabase}=await import('/src/lib/supabaseClient.ts');
+      const read=await supabase.from(table).select('id');
+      const write=await supabase.from(table).update({content:'forged-local-attempt'}).eq('id',foreignId).select('id');
+      return {count:read.data?.length,readFailed:!!read.error,writeDenied:write.error?.code==='42501'||(!write.error&&write.data?.length===0)};
+    },{table,foreignId});
+    check(kind+'_rest_rls_scope',!scope.readFailed&&scope.count===1&&scope.writeDenied);
+    phase='journal-'+kind+'-reload-edit';
+    await page.reload();await page.getByText('E2E 내부 기록',{exact:true}).waitFor();
+    check(kind+'_reload_reads_database',ownRows().count===1);
+    await page.getByRole('button',{name:/수정$/}).click();
+    await editor().fill('E2E 수정 기록');
+    await page.getByRole('button',{name:'알림 없이 수정 저장',exact:true}).click();
+    await page.getByText('E2E 수정 기록',{exact:true}).waitFor();
+    check(kind+'_edit_persisted',Number(sql(`select count(*) from public.${table} where student_id=${lit(ownStudent)}::uuid and content='E2E 수정 기록';`).trim())===1);
+    await page.reload();await page.getByText('E2E 수정 기록',{exact:true}).waitFor();
+    phase='journal-'+kind+'-delete';
+    await page.getByRole('button',{name:/삭제$/}).click();
+    await page.getByText('E2E 수정 기록',{exact:true}).waitFor({state:'detached'});
+    check(kind+'_delete_persisted',ownRows().count===0);
+    check(kind+'_foreign_row_unchanged',Number(sql(`select count(*) from public.${table} where id=${lit(foreignId)}::uuid and content='다른 지점 기록';`).trim())===1);
+  }
+  check('private_journals_not_copied_to_parent',Number(sql('select count(*) from public.parent_journal_entries;').trim())===0);
   check('no_cloud_business_requests',unexpectedBlocked===0);
   check('external_font_requests_blocked',fontBlocked>0);
 } catch(error) {failure=error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'TESTER_LOCAL_BROWSER_FAILED';}

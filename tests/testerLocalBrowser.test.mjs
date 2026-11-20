@@ -28,3 +28,13 @@ test('real browser runner uses a fresh project, loopback-only network and scoped
   assert.doesNotMatch(script,/--linked|--all|db reset|supabase_db_ipasscare-local-test/);
   assert.match(script,/existingReproDatabaseChanged:false/);
 });
+
+test('journal E2E uses real components and native REST with persisted-row assertions',()=>{
+  const fixture=readFileSync(new URL('./fixtures/journalLiveFixture.tsx',import.meta.url),'utf8');
+  assert.match(fixture,/AdminStudyTab/);assert.match(fixture,/AdminCounselTab/);
+  assert.match(fixture,/supabase.auth.signInWithPassword/);
+  const runner=readFileSync(new URL('../scripts/check-tester-local-browser.mjs',import.meta.url),'utf8');
+  for(const label of ['_double_submit_one_private_row','_rest_rls_scope','_edit_persisted','_delete_persisted','private_journals_not_copied_to_parent']) assert.ok(runner.includes(label));
+  assert.match(runner,/supabase.from\(table\).update/);
+  assert.match(runner,/page.waitForLoadState\('networkidle'\)/);
+});

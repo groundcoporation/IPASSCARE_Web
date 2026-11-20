@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState, useRef } from 'react';
 import { BookOpen, Download, RefreshCw, Save } from 'lucide-react';
 import { focusJournalSection, JournalEntry, JournalSearch, JournalSelection, JournalSort, JournalStudentPicker, JournalVisibility, journalButton, journalField, journalLabel, journalPanel, journalPrimary } from './JournalUi';
 import { supabase } from '../../lib/supabaseClient';
 import {invokeActivityNotification,activityNotificationText} from '../../services/notifications/ActivityNotificationService';
 import { loadActiveAppSchedulesByChild } from '../../lib/adminScheduleAssignments';
 import { handleError } from '../../errors/handleError';
+import { AppError } from '../../errors/appError';
 
 export interface StudyLog {
   id: string; branch_id: string | null; student_id: string | null;
@@ -46,6 +47,7 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
   const [note, setNote] = useState('');
   const [notifyParent, setNotifyParent] = useState(false);
   const journalId = useId();
+  const mutationBusy = useRef(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -119,10 +121,11 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
 
   const saveLog = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (saving || publishingId) return;
+    if (mutationBusy.current || saving || publishingId) return;
     if (!studentId || !selectedStudent?.branch_id) return alert('먼저 원생을 선택해주세요.');
     if (!title.trim()) return alert('일지 제목을 입력해주세요.');
     if (!content.trim()) return alert('수업 진도 및 학습 내용을 입력해주세요.');
+    mutationBusy.current = true;
     setSaving(true);
     try {
       const payload = { branch_id: selectedStudent.branch_id, student_id: studentId, class_schedule_id: classId || null, class_name: className || '미배정', teacher_name: teacher.trim() || profile?.name || '담당선생님', lesson_date: date, title: title.trim(), content: content.trim(), homework: homework.trim() || null, special_note: note.trim() || null, updated_at: new Date().toISOString() };
@@ -156,16 +159,18 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
       }
       resetForm();
     } catch (error: unknown) { await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.study.save' }); }
-    finally { setSaving(false); }
+    finally { mutationBusy.current = false; setSaving(false); }
   };
 
   const publishLog = async (log: StudyLog) => {
-    if (log.is_parent_visible || publishingId) return;
+    if (mutationBusy.current || saving || log.is_parent_visible || publishingId) return;
     if (!confirm(`${selectedStudent?.student_name || '선택한 원생'} 학부모에게 이 학습일지를 공개하고 알림을 보내시겠습니까?`)) return;
+    mutationBusy.current = true;
     setPublishingId(log.id);
     try {
-      const { error } = await supabase.from('academy_study_logs').update({ is_parent_visible: true, updated_at: new Date().toISOString() }).eq('id', log.id);
+      const { data, error } = await supabase.from('academy_study_logs').update({ is_parent_visible: true, updated_at: new Date().toISOString() }).eq('id', log.id).eq('is_parent_visible', false).select('id').maybeSingle();
       if (error) throw error;
+      if (!data) throw new AppError('CONFLICT_ERROR');
       setLogs((current) => current.map((item) => item.id === log.id ? { ...item, is_parent_visible: true } : item));
       try {
         const result = await invokeActivityNotification('send-journal-notification', { body: { journalType: 'study', journalId: log.id } });
@@ -173,17 +178,22 @@ export const AdminStudyTab: React.FC<AdminStudyTabProps> = ({ activeBranchId, br
         alert(activityNotificationText(result.data,result.data.targetCount > 0 ? '학부모 앱에 일지를 공개하고 알림을 발송했습니다.' : '일지는 공개했지만 연결된 학부모 계정이 없어 알림 대상은 없습니다.'));
       } catch (error: unknown) { await handleError(error, 'JOURNAL_NOTIFICATION_FAILED', { operation: 'journal.study.publish.notify' }); }
     } catch (error: unknown) { await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.study.publish' }); }
-    finally { setPublishingId(null); }
+    finally { mutationBusy.current = false; setPublishingId(null); }
   };
 
   const deleteLog = async (id: string) => {
+    if (mutationBusy.current || saving || publishingId) return;
     if (!confirm('이 학습일지를 삭제하시겠습니까?')) return;
+    mutationBusy.current = true;
+    setSaving(true);
     try {
-      const { error } = await supabase.from('academy_study_logs').delete().eq('id', id);
+      const { data, error } = await supabase.from('academy_study_logs').delete().eq('id', id).select('id').maybeSingle();
       if (error) throw error;
+      if (!data) throw new AppError('CONFLICT_ERROR');
       setLogs((current) => current.filter((item) => item.id !== id));
       if (editingId === id) resetForm();
     } catch (error: unknown) { await handleError(error, 'JOURNAL_SAVE_FAILED', { operation: 'journal.study.delete' }); }
+    finally { mutationBusy.current = false; setSaving(false); }
   };
 
   const exportExcel = async () => {
