@@ -99,7 +99,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         readFileSync(new URL('supabase/checks/tester_preview_virtual_activity.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_virtual_activity_probes.sql', web),'utf8')+'\n'+
         readFileSync(new URL('supabase/checks/tester_preview_catalog_probes.sql', web),'utf8')+'\n'+
-        readFileSync(new URL('supabase/checks/tester_preview_menu_probes.sql', web),'utf8'))
+        readFileSync(new URL('supabase/checks/tester_preview_menu_probes.sql', web),'utf8')+'\n'+
+        readFileSync(new URL('supabase/checks/tester_preview_monthly_probes.sql', web),'utf8'))
         : buildWriteCheck(sql,probes,metadata);
     }
     const ref = readFileSync(new URL('supabase/.temp/project-ref', workdir), 'utf8');
@@ -122,7 +123,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         '--file', fileURLToPath(sqlFile), '--output', 'json'],
       { cwd: fileURLToPath(app), encoding: 'utf8', windowsHide: true, timeout: 60000 });
       if (result.error || result.status !== 0) {
-        const diagnostic = result.stderr || result.stdout || '';
+        const diagnostic = (result.stderr || result.stdout || '').replace(/\\"/g, '"');
         const sqlState = diagnostic.match(/ERROR:\s*([0-9A-Z]{5}):/)?.[1];
         const token = diagnostic.match(/syntax error at or near "([a-zA-Z_$]{1,40})"/)?.[1];
         // Identifiers/type names only; never expose SQL values or raw server text.
@@ -131,10 +132,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           'argument of WITH CHECK','argument of policy','structure of query does not match','datatype mismatch']
           .find(category => diagnostic.includes(category));
         const sqlLine = diagnostic.match(/LINE (\d+):/)?.[1];
+        const constraint = diagnostic.match(/violates (?:unique|foreign key|check|not-null) constraint "([a-zA-Z_][a-zA-Z0-9_]{0,62})"/)?.[1];
         console.error(JSON.stringify({ passed: false, sqlState: sqlState ?? 'CLI_FAILED',
           ...(token ? { syntaxToken: token } : {}),
           ...(typeMismatch ? { column: typeMismatch[1], expectedType: typeMismatch[2].trim(), actualType: typeMismatch[3].trim() } : {}),
           ...(errorCategory ? { errorCategory } : {}), ...(sqlLine ? { sqlLine: Number(sqlLine) } : {}),
+          ...(constraint ? { constraint } : {}),
           nextAction: 'Check rollback and metadata before any retry. Raw response suppressed.' }));
         process.exitCode = 1;
       } else {

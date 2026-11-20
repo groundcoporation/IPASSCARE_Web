@@ -95,3 +95,19 @@ test('management menus keep cross-branch links isolated and telemetry read-only 
     'menu_manual_teacher_create_delete','menu_admin_role_escalation_denied']) assert.ok(probes.includes(label));
   assert.doesNotMatch(probes,/\bcommit\s*;|https?:\/\//i);
 });
+
+test('monthly checks cover transactional rollback, actual rows and server-only helper denial', () => {
+  assert.match(sql,/create policy preview_monthly_plan_scope/);
+  assert.match(sql,/create policy preview_billing_revision_scope/);
+  assert.match(sql,/valid_plan_origin\(origin_plan_id,branch_id,student_id\)/);
+  const probes=readFileSync(new URL('../supabase/checks/tester_preview_monthly_probes.sql',import.meta.url),'utf8');
+  for(const label of ['monthly_second_stage_failure_atomic','monthly_duplicate_class_failure_atomic',
+    'monthly_processed_attendance_preserved','monthly_confirmed_bill_cannot_remove_option',
+    'monthly_internal_reconcile_direct_denied','monthly_locked_same_option_repeat_no_bill_creation',
+    'monthly_clear_unconfirmed_plans','monthly_revoked_','monthly_suspended_']) assert.ok(probes.includes(label));
+  assert.match(probes,/json_build_object\('role','anon'\)/);
+  assert.match(probes,/pg_temp.tester_monthly_snapshot\(\) is distinct from before_state/);
+  assert.doesNotMatch(probes,/\bcommit\s*;|https?:\/\//i);
+  // No new helper EXECUTE grants are added to make an otherwise denied test pass.
+  assert.doesNotMatch(probes,/grant execute/i);
+});

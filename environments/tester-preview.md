@@ -15,6 +15,19 @@
 
 ### 현재 공개 보류
 
+#### 2026-11-20 후속: 월별 수업·청구 동기화의 격리 및 원자성
+
+- 통합 월별 저장 RPC의 7인자/8인자 버전과 현재월·미래월 수업/이용권 저장, 학생/자녀 수업 동기화 등 하위 함수에 테스터 활성 상태·서버 권한 표식·지점 검사를 추가했다. 학생의 연결 자녀/보호자 지점 및 부모 관계, 선택 시간표, 이용권 옵션과 상위 상품 지점도 확인한다.
+- 기존 함수 보호 후보는 **25개**다. 이 중 `reconcile_current_month_active_package_plans`는 서버 전용 내부 함수이며, 클라이언트 EXECUTE 권한을 새로 부여하지 않았다. 현재월 청구 잠금 경로의 내부 호출은 정상 동작하고 직접 호출은 계속 거부된다. 모든 SECURITY DEFINER 함수 검토 완료를 뜻하지 않는다.
+- `academy_student_monthly_plans`·`academy_student_billing_plan_revisions`의 기존 정책 위에 테스터 지점 제한과 학생·시간표·상품 연결 검사를 덧붙였다. 추가 청구의 원본 계획 참조도 같은 지점/학생만 허용한다. 원본 참조 검사는 정책의 자기 테이블 재귀를 피하는 고정 search_path의 서버 함수로 처리한다.
+- **93개를 추가해 DB 검사 총 294개 통과**. 통합·하위 경로의 정상 반복 저장에서 실제 계획/예약 수를 확인했으며, 타 지점 RPC·위조 연결·정지·권한 회수 후 기존 토큰·비로그인 접근도 검사했다. 비로그인 검사는 JWT의 사용자 식별자를 제거해 실제 비로그인 조건으로 수행했다.
+- 현재월 저장 후 미래월 저장이 실패하면 계획·변경 이력·수업 배정·예약이 이전 상태와 동일함을 확인했다. 중복 수업 선택 실패도 부분 저장을 남기지 않았다. 이미 처리된 출석 보존, 확정 청구 이용권 제거 차단, 확정 옵션 반복 저장 시 청구서 추가 생성 없음, 미확정 계획 해제도 통과했다. 동시 요청 부하/응답 유실 E2E를 검증했다는 의미는 아니다.
+- 초기 검증 데이터가 기존 계획 변경 이력 트리거와 중복된 부분을 수정했다. 서버 전용 함수는 정상 직접 호출 항목에서 제외하고 차단 항목으로 검증했다. 실패 후마다 롤백을 확인한 뒤 재실행했으며 최종 전체 검사를 통과했다.
+- 관련 로컬 테스트 **56개** 통과. 이번 변경은 SQL 보호 후보·검증 스크립트·문서이며 웹 화면/앱 실행 코드는 변경하지 않았다. 검사 전후 읽기 전용 메타데이터 해시가 동일했고 임시 정책·함수·가상 데이터 변경은 롤백했다. sequence 값은 롤백되지 않을 수 있다.
+- **운영 DB·main·원격에는 반영하지 않았다. Develop에도 영구 배포하지 않았고 테스터 공개 플래그는 계속 비활성이다.**
+
+검사 파일: `supabase/checks/tester_preview_monthly_probes.sql`. 다음은 이용권 실제 지급/회수·추가 청구/정정 경로, 나머지 운영 설정/진단 데이터 접근, 실제 DB와 브라우저를 연결한 저장 E2E 및 Develop 전용 배포 계획이다.
+
 #### 2026-11-20 후속: 셔틀·수업·직원 관리 격리 및 오류 처리
 
 - Develop의 `class_schedules`·`pickup_spots`·`pickup_settings`·`shuttle_status`는 RLS가 비활성이었다. 롤백 후보에서 RLS를 활성화하고, 기존 직원·노선·수업배정·셔틀 알림 이력 정책에도 테스터 지점 제한을 덧붙였다. 로그인 전체 조회 정책이 있는 노선/노선배정도 다른 지점은 보이지 않는다.
@@ -105,7 +118,7 @@ node scripts/check-tester-storage.mjs --run
 #### 후속: 고위험 RPC 검증 확대 — 총 86개 통과
 
 - 기존 60개에 원생/예약 삭제·취소·보강·이용권 대상 변경·추천 포인트·정지/회수 세션 검사 26개를 추가해 **DB 검사 86개 통과**. 로컬 단위 검사 21개도 통과했다.
-- 테스터 후보에서 보호하는 기존 RPC는 14개다: `update_member_role`, `list_role_manageable_members`, `soft_delete_child`, `soft_delete_reservation`, `cancel_class_reservation`, `process_referral_points`, `grant_makeup_credit`, `assign_user_package_beneficiary`, `process_lesson_check_in`, `save_package_catalog`, `set_package_catalog_active`, `retire_or_delete_package_catalog`, `save_shuttle_route_with_assignments`, `save_member_shuttle_settings`. 검토 목록은 `scripts/tester-rpc-rules.mjs`에서 관리한다.
+- 테스터 후보에서 보호하는 기존 함수는 25개다. 회원 권한·탈퇴·예약 취소·이용권 수혜자·수업 체크인·상품 카탈로그·셔틀 관리 14개에 월별 수업/청구 동기화 11개를 추가했다. 서버 전용 내부 함수 1개가 포함되며 클라이언트 호출 권한을 확대한 것은 아니다. 정확한 시그니처별 검토 목록은 `scripts/tester-rpc-rules.mjs`에서 관리한다.
 - 원본 `soft_delete_child`/`soft_delete_reservation`의 직원 판정에는 지점 제한이 없었다. 후보는 서버의 테스터 지점과 대상 행의 지점을 비교해 타 지점 삭제를 거부한다. 자기 지점 가상 원생·예약의 정상 삭제도 검증했다.
 - 원본 `cancel_class_reservation`은 전달받은 사용자 ID를 사용하고 `remaining_count+1`을 수행했다. 테스터 후보에서는 대상 소유자·지점을 확인하고 홀딩 해제를 처리하는 soft cancellation 경로를 사용한다. 같은 예약을 반복 취소해도 잔여 횟수가 3회를 넘지 않는 것을 검증했다. 일반 운영 사용자용 원본 함수가 수정된 것은 아니다.
 - 같은 지점 보강 승인과 동일 보강 중복 생성 방지, 같은 지점 이용권 대상 지정은 유지했다. 타 지점 대상·위조 자녀 연결은 차단했다.

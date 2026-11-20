@@ -171,6 +171,32 @@ create policy preview_bill_link_guard on public.academy_bills as restrictive
   with check ((select ipasscare_preview_access.core_scope()) = '*'
     or ipasscare_preview_access.valid_student_link(student_id,branch_id));
 
+-- Monthly plans may not forge a same-branch row with foreign references.
+create function ipasscare_preview_access.valid_plan_origin(target uuid, target_branch text, target_student uuid)
+returns boolean language sql stable security definer set search_path='' as $$
+  select target is null or exists(select 1 from public.academy_student_monthly_plans p
+    where p.id=target and p.branch_id=target_branch and p.student_id=target_student);
+$$;
+revoke all on function ipasscare_preview_access.valid_plan_origin(uuid,text,uuid) from public,anon;
+grant execute on function ipasscare_preview_access.valid_plan_origin(uuid,text,uuid) to authenticated;
+create policy preview_monthly_plan_scope on public.academy_student_monthly_plans as restrictive
+  for all to authenticated
+  using(coalesce((select ipasscare_preview_access.core_scope()) in ('*',nullif(branch_id,'')),false))
+  with check((select ipasscare_preview_access.core_scope())='*' or (
+    branch_id=(select ipasscare_preview_access.core_scope())
+    and ipasscare_preview_access.valid_student_link(student_id,branch_id)
+    and ipasscare_preview_access.valid_plan_origin(origin_plan_id,branch_id,student_id)
+    and (class_schedule_id is null or exists(select 1 from public.class_schedules s
+      where s.id=class_schedule_id and s.branch_id=academy_student_monthly_plans.branch_id))
+    and (package_option_id is null or exists(select 1 from public.package_options o join public.packages p on p.id=o.package_id
+      where o.id=package_option_id and o.branch_id=academy_student_monthly_plans.branch_id and p.branch_id=o.branch_id))));
+create policy preview_billing_revision_scope on public.academy_student_billing_plan_revisions as restrictive
+  for all to authenticated
+  using(coalesce((select ipasscare_preview_access.core_scope()) in ('*',nullif(branch_id,'')),false))
+  with check((select ipasscare_preview_access.core_scope())='*' or (
+    branch_id=(select ipasscare_preview_access.core_scope())
+    and ipasscare_preview_access.valid_student_link(student_id,branch_id)));
+
 -- Management menus: keep existing policies and add restrictive tester guards.
 do $menus$
 declare t text;

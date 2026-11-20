@@ -5,7 +5,36 @@ const reservationScope = `if not exists(select 1 from public.reservations r
   where r.id=p_reservation_id and r.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`;
 const catalogScope = `if not exists(select 1 from public.packages p
   where p.id=p_package_id and p.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`;
+const studentScope = `if not exists(select 1 from public.academy_students s
+  where s.id=p_student_id and s.branch_id=ipasscare_preview_access.core_scope()
+    and (s.parent_user_id is null or exists(select 1 from public.users u where u.id=s.parent_user_id and u.branch_id=s.branch_id))
+    and (s.child_id is null or exists(select 1 from public.children c where c.id=s.child_id and c.branch_id=s.branch_id
+      and (s.parent_user_id is null or c.parent_id=s.parent_user_id)))) then ${denied} end if;`;
+const classesScope = (...arrays) => `if exists(select 1 from unnest(${arrays.map(a=>`coalesce(${a},array[]::uuid[])`).join(' || ')}) selected(id)
+  where not exists(select 1 from public.class_schedules s where s.id=selected.id
+    and s.branch_id=ipasscare_preview_access.core_scope())) then ${denied} end if;`;
+const optionsScope = (...arrays) => `if exists(select 1 from unnest(${arrays.map(a=>`coalesce(${a},array[]::uuid[])`).join(' || ')}) selected(id)
+  where not exists(select 1 from public.package_options o join public.packages p on p.id=o.package_id
+    where o.id=selected.id and o.branch_id=ipasscare_preview_access.core_scope()
+      and p.branch_id=ipasscare_preview_access.core_scope())) then ${denied} end if;`;
+const allMonthsScope = studentScope + classesScope('p_current_schedule_ids','p_next_schedule_ids')
+  + optionsScope('p_current_package_option_ids','p_next_package_option_ids');
 export const testerRpcRules = new Map([
+  ['save_student_schedule_and_billing_all_months(uuid,uuid[],uuid[],boolean,date,uuid[],uuid[],boolean)', allMonthsScope],
+  ['save_student_schedule_and_billing_all_months(uuid,uuid[],uuid[],boolean,date,uuid[],uuid[])', allMonthsScope],
+  ['save_current_month_student_schedule_and_billing(uuid,uuid[],boolean,uuid[])', studentScope+classesScope('p_schedule_ids')+optionsScope('p_package_option_ids')],
+  ['save_future_month_student_schedule_and_billing(uuid,date,uuid[],uuid[])', studentScope+classesScope('p_schedule_ids')+optionsScope('p_package_option_ids')],
+  ['sync_current_and_next_month_student_schedules(uuid,uuid[],boolean)', studentScope+classesScope('p_schedule_ids')],
+  ['sync_current_month_student_schedules(uuid,uuid[])', studentScope+classesScope('p_schedule_ids')],
+  ['sync_future_month_student_schedules(uuid,date,uuid[])', studentScope+classesScope('p_schedule_ids')],
+  ['save_current_month_student_billing_draft(uuid,uuid[])', studentScope+optionsScope('p_package_option_ids')],
+  ['save_student_monthly_package_plan(uuid,date,uuid[])', studentScope+optionsScope('p_package_option_ids')],
+  ['reconcile_current_month_active_package_plans(uuid,uuid[])', studentScope+optionsScope('p_package_option_ids')],
+  ['sync_current_month_child_schedule(uuid,uuid,uuid[])',
+    `if not exists(select 1 from public.children c join public.users u on u.id=c.parent_id
+      where c.id=p_child_id and c.parent_id=p_user_id
+        and c.branch_id=ipasscare_preview_access.core_scope() and u.branch_id=c.branch_id) then ${denied} end if;`
+    +classesScope('p_schedule_ids')],
   ['save_shuttle_route_with_assignments(uuid,text,text,text,text,uuid,text,double precision,double precision,jsonb)',
     `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;
     if p_route_id is not null and not exists(select 1 from public.shuttle_routes r

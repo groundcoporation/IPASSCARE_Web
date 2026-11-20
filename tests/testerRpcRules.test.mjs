@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testerRpcRules,patchTesterRpc } from '../scripts/tester-rpc-rules.mjs';
 test('reviewed RPC rules keep a server-controlled active tester gate and preserve the old body', () => {
-  assert.equal(testerRpcRules.size,14);
+  assert.equal(testerRpcRules.size,25);
   const original='CREATE FUNCTION public.synthetic() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $body$\nBEGIN\n  perform original_action();\nEND\n$body$';
   for(const [signature,rule] of testerRpcRules) {
     const patched=patchTesterRpc(original,rule);
@@ -40,4 +40,27 @@ test('shuttle RPCs validate server scope and stored route/member ownership', () 
   assert.match(route,/p_branch_id is distinct from ipasscare_preview_access.core_scope/);
   assert.match(route,/r.id=p_route_id and r.branch_id=ipasscare_preview_access.core_scope/);
   assert.match(testerRpcRules.get('save_member_shuttle_settings(uuid,jsonb,jsonb)'),/u.id=p_user_id/);
+});
+
+test('monthly entry points and direct dependencies validate student, timetable and package ownership', () => {
+  const signatures=[
+    'save_student_schedule_and_billing_all_months(uuid,uuid[],uuid[],boolean,date,uuid[],uuid[],boolean)',
+    'save_student_schedule_and_billing_all_months(uuid,uuid[],uuid[],boolean,date,uuid[],uuid[])',
+    'save_current_month_student_schedule_and_billing(uuid,uuid[],boolean,uuid[])',
+    'save_future_month_student_schedule_and_billing(uuid,date,uuid[],uuid[])',
+    'sync_current_and_next_month_student_schedules(uuid,uuid[],boolean)',
+    'sync_current_month_student_schedules(uuid,uuid[])','sync_future_month_student_schedules(uuid,date,uuid[])',
+    'save_current_month_student_billing_draft(uuid,uuid[])','save_student_monthly_package_plan(uuid,date,uuid[])',
+    'reconcile_current_month_active_package_plans(uuid,uuid[])'];
+  for(const signature of signatures) {
+    const rule=testerRpcRules.get(signature);
+    assert.match(rule,/s.id=p_student_id and s.branch_id=ipasscare_preview_access.core_scope/);
+    assert.match(rule,/c.parent_id=s.parent_user_id/);
+    assert.match(rule,/u.id=s.parent_user_id and u.branch_id=s.branch_id/);
+  }
+  const unified=testerRpcRules.get(signatures[0]);
+  for(const field of ['p_current_schedule_ids','p_next_schedule_ids','p_current_package_option_ids','p_next_package_option_ids']) assert.ok(unified.includes(field));
+  assert.match(unified,/o.branch_id=ipasscare_preview_access.core_scope/);
+  assert.match(unified,/p.branch_id=ipasscare_preview_access.core_scope/);
+  assert.match(testerRpcRules.get('sync_current_month_child_schedule(uuid,uuid,uuid[])'),/c.parent_id=p_user_id/);
 });
