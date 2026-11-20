@@ -133,6 +133,29 @@ insert into tester_package_requests values
 grant select on tester_package_requests to authenticated,anon;
 set local role authenticated;
 select pg_temp.tester_probe('package_other_rpc_'||label,other_statement,0,true) from tester_package_requests;
+select pg_temp.tester_probe('package_status_unconfirmed_not_failed', $probe$
+  do $flow$ declare c record; result jsonb; begin
+    select * into strict c from tester_package_context;
+    result:=public.get_tester_package_grant_result(c.own_request);
+    if result->>'status' is distinct from 'unconfirmed' or result->>'requestId' is distinct from c.own_request::text
+      or exists(select 1 from public.user_packages where child_id=c.own_child and option_id=c.own_new_option)
+    then raise exception 'TESTER_PACKAGE_STATUS_MISSING_INVALID'; end if;
+  end $flow$;
+$probe$,0);
+select pg_temp.tester_probe('package_status_completed_and_later_inactive', $probe$
+  do $flow$ declare c record; granted jsonb; result jsonb; begin
+    select * into strict c from tester_package_context;
+    granted:=public.grant_tester_member_package_with_schedule(c.own_request,c.own_parent,c.own_child,c.own_new_option,c.current_month,array[c.own_class]);
+    result:=public.get_tester_package_grant_result(c.own_request);
+    if result->>'status' is distinct from 'completed' or result->'result'->>'package_id' is distinct from granted->>'package_id'
+      or result->>'currentPassState' is distinct from 'active' then raise exception 'TESTER_PACKAGE_STATUS_COMPLETED_INVALID'; end if;
+    update public.user_packages set status='inactive' where id=(granted->>'package_id')::uuid;
+    result:=public.get_tester_package_grant_result(c.own_request);
+    if result->>'status' is distinct from 'completed' or result->>'currentPassState' is distinct from 'inactive'
+      or (select count(*) from public.user_packages where child_id=c.own_child and option_id=c.own_new_option)<>1
+    then raise exception 'TESTER_PACKAGE_STATUS_REGRANTED'; end if;
+  end $flow$;
+$probe$,0);
 select pg_temp.tester_probe('package_foreign_option_additional_denied',
  'select public.add_current_month_student_additional_billing_plan(own_student,other_new_option) from tester_package_context',0,true);
 select pg_temp.tester_probe('package_foreign_pass_correction_denied',
@@ -184,6 +207,21 @@ select pg_temp.tester_probe('package_grant_next_month', $probe$
       or not exists(select 1 from public.user_packages where id=(result->>'package_id')::uuid and valid_from=c.next_month)
       or not exists(select 1 from public.student_schedule_assignments where child_id=c.own_child and starts_on=c.next_month and schedule_id=c.own_class)
     then raise exception 'TESTER_PACKAGE_FUTURE_GRANT_FAILED'; end if;
+  end $flow$;
+$probe$,0);
+reset role;
+-- A guessed request UUID must not disclose another actor's processing record.
+insert into ipasscare_preview_access.package_grant_requests(actor_id,request_id,branch_id,payload,response)
+select other_parent,other_request,other_branch,'{}'::jsonb,'{}'::jsonb from tester_package_context;
+insert into tester_package_requests values('status',
+  'select public.get_tester_package_grant_result(own_request) from tester_package_context',
+  'select public.get_tester_package_grant_result(other_request) from tester_package_context');
+set local role authenticated;
+select pg_temp.tester_probe('package_status_other_actor_record_hidden', $probe$
+  do $flow$ declare result jsonb; begin
+    result:=public.get_tester_package_grant_result((select other_request from tester_package_context));
+    if result->>'status' is distinct from 'unconfirmed' or result ? 'result'
+    then raise exception 'TESTER_PACKAGE_STATUS_OTHER_ACTOR_VISIBLE'; end if;
   end $flow$;
 $probe$,0);
 reset role;

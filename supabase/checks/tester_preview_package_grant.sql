@@ -39,10 +39,40 @@ begin
   end if;
   result:=ipasscare_preview_access.grant_member_package_with_schedule(
     p_user_id,p_child_id,p_package_option_id,p_target_month,p_schedule_ids);
-  result:=result||jsonb_build_object('testMode',true,'externalDelivery',false,'replayed',false);
+  result:=result||jsonb_build_object('testMode',true,'externalDelivery',false,'replayed',false,'requestId',p_request_id);
   insert into ipasscare_preview_access.package_grant_requests(actor_id,request_id,branch_id,payload,response)
   values(auth.uid(),p_request_id,scope,request_payload,result);
   return result;
 end $grant$;
 revoke all on function public.grant_tester_member_package_with_schedule(uuid,uuid,uuid,uuid,date,uuid[]) from public,anon;
 grant execute on function public.grant_tester_member_package_with_schedule(uuid,uuid,uuid,uuid,date,uuid[]) to authenticated;
+
+-- Read-only reconciliation after a lost response. Absence does not prove failure:
+-- the original transaction may still be running and not visible to this query.
+create function public.get_tester_package_grant_result(p_request_id uuid)
+returns jsonb language plpgsql stable security definer set search_path='' as $status$
+declare scope text; cached ipasscare_preview_access.package_grant_requests%rowtype; pass_state text;
+begin
+  scope:=ipasscare_preview_access.core_scope();
+  if not ipasscare_preview_access.is_tester_actor() or scope in ('','*') then
+    raise exception using errcode='42501',message='[PERMISSION_DENIED]';
+  end if;
+  if p_request_id is null then raise exception '[INPUT_INVALID]'; end if;
+  select * into cached from ipasscare_preview_access.package_grant_requests
+  where actor_id=auth.uid() and request_id=p_request_id;
+  if not found then
+    return jsonb_build_object('requestId',p_request_id,'status','unconfirmed','testMode',true,'externalDelivery',false);
+  end if;
+  if cached.branch_id is distinct from scope or not exists(
+    select 1 from public.children c join public.users u on u.id=c.parent_id
+    where c.id=(cached.payload->>'child_id')::uuid and c.parent_id=(cached.payload->>'user_id')::uuid
+      and c.branch_id=scope and u.branch_id=scope) then
+    raise exception using errcode='42501',message='[PERMISSION_DENIED]';
+  end if;
+  select case when status='active' then 'active' else 'inactive' end into pass_state
+  from public.user_packages where id=(cached.response->>'package_id')::uuid and branch_id=scope;
+  return jsonb_build_object('requestId',p_request_id,'status','completed','result',cached.response,
+    'currentPassState',coalesce(pass_state,'missing'),'testMode',true,'externalDelivery',false);
+end $status$;
+revoke all on function public.get_tester_package_grant_result(uuid) from public,anon;
+grant execute on function public.get_tester_package_grant_result(uuid) to authenticated;
