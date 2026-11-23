@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testerRpcRules,patchTesterRpc } from '../scripts/tester-rpc-rules.mjs';
 test('reviewed RPC rules keep a server-controlled active tester gate and preserve the old body', () => {
-  assert.equal(testerRpcRules.size,36);
+  assert.equal(testerRpcRules.size,60);
   const original='CREATE FUNCTION public.synthetic() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $body$\nBEGIN\n  perform original_action();\nEND\n$body$';
   for(const [signature,rule] of testerRpcRules) {
     const patched=patchTesterRpc(original,rule);
@@ -13,6 +13,36 @@ test('reviewed RPC rules keep a server-controlled active tester gate and preserv
     assert.ok(patched.includes('$body$'));
   }
   assert.throws(()=>patchTesterRpc('select true',''),/LAYOUT_CHANGED/);
+});
+
+test('remaining callable writes get scope checks or an explicit app-only denial',()=>{
+  for(const signature of ['perform_bulk_reservation(uuid,uuid,text,uuid,text,jsonb)',
+    'perform_targeted_bulk_reservation(uuid,uuid,text,uuid,text,jsonb)',
+    'perform_event_check_in(uuid,uuid)','withdraw_own_account()'])
+    assert.equal(testerRpcRules.get(signature),"raise exception using errcode='42501',message='[PERMISSION_DENIED]';");
+  for(const signature of ['generate_upcoming_assigned_reservations(uuid,integer)',
+    'sync_member_schedule_assignments(uuid,jsonb,integer)']) {
+    assert.match(testerRpcRules.get(signature),/a.branch_id is distinct from/);
+    assert.match(testerRpcRules.get(signature),/c.parent_id=p_user_id/);
+  }
+  assert.match(testerRpcRules.get('schedule_makeup_credit(uuid,uuid,date)'),/scheduled.branch_id=c.branch_id/);
+});
+
+test('billing guards scope bills, requests, linked rows and selected options before writes',()=>{
+  for(const signature of ['delete_unpaid_academy_bill(uuid,text)','complete_free_academy_bill(uuid)',
+    'create_academy_bill_payment_request(uuid)','revise_unpaid_academy_bill(uuid,uuid,text)']) {
+    const rule=testerRpcRules.get(signature);
+    assert.match(rule,/b.id=p_bill_id/);assert.match(rule,/s.branch_id=b.branch_id/);
+    assert.match(rule,/r.branch_id=b.branch_id/);
+  }
+  const request=testerRpcRules.get('delete_unpaid_app_payment_request(uuid,text)');
+  assert.match(request,/r.id=p_request_id and r.branch_id=ipasscare_preview_access.core_scope/);
+  assert.match(request,/b.branch_id is distinct from ipasscare_preview_access.core_scope/);
+  for(const signature of ['revise_unpaid_academy_bill_items(uuid,text,uuid[],text)',
+    'set_current_month_academy_bill_items(uuid,uuid[],text)']) {
+    assert.match(testerRpcRules.get(signature),/s.id=p_student_id/);
+    assert.match(testerRpcRules.get(signature),/o.branch_id=ipasscare_preview_access.core_scope/);
+  }
 });
 test('cancellation uses scoped soft cancellation, not legacy count restoration', () => {
   const rule=testerRpcRules.get('cancel_class_reservation(uuid,uuid)');

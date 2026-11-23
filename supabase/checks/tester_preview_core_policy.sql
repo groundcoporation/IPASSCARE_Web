@@ -25,6 +25,27 @@ create schema ipasscare_preview_access;
 revoke all on schema ipasscare_preview_access from public;
 grant usage on schema ipasscare_preview_access to authenticated;
 
+-- Server-owned, monotonic identity history: removing metadata or refreshing a
+-- JWT must never turn a former tester into an unrestricted ordinary actor.
+create table ipasscare_preview_access.tester_identities (
+  user_id uuid primary key references auth.users(id) on delete cascade
+);
+revoke all on ipasscare_preview_access.tester_identities from public, anon, authenticated;
+insert into ipasscare_preview_access.tester_identities(user_id)
+select id from auth.users where raw_app_meta_data->'ipasscare_tester'='true'::jsonb;
+create function ipasscare_preview_access.remember_tester_identity()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if new.raw_app_meta_data->'ipasscare_tester'='true'::jsonb then
+    insert into ipasscare_preview_access.tester_identities(user_id) values(new.id)
+      on conflict (user_id) do nothing;
+  end if;
+  return new;
+end $$;
+revoke all on function ipasscare_preview_access.remember_tester_identity() from public,anon,authenticated;
+create trigger preview_remember_tester_identity after insert or update of raw_app_meta_data on auth.users
+for each row execute function ipasscare_preview_access.remember_tester_identity();
+
 -- Use server-controlled Auth metadata as the scope, not a client-supplied filter
 -- or the editable public profile. A stale tester token never regains broad access.
 create function ipasscare_preview_access.core_scope()
@@ -39,6 +60,7 @@ as $scope$
           and u.branch_id = a.raw_app_meta_data ->> 'ipasscare_test_branch'
         then u.branch_id else '' end
       when auth.jwt() -> 'app_metadata' -> 'ipasscare_tester' = 'true'::jsonb then ''
+      when exists(select 1 from ipasscare_preview_access.tester_identities t where t.user_id=a.id) then ''
       else '*' end
     from auth.users a join public.users u on u.id = a.id
     where a.id = auth.uid()
@@ -51,7 +73,8 @@ create function ipasscare_preview_access.is_tester_actor()
 returns boolean language sql stable security definer set search_path = '' as $$
   select coalesce((select a.raw_app_meta_data->'ipasscare_tester'='true'::jsonb
     from auth.users a where a.id=auth.uid()),false)
-    or coalesce(auth.jwt()->'app_metadata'->'ipasscare_tester'='true'::jsonb,false);
+    or coalesce(auth.jwt()->'app_metadata'->'ipasscare_tester'='true'::jsonb,false)
+    or exists(select 1 from ipasscare_preview_access.tester_identities t where t.user_id=auth.uid());
 $$;
 revoke all on function ipasscare_preview_access.is_tester_actor() from public,anon;
 grant execute on function ipasscare_preview_access.is_tester_actor() to authenticated;

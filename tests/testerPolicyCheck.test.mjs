@@ -4,6 +4,17 @@ import { readFileSync } from 'node:fs';
 import { validateTesterCheck, validateTesterAudit, buildWriteCheck, buildManualWriteCheck } from '../scripts/check-tester-preview.mjs';
 import { TESTER_PROJECT_REF } from '../config/tester-target.mjs';
 const sql = readFileSync(new URL('../supabase/checks/tester_preview_core_policy.sql', import.meta.url), 'utf8');
+
+test('server-owned tester history survives metadata removal and fresh JWTs',()=>{
+  assert.match(sql,/create table ipasscare_preview_access.tester_identities/);
+  assert.match(sql,/revoke all on ipasscare_preview_access.tester_identities from public, anon, authenticated/);
+  assert.match(sql,/select id from auth.users where raw_app_meta_data/);
+  assert.match(sql,/after insert or update of raw_app_meta_data on auth.users/);
+  assert.match(sql,/on conflict \(user_id\) do nothing/);
+  assert.match(sql,/t.user_id=a.id\) then ''/);
+  assert.match(sql,/t.user_id=auth.uid\(\)/);
+  assert.doesNotMatch(sql,/delete from ipasscare_preview_access.tester_identities/i);
+});
 test('surface audit is metadata-only, read-only and Develop-only', () => {
   const audit = readFileSync(new URL('../supabase/checks/tester_preview_surfaces_audit.sql', import.meta.url),'utf8');
   assert.doesNotThrow(() => validateTesterAudit(TESTER_PROJECT_REF,audit));

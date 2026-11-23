@@ -11,13 +11,14 @@ import tailwindcss from '@tailwindcss/vite';
 import {buildTesterLocalSchema} from './tester-local-schema.mjs';
 import {testerRpcRules,patchTesterRpc} from './tester-rpc-rules.mjs';
 import {guardTesterManualAttendance} from './tester-manual-attendance.mjs';
+import {guardTesterArchiveStudent} from './tester-student-archive.mjs';
 const web=new URL('../',import.meta.url);
 // scripts/ is one level below the web root.
 const appRoot=new URL('../../IPASSCARE/app/',web);
 const run=randomBytes(4).toString('hex'),project='ipasscare-tester-e2e-'+run;
 const dir=new URL('.codex_tmp/tester-browser/'+run+'/',appRoot),api='http://127.0.0.1:45441';
 const require=createRequire(import.meta.url);
-let phase='preflight',attempted=false,networkCreated=false,browser,vite,failure,cleanupComplete=false;
+let phase='preflight',attempted=false,networkCreated=false,browser,vite,previewVite,failure,cleanupComplete=false;
 const checks=[];
 const check=(label,passed)=>{checks.push({label,passed:!!passed});if(!passed)throw new Error('TESTER_LOCAL_BROWSER_ASSERTION_FAILED');};
 const lit=s=>"'"+s.replaceAll("'","''")+"'";
@@ -120,6 +121,15 @@ enabled = false
   check('partial_fix_preserves_function_acl_security',acl()===beforeAcl);
   check('partial_fix_idempotent_apply',definitionHash()===fixedHash);
   sql('begin;\n'+guardTesterManualAttendance(readFileSync(new URL('supabase/migrations/202611170002_register_manual_ledger_attendance.sql',web),'utf8'))+'\ncommit;');
+  // Full roster needs the same pending journal/withdrawal migrations as the web.
+  // Re-guard the replaced app-request RPC; never overwrite this hardened body
+  // with the older cached definition.
+  const harden=readFileSync(new URL('supabase/migrations/202611170003_harden_journal_and_app_bill_permissions.sql',web),'utf8');
+  if(/net\.http|https?:\/\//i.test(harden))throw new Error('TESTER_LOCAL_MIGRATION_REVIEW_REQUIRED');
+  sql(harden);
+  const hardenedDelete=JSON.parse(sql("select to_json(pg_get_functiondef('public.delete_unpaid_app_payment_request(uuid,text)'::regprocedure));").trim());
+  sql(patchTesterRpc(hardenedDelete,testerRpcRules.get('delete_unpaid_app_payment_request(uuid,text)')));
+  sql('begin;\n'+guardTesterArchiveStudent(readFileSync(new URL('supabase/migrations/202611170004_archive_academy_student.sql',web),'utf8'))+"\nnotify pgrst,'reload schema'; commit;");
   phase='synthetic-auth';
   const email='local-e2e-'+run+'@example.com',password='T3st!'+randomBytes(24).toString('hex');
   const created=await admin.auth.admin.createUser({email,password,email_confirm:true,app_metadata:{ipasscare_tester:true,ipasscare_test_branch:branch}});
@@ -407,6 +417,63 @@ enabled = false
     return !r.error&&r.data.user?.app_metadata?.ipasscare_tester===true;
   });
   check('tester_attendance_cached_token_prepared',cachedTester);
+  phase='tester-billing-rpc-scope';
+  const ownRequest=randomUUID(),foreignRequest=randomUUID();
+  for(const [id,b,parent] of [[ownRequest,branch,parentIds[0]],[foreignRequest,other,parentIds[1]]])
+    sql(`insert into public.payment_requests(id,order_no,parent_id,parent_name,sender_id,branch_id,total_amount,final_amount,status,cart_items,issued_source)
+      values(${lit(id)}::uuid,${lit('E2E-'+id)},${lit(parent)}::uuid,'E2E 가상 보호자',${lit(created.data.user.id)}::uuid,${lit(b)},100,100,'pending','[]'::jsonb,'admin_app');`);
+  const foreignOption=sql(`select package_option_id from public.academy_student_classes where student_id=${lit(otherStudent)}::uuid limit 1;`).trim();
+  const billingProbes=[
+    ['cancel_scheduled_offline_payment',{p_payment_id:foreignPayment}],
+    ['delete_unpaid_academy_bill',{p_bill_id:otherBill}],
+    ['complete_free_academy_bill',{p_bill_id:otherBill}],
+    ['create_academy_bill_payment_request',{p_bill_id:otherBill}],
+    ['delete_unpaid_app_payment_request',{p_request_id:foreignRequest}],
+    ['revise_unpaid_academy_bill',{p_bill_id:otherBill,p_package_option_id:foreignOption}],
+    ['revise_unpaid_academy_bill_items',{p_student_id:otherStudent,p_bill_month:today.slice(0,7),p_package_option_ids:[foreignOption]}],
+    ['set_current_month_academy_bill_items',{p_student_id:otherStudent,p_package_option_ids:[foreignOption]}],
+    ['create_manual_student_bill',{p_student_id:otherStudent,p_plan_id:null,p_package_option_id:foreignOption,
+      p_bill_month:today.slice(0,7),p_original_amount:100,p_discount_type:'none',p_discount_value:0,
+      p_discount_amount:0,p_amount_due:100,p_adjustment_reason:null,p_memo:'E2E'}],
+  ];
+  billingProbes.push(
+    ['archive_academy_student',{p_student_id:otherStudent,p_child_id:null,p_reason:'E2E'}],
+    ['decline_payment_request',{p_request_id:foreignRequest}],
+    ['request_onsite_payment',{p_branch_id:other,p_payment_method:'CASH',p_order_items:[]}],
+    ['record_keypad_attendance',{p_child_id:otherChild,p_branch_id:other,p_reservation_id:null}],
+    ['process_shuttle_event',{p_reservation_id:randomUUID(),p_direction:'pickup'}],
+    ['process_shuttle_no_show',{p_reservation_id:randomUUID(),p_direction:'pickup'}],
+    ['schedule_makeup_credit',{p_credit_id:randomUUID(),p_schedule_id:randomUUID(),p_class_date:today}],
+    ['generate_upcoming_assigned_reservations',{p_user_id:parentIds[1],p_days:31}],
+    ['sync_member_schedule_assignments',{p_user_id:parentIds[1],p_assignments:[],p_days:31}],
+    ['sync_current_month_child_schedule_and_shuttle',{p_user_id:parentIds[1],p_child_id:otherChild,p_schedule_ids:[],p_package_id:null}],
+    ['sync_member_schedules_with_package',{p_user_id:parentIds[1],p_child_id:otherChild,p_child_name:'E2E',p_package_id:randomUUID(),p_assignments:[],p_days:31}],
+    ...['perform_bulk_reservation','perform_targeted_bulk_reservation'].map(name=>[name,{p_user_id:parentIds[1],p_child_id:otherChild,
+      p_child_name:'E2E',p_package_id:randomUUID(),p_branch_id:other,p_bookings:[]}]),
+    ['perform_event_check_in',{p_user_id:parentIds[1],p_event_id:randomUUID()}],
+    ['withdraw_own_account',{}],
+  );
+  const rpcDenied=async(name,args)=>page.evaluate(async({name,args})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc(name,args);
+    return r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]');
+  },{name,args});
+  for(const [name,args] of billingProbes)check('billing_foreign_'+name+'_denied',await rpcDenied(name,args));
+  check('billing_foreign_records_unchanged',Number(sql(`select count(*) from public.academy_bills where id=${lit(otherBill)}::uuid and amount_due=100;`).trim())===1
+    &&Number(sql(`select count(*) from public.payment_requests where id=${lit(foreignRequest)}::uuid and status='pending';`).trim())===1);
+  // The legacy app-request delete lacks a branch check. Own request still works,
+  // but a forged link to a foreign bill must prevent deletion before any writes.
+  sql(`update public.academy_bills set payment_request_id=${lit(ownRequest)}::uuid where id=${lit(otherBill)}::uuid;`);
+  check('billing_forged_request_link_denied',await rpcDenied('delete_unpaid_app_payment_request',{p_request_id:ownRequest}));
+  sql(`update public.academy_bills set payment_request_id=null where id=${lit(otherBill)}::uuid;`);
+  // The privileged forged-link fixture fired the bill metadata trigger, which
+  // labels its linked request as web-issued. Restore only this synthetic input
+  // to the admin-app case before checking the hardened function's allowed path.
+  sql(`update public.payment_requests set issued_source='admin_app' where id=${lit(ownRequest)}::uuid;`);
+  const ownDeleted=await page.evaluate(async(id)=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc('delete_unpaid_app_payment_request',{p_request_id:id});
+    return !r.error&&r.data?.success===true;
+  },ownRequest);
+  check('billing_own_request_delete_allowed',ownDeleted&&Number(sql(`select count(*) from public.payment_requests where id=${lit(ownRequest)}::uuid;`).trim())===0);
   const activeUsage=JSON.parse(sql(`select json_build_object('id',id,'at',consumed_at) from public.package_usage_logs where user_package_id=${lit(attendancePass)}::uuid and status='consumed';`).trim());
   const activeRoundtrip=await page.evaluate(async({child,pass,date,usage})=>{
     const {supabase}=await import('/src/lib/supabaseClient.ts');
@@ -437,6 +504,31 @@ enabled = false
   },{child,pass:attendancePass,date:today});
   check('tester_revoked_attendance_register_denied',await deniedRegistration());
   check('tester_revoked_attendance_state_unchanged',remaining()===2&&consumed()===1);
+  phase='tester-attendance-fresh-token';
+  for(const mode of ['refresh','login']) {
+    const freshClaim=await page.evaluate(async(mode)=>{
+      const {supabase}=await import('/src/lib/supabaseClient.ts');const f=window.liveFixture;
+      if(mode==='login') {const out=await supabase.auth.signOut();if(out.error)return false;}
+      const r=mode==='refresh'?await supabase.auth.refreshSession():await supabase.auth.signInWithPassword({email:f.email,password:f.password});
+      const payload=r.data.session?.access_token?.split('.')[1];
+      return !r.error&&!!payload&&JSON.parse(atob(payload.replace(/-/g,'+').replace(/_/g,'/'))).app_metadata?.ipasscare_tester!==true;
+    },mode);
+    check(`tester_revoked_${mode}_fresh_claim`,freshClaim);
+    check(`tester_revoked_${mode}_register_denied`,await deniedRegistration());
+    const cancelDenied=await page.evaluate(async({child,pass,date,usage})=>{
+      const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc('cancel_attendance_ledger_entry',{
+        p_child_id:child,p_date:date,p_package_id:pass,p_usage_id:usage.id,p_expected_consumed_at:usage.at});
+      return r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]');
+    },{child,pass:attendancePass,date:today,usage:currentUsage});
+    check(`tester_revoked_${mode}_cancel_denied`,cancelDenied);
+    const rowsHidden=await page.evaluate(async()=>{
+      const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.from('academy_students').select('id');
+      return !r.error&&r.data?.length===0;
+    });
+    check(`tester_revoked_${mode}_rows_hidden`,rowsHidden);
+    check(`tester_revoked_${mode}_state_unchanged`,remaining()===2&&consumed()===1);
+    for(const [name,args] of billingProbes)check(`billing_revoked_${mode}_${name}_denied`,await rpcDenied(name,args));
+  }
   sql(`update auth.users set raw_app_meta_data=coalesce(raw_app_meta_data,'{}'::jsonb)||jsonb_build_object('ipasscare_tester',true,'ipasscare_test_branch',${lit(branch)}) where id=${lit(created.data.user.id)}::uuid;
     update public.users set status='deleted' where id=${lit(created.data.user.id)}::uuid;`);
   check('tester_suspended_attendance_register_denied',await deniedRegistration());
@@ -446,13 +538,56 @@ enabled = false
     return r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]');
   },{child,pass:attendancePass,date:today,usage:currentUsage});
   check('tester_suspended_attendance_cancel_denied',suspendedCancellation&&remaining()===2&&consumed()===1);
+  phase='preview-portal-local-auth';
+  sql(`update public.users set status='active' where id=${lit(created.data.user.id)}::uuid;`);
+  // Simulate Preview's environment branch against loopback Auth/DB. The hosted
+  // build target validator is NOT relaxed; this is not a hosted Preview test.
+  const previewConfig={...config,environment:'preview',databaseTarget:'preview',projectRef:'msvwhvonafmeycmcvarv'};
+  previewVite=await createServer({root:fileURLToPath(web),configFile:false,
+    define:{__IPASSCARE_ENVIRONMENT__:JSON.stringify(previewConfig)},
+    server:{host:'127.0.0.1',port:0},plugins:[react(),tailwindcss(),{name:'preview-local-e2e',configureServer(server){
+      server.middlewares.use(async(req,res,next)=>{
+        if(req.url?.split('?')[0]!=='/tester')return next();
+        res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/tester',
+          '<html><div id="root"></div><script type="module" src="/tests/fixtures/previewLiveFixture.tsx"></script></html>'));
+      });
+    }}]});
+  await previewVite.listen();const previewOrigin='http://127.0.0.1:'+previewVite.httpServer.address().port;
+  const portal=await browser.newPage({viewport:{width:1440,height:900}});portal.setDefaultTimeout(15000);
+  portal.on('dialog',d=>d.accept());
+  await portal.route('**/*',route=>{
+    const u=new URL(route.request().url());
+    if(u.origin===previewOrigin||(u.origin===api&&/^\/(auth|rest)\/v1\//.test(u.pathname)))return route.continue();
+    if(!['https://cdn.jsdelivr.net','https://fonts.googleapis.com'].includes(u.origin))unexpectedBlocked++;
+    return route.abort();
+  });
+  await portal.goto(previewOrigin+'/tester');
+  await portal.getByRole('heading',{name:'테스트 로그인',exact:true}).waitFor();
+  await portal.getByLabel('테스트 계정 이메일',{exact:true}).fill(attendanceEmail);
+  await portal.getByLabel('PASSWORD',{exact:true}).fill(attendancePassword);
+  await portal.getByRole('button',{name:'테스트 계정으로 로그인',exact:true}).click();
+  await portal.getByText(/\[PERMISSION_DENIED\]/).waitFor();
+  check('preview_portal_unmarked_account_denied',await portal.getByRole('heading',{name:'테스트 로그인',exact:true}).count()===1);
+  await portal.getByLabel('테스트 계정 이메일',{exact:true}).fill(email);
+  await portal.getByLabel('PASSWORD',{exact:true}).fill(password);
+  await portal.getByRole('button',{name:'테스트 계정으로 로그인',exact:true}).click();
+  await portal.getByText('테스트 · 가상 지점',{exact:true}).waitFor();
+  check('preview_portal_real_form_login_allowed',true);
+  await portal.getByRole('button',{name:'학생관리',exact:true}).click();
+  await portal.getByText('E2E 가상 원생',{exact:true}).first().waitFor();
+  check('preview_portal_own_students_visible',await portal.getByText('다른 지점 가상 원생',{exact:true}).count()===0);
+  await portal.reload();await portal.getByText('테스트 · 가상 지점',{exact:true}).waitFor();
+  check('preview_portal_session_restore_allowed',true);
+  sql(`update auth.users set raw_app_meta_data=raw_app_meta_data-'ipasscare_tester'-'ipasscare_test_branch' where id=${lit(created.data.user.id)}::uuid;`);
+  await portal.reload();await portal.getByRole('heading',{name:'테스트 로그인',exact:true}).waitFor();
+  check('preview_portal_revoked_session_denied',true);
   check('no_cloud_business_requests',unexpectedBlocked===0);
   check('external_font_requests_blocked',fontBlocked>0);
 } catch(error) {failure=error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'TESTER_LOCAL_BROWSER_FAILED';}
 finally {
-  await browser?.close();await vite?.close();
+  await browser?.close();await vite?.close();await previewVite?.close();
   if(attempted)try {cli(['stop','--no-backup']);cleanupComplete=true;}catch{failure??='TESTER_LOCAL_CLEANUP_FAILED';}
   if(networkCreated)try {docker(['network','rm',project]);}catch{cleanupComplete=false;failure??='TESTER_LOCAL_NETWORK_CLEANUP_FAILED';}
 }
-console.log(JSON.stringify({localOnly:true,phase,checks,passed:!failure,cleanupComplete,...(failure?{error:failure}:{}),productionChanged:false,existingReproDatabaseChanged:false}));
+console.log(JSON.stringify({localOnly:true,phase,checkCount:checks.length,checks,passed:!failure,cleanupComplete,...(failure?{error:failure}:{}),productionChanged:false,existingReproDatabaseChanged:false}));
 if(failure)process.exitCode=1;

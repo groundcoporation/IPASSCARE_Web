@@ -26,8 +26,70 @@ const planScope = `if not exists(select 1 from public.academy_student_monthly_pl
 const memberChildScope = `if not exists(select 1 from public.children c join public.users u on u.id=c.parent_id
   where c.id=p_child_id and c.parent_id=p_user_id and c.branch_id=ipasscare_preview_access.core_scope()
     and u.branch_id=c.branch_id) then ${denied} end if;`;
+const billScope = `if not exists(select 1 from public.academy_bills b
+  join public.academy_students s on s.id=b.student_id
+  where b.id=p_bill_id and b.branch_id=ipasscare_preview_access.core_scope() and s.branch_id=b.branch_id
+    and (s.parent_user_id is null or exists(select 1 from public.users u where u.id=s.parent_user_id and u.branch_id=b.branch_id))
+    and (s.child_id is null or exists(select 1 from public.children c where c.id=s.child_id and c.branch_id=b.branch_id
+      and (s.parent_user_id is null or c.parent_id=s.parent_user_id)))
+    and (b.package_option_id is null or exists(select 1 from public.package_options o join public.packages p on p.id=o.package_id
+      where o.id=b.package_option_id and o.branch_id=b.branch_id and p.branch_id=b.branch_id)))
+  then ${denied} end if;
+  if exists(select 1 from public.academy_bills b where b.id=p_bill_id and b.payment_request_id is not null
+    and not exists(select 1 from public.payment_requests r where r.id=b.payment_request_id and r.branch_id=b.branch_id))
+    then ${denied} end if;`;
+const memberScope = `if not exists(select 1 from public.users u where u.id=p_user_id
+  and u.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`;
+const assignmentScope = memberScope+`if exists(select 1 from public.student_schedule_assignments a
+  where a.user_id=p_user_id and (a.branch_id is distinct from ipasscare_preview_access.core_scope()
+    or not exists(select 1 from public.class_schedules s where s.id=a.schedule_id and s.branch_id=a.branch_id)
+    or (a.child_id is not null and not exists(select 1 from public.children c
+      where c.id=a.child_id and c.parent_id=p_user_id and c.branch_id=a.branch_id)))) then ${denied} end if;`;
 export const testerPackageGrantScope = memberChildScope+optionsScope('array[p_package_option_id]')+classesScope('p_schedule_ids');
 export const testerRpcRules = new Map([
+  ['archive_academy_student(uuid,uuid,text)', `if p_student_id is not null then ${studentScope}
+    elsif p_child_id is null or not ipasscare_preview_access.valid_child_link(p_child_id,ipasscare_preview_access.core_scope())
+    then ${denied} end if;`],
+  // App-only actions have no reviewed virtual implementation. Do not silently
+  // run point awards, actor withdrawal or the mutually recursive booking pair.
+  ...['perform_bulk_reservation(uuid,uuid,text,uuid,text,jsonb)',
+    'perform_targeted_bulk_reservation(uuid,uuid,text,uuid,text,jsonb)',
+    'perform_event_check_in(uuid,uuid)','withdraw_own_account()'].map(s=>[s,denied]),
+  ['decline_payment_request(uuid,text)', `if not exists(select 1 from public.payment_requests r
+    where r.id=p_request_id and r.parent_id=auth.uid() and r.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
+  ['request_onsite_payment(text,text,jsonb,text)', `if p_branch_id is distinct from ipasscare_preview_access.core_scope() then ${denied} end if;`],
+  ['record_keypad_attendance(uuid,text,uuid)', `if p_branch_id is distinct from ipasscare_preview_access.core_scope()
+    or not ipasscare_preview_access.valid_child_link(p_child_id,p_branch_id) then ${denied} end if;`],
+  ...['process_shuttle_event(uuid,text,timestamp with time zone)',
+    'process_shuttle_no_show(uuid,text,timestamp with time zone)'].map(s=>[s,reservationScope]),
+  ['schedule_makeup_credit(uuid,uuid,date)', classesScope('array[p_schedule_id]')+`if not exists(
+    select 1 from public.makeup_credits c join public.reservations r on r.id=c.origin_reservation_id
+    where c.id=p_credit_id and c.branch_id=ipasscare_preview_access.core_scope() and r.branch_id=c.branch_id
+      and (c.scheduled_reservation_id is null or exists(select 1 from public.reservations scheduled
+        where scheduled.id=c.scheduled_reservation_id and scheduled.branch_id=c.branch_id))) then ${denied} end if;`],
+  ['generate_upcoming_assigned_reservations(uuid,integer)', assignmentScope],
+  ['sync_member_schedule_assignments(uuid,jsonb,integer)', assignmentScope],
+  ['sync_current_month_child_schedule_and_shuttle(uuid,uuid,uuid[],uuid)', memberChildScope+classesScope('p_schedule_ids')+`if p_package_id is not null then
+    if not exists(select 1 from public.user_packages p where p.id=p_package_id and p.user_id=p_user_id
+      and p.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if; end if;`],
+  ['sync_member_schedules_with_package(uuid,uuid,text,uuid,jsonb,integer)', memberChildScope+assignmentScope+`if not exists(
+    select 1 from public.user_packages p where p.id=p_package_id and p.user_id=p_user_id
+      and p.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
+  ['cancel_scheduled_offline_payment(uuid)', `if not exists(select 1 from public.payments p
+    where p.id=p_payment_id and p.branch_id=ipasscare_preview_access.core_scope()) then ${denied} end if;`],
+  ['delete_unpaid_academy_bill(uuid,text)', billScope],
+  ['complete_free_academy_bill(uuid)', billScope],
+  ['create_academy_bill_payment_request(uuid)', billScope],
+  ['delete_unpaid_app_payment_request(uuid,text)', `if not exists(select 1 from public.payment_requests r
+    join public.users u on u.id=r.parent_id
+    where r.id=p_request_id and r.branch_id=ipasscare_preview_access.core_scope() and u.branch_id=r.branch_id) then ${denied} end if;
+    if exists(select 1 from public.academy_bills b where b.payment_request_id=p_request_id
+      and b.branch_id is distinct from ipasscare_preview_access.core_scope()) then ${denied} end if;`],
+  ['revise_unpaid_academy_bill(uuid,uuid,text)', billScope+optionsScope('array[p_package_option_id]')],
+  ['revise_unpaid_academy_bill_items(uuid,text,uuid[],text)', studentScope+optionsScope('p_package_option_ids')],
+  ['set_current_month_academy_bill_items(uuid,uuid[],text)', studentScope+optionsScope('p_package_option_ids')],
+  ['create_manual_student_bill(uuid,uuid,uuid,text,integer,text,numeric,integer,integer,text,text)',
+    studentScope+optionsScope('array[p_package_option_id]')+`if p_plan_id is not null then ${planScope} end if;`],
   // Original ledger RPCs already validate child/package/branch relations. The
   // shared preamble additionally rejects suspended/revoked tester sessions.
   ['register_manual_ledger_attendance(uuid,date,uuid)', ''],

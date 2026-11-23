@@ -49,3 +49,23 @@ test('attendance E2E keeps normal local auth and checks real ledger writes and p
     'attendance_repeat_cancel_never_over_restores','attendance_foreign_child_rpc_denied']) assert.ok(runner.includes(label));
   assert.match(runner,/202611170002_register_manual_ledger_attendance.sql/);
 });
+
+test('revocation E2E exercises refresh and fresh login without masking an active profile',()=>{
+  const runner=readFileSync(new URL('../scripts/check-tester-local-browser.mjs',import.meta.url),'utf8');
+  assert.match(runner,/for\(const mode of \['refresh','login'\]\)/);
+  assert.match(runner,/supabase.auth.refreshSession\(\)/);
+  assert.match(runner,/supabase.auth.signOut\(\)/);
+  for(const suffix of ['fresh_claim','register_denied','cancel_denied','rows_hidden','state_unchanged'])
+    assert.ok(runner.includes('tester_revoked_${mode}_'+suffix));
+  assert.ok(runner.indexOf("phase='tester-attendance-fresh-token'")<runner.lastIndexOf("set status='deleted'"));
+});
+
+test('local Preview portal E2E renders the real login form without mocked Auth',()=>{
+  const fixture=readFileSync(new URL('./fixtures/previewLiveFixture.tsx',import.meta.url),'utf8');
+  assert.match(fixture,/PreviewAdminEntry/);
+  assert.doesNotMatch(fixture,/signInWithPassword|testLogin\s*=/);
+  const runner=readFileSync(new URL('../scripts/check-tester-local-browser.mjs',import.meta.url),'utf8');
+  for(const label of ['preview_portal_unmarked_account_denied','preview_portal_real_form_login_allowed',
+    'preview_portal_own_students_visible','preview_portal_session_restore_allowed','preview_portal_revoked_session_denied'])
+    assert.ok(runner.includes(label));
+});
