@@ -12,6 +12,7 @@ import {buildTesterLocalSchema} from './tester-local-schema.mjs';
 import {testerRpcRules,patchTesterRpc} from './tester-rpc-rules.mjs';
 import {guardTesterManualAttendance} from './tester-manual-attendance.mjs';
 import {guardTesterArchiveStudent} from './tester-student-archive.mjs';
+import {buildTesterPointTriggerGuards} from './tester-point-trigger-guards.mjs';
 const web=new URL('../',import.meta.url);
 // scripts/ is one level below the web root.
 const appRoot=new URL('../../IPASSCARE/app/',web);
@@ -112,7 +113,8 @@ enabled = false
   const core=readFileSync(new URL('supabase/checks/tester_preview_core_policy.sql',web),'utf8');
   const marker='-- Read-only fixture queries';
   if(core.split(marker).length!==2)throw new Error('TESTER_LOCAL_CANDIDATE_LAYOUT_CHANGED');
-  sql(core.split(marker)[0]+'\n'+m.functions.filter(f=>testerRpcRules.has(f.signature)).map(f=>patchTesterRpc(f.definition,testerRpcRules.get(f.signature))).join('\n')+"\nnotify pgrst,'reload schema'; commit;");
+  sql(core.split(marker)[0]+'\n'+m.functions.filter(f=>testerRpcRules.has(f.signature)).map(f=>patchTesterRpc(f.definition,testerRpcRules.get(f.signature))).join('\n')
+    +'\n'+buildTesterPointTriggerGuards(m)+"\nnotify pgrst,'reload schema'; commit;");
   // Apply only to this newly created disposable DB, never to a linked project.
   const partialFix=readFileSync(new URL('supabase/migrations/202611200001_fix_offline_partial_cancellation_status.sql',web),'utf8');
   const acl=()=>sql("select md5(proowner::text||coalesce(proacl::text,'')||prosecdef::text||coalesce(proconfig::text,'')) from pg_proc where oid='public.cancel_offline_payment(uuid,text)'::regprocedure;").trim();
@@ -417,6 +419,85 @@ enabled = false
     return !r.error&&r.data.user?.app_metadata?.ipasscare_tester===true;
   });
   check('tester_attendance_cached_token_prepared',cachedTester);
+  phase='tester-payment-trigger-isolation';
+  const pointPayment=randomUUID();
+  sql(`insert into public.level_policies(level,level_name,self_rate,gen1_rate) values(1,'E2E',10,20);
+    update public.users set lineage=array[${lit(parentIds[1])}],points=0 where id=${lit(parentIds[0])}::uuid;
+    insert into public.payments(id,user_id,branch_id,total_amount,final_amount,used_points,payment_method,status,source,order_items)
+      values(${lit(pointPayment)}::uuid,${lit(parentIds[0])}::uuid,${lit(branch)},100,100,0,'CASH','scheduled','onsite','[]'::jsonb);`);
+  const pointRpc=async(name)=>page.evaluate(async({name,id})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.rpc(name,{p_payment_id:id});
+    return {denied:r.error?.code==='42501'||r.error?.message?.includes('[PERMISSION_DENIED]'),success:!r.error&&r.data?.success===true};
+  },{name,id:pointPayment});
+  const pointStatus=()=>sql(`select status from public.payments where id=${lit(pointPayment)}::uuid;`).trim();
+  const points=id=>Number(sql(`select points from public.users where id=${lit(id)}::uuid;`).trim());
+  sql(`do $probe$ begin
+    begin update public.payments set status='paid' where id=${lit(pointPayment)}::uuid;
+    exception when insufficient_privilege then return; end;
+    raise exception 'TESTER_BACKGROUND_POINT_SCOPE_NOT_ENFORCED';
+  end $probe$;`);
+  check('trigger_background_foreign_upline_denied',pointStatus()==='scheduled'&&points(parentIds[1])===0);
+  check('trigger_foreign_upline_award_denied',(await pointRpc('confirm_offline_payment')).denied);
+  check('trigger_foreign_upline_payment_rolled_back',pointStatus()==='scheduled');
+  check('trigger_foreign_upline_points_unchanged',points(parentIds[0])===0&&points(parentIds[1])===0);
+  sql(`update public.users set lineage=array[${lit(ledgerActor.data.user.id)}] where id=${lit(parentIds[0])}::uuid;`);
+  check('trigger_same_branch_award_allowed',(await pointRpc('confirm_offline_payment')).success);
+  check('trigger_same_branch_award_correct',points(parentIds[0])===10&&points(ledgerActor.data.user.id)===20);
+  check('trigger_same_branch_repeat_no_extra_award',(await pointRpc('confirm_offline_payment')).success
+    &&points(parentIds[0])===10&&points(ledgerActor.data.user.id)===20);
+  // Even a later permissive policy must not reopen tester ledger writes.
+  sql('create policy e2e_point_permissive_probe on public.point_logs for all to authenticated using(true) with check(true);');
+  const directMutation=await page.evaluate(async({payer,actor,branch,payment})=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');
+    const read=await supabase.from('point_logs').select('id,amount').eq('payment_id',payment);
+    if(read.error||read.data?.length!==2)return {read:false};
+    const id=read.data[0].id;
+    const inserted=await supabase.from('point_logs').insert({user_id:payer,amount:999,reason:'E2E forged',related_user_id:payer,payment_id:payment});
+    const updated=await supabase.from('point_logs').update({amount:999}).eq('id',id).select('id');
+    const removed=await supabase.from('point_logs').delete().eq('id',id).select('id');
+    const fakePayment=await supabase.from('payments').insert({user_id:actor,branch_id:branch,total_amount:100,
+      final_amount:100,payment_method:'CASH',status:'paid',source:'onsite'});
+    return {read:true,insertDenied:inserted.error?.code==='42501',updateDenied:!updated.error&&updated.data?.length===0,
+      deleteDenied:!removed.error&&removed.data?.length===0,paymentDenied:fakePayment.error?.code==='42501'};
+  },{payer:parentIds[0],actor:created.data.user.id,branch,payment:pointPayment});
+  check('point_ledger_own_branch_read_allowed',directMutation.read);
+  check('point_ledger_direct_insert_denied',directMutation.insertDenied);
+  check('point_ledger_direct_update_denied',directMutation.updateDenied);
+  check('point_ledger_direct_delete_denied',directMutation.deleteDenied);
+  check('payment_direct_tester_insert_denied',directMutation.paymentDenied);
+  check('point_ledger_direct_writes_leave_awards_unchanged',Number(sql(`select count(*) from public.point_logs where payment_id=${lit(pointPayment)}::uuid and amount in(10,20);`).trim())===2);
+  sql('drop policy e2e_point_permissive_probe on public.point_logs;');
+  const badPointLog=randomUUID();
+  sql(`update public.users set points=30 where id=${lit(parentIds[1])}::uuid;
+    insert into public.point_logs(id,user_id,amount,reason,related_user_id,payment_id,created_at)
+      select ${lit(badPointLog)}::uuid,${lit(parentIds[1])}::uuid,30,'E2E legacy link',user_id,id,created_at
+      from public.payments where id=${lit(pointPayment)}::uuid;`);
+  const foreignPointsHidden=await page.evaluate(async(id)=>{
+    const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.from('point_logs').select('id').eq('id',id);
+    return !r.error&&r.data?.length===0;
+  },badPointLog);
+  check('point_ledger_foreign_recipient_hidden',foreignPointsHidden);
+  const anonPointsDenied=await page.evaluate(async({api,key})=>{
+    const r=await fetch(api+'/rest/v1/point_logs?select=id',{headers:{apikey:key,Authorization:'Bearer '+key}});
+    return r.status===401||r.status===403;
+  },{api,key:status.ANON_KEY});
+  check('point_ledger_anonymous_read_denied',anonPointsDenied);
+  const anonPointWriteDenied=await page.evaluate(async({api,key,payer,payment})=>{
+    const r=await fetch(api+'/rest/v1/point_logs',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({user_id:payer,amount:999,reason:'E2E anonymous forged',related_user_id:payer,payment_id:payment})});
+    return r.status===401||r.status===403;
+  },{api,key:status.ANON_KEY,payer:parentIds[0],payment:pointPayment});
+  check('point_ledger_anonymous_write_denied',anonPointWriteDenied);
+  check('trigger_foreign_reversal_denied',(await pointRpc('cancel_offline_payment')).denied);
+  check('trigger_foreign_reversal_payment_rolled_back',pointStatus()==='paid');
+  check('trigger_foreign_reversal_points_unchanged',points(parentIds[0])===10&&points(parentIds[1])===30&&points(ledgerActor.data.user.id)===20);
+  check('trigger_foreign_reversal_no_partial_rows',Number(sql(`select count(*) from public.payment_point_reversals where payment_id=${lit(pointPayment)}::uuid;`).trim())===0);
+  sql(`delete from public.point_logs where id=${lit(badPointLog)}::uuid; update public.users set points=0 where id=${lit(parentIds[1])}::uuid;`);
+  check('trigger_same_branch_cancel_allowed',(await pointRpc('cancel_offline_payment')).success);
+  check('trigger_same_branch_cancel_restores_points',points(parentIds[0])===0&&points(ledgerActor.data.user.id)===0);
+  check('trigger_same_branch_repeat_cancel_no_extra_reversal',(await pointRpc('cancel_offline_payment')).success
+    &&points(parentIds[0])===0&&points(ledgerActor.data.user.id)===0);
+  sql(`update public.users set lineage=array[]::text[] where id=${lit(parentIds[0])}::uuid; delete from public.level_policies where level=1;`);
   phase='tester-billing-rpc-scope';
   const ownRequest=randomUUID(),foreignRequest=randomUUID();
   for(const [id,b,parent] of [[ownRequest,branch,parentIds[0]],[foreignRequest,other,parentIds[1]]])
@@ -526,6 +607,11 @@ enabled = false
       return !r.error&&r.data?.length===0;
     });
     check(`tester_revoked_${mode}_rows_hidden`,rowsHidden);
+    const revokedPointsHidden=await page.evaluate(async()=>{
+      const {supabase}=await import('/src/lib/supabaseClient.ts');const r=await supabase.from('point_logs').select('id');
+      return !r.error&&r.data?.length===0;
+    });
+    check(`tester_revoked_${mode}_point_ledger_hidden`,revokedPointsHidden);
     check(`tester_revoked_${mode}_state_unchanged`,remaining()===2&&consumed()===1);
     for(const [name,args] of billingProbes)check(`billing_revoked_${mode}_${name}_denied`,await rpcDenied(name,args));
   }

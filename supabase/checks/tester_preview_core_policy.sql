@@ -279,6 +279,36 @@ create policy preview_telemetry_update_guard on public.shuttle_status as restric
 create policy preview_telemetry_delete_guard on public.shuttle_status as restrictive
   for delete to authenticated using((select ipasscare_preview_access.core_scope())='*');
 
+-- Point ledgers cannot be a direct write bypass for the guarded triggers.
+alter table public.point_logs enable row level security;
+revoke all on public.point_logs from anon;
+revoke truncate, references, trigger on public.point_logs from authenticated;
+create policy preview_point_read on public.point_logs for select to authenticated using (true);
+create policy preview_point_write_insert on public.point_logs for insert to authenticated
+  with check ((select ipasscare_preview_access.core_scope())='*');
+create policy preview_point_write_update on public.point_logs for update to authenticated
+  using ((select ipasscare_preview_access.core_scope())='*') with check ((select ipasscare_preview_access.core_scope())='*');
+create policy preview_point_write_delete on public.point_logs for delete to authenticated
+  using ((select ipasscare_preview_access.core_scope())='*');
+-- Restrictive counterparts keep a later permissive policy from reopening writes.
+create policy preview_point_insert_scope on public.point_logs as restrictive for insert to authenticated
+  with check ((select ipasscare_preview_access.core_scope())='*');
+create policy preview_point_update_scope on public.point_logs as restrictive for update to authenticated
+  using ((select ipasscare_preview_access.core_scope())='*') with check ((select ipasscare_preview_access.core_scope())='*');
+create policy preview_point_delete_scope on public.point_logs as restrictive for delete to authenticated
+  using ((select ipasscare_preview_access.core_scope())='*');
+create policy preview_point_read_scope on public.point_logs as restrictive for select to authenticated
+  using ((select ipasscare_preview_access.core_scope())='*' or (
+    exists(select 1 from public.users u where u.id=user_id and u.branch_id=(select ipasscare_preview_access.core_scope()))
+    and (related_user_id is null or exists(select 1 from public.users u
+      where u.id=related_user_id and u.branch_id=(select ipasscare_preview_access.core_scope())))
+    and (payment_id is null or exists(select 1 from public.payments p
+      where p.id=payment_id and p.branch_id=(select ipasscare_preview_access.core_scope())))
+  ));
+create policy preview_payment_scope on public.payments as restrictive for all to authenticated
+  using ((select ipasscare_preview_access.core_scope())='*' or branch_id=(select ipasscare_preview_access.core_scope()))
+  with check ((select ipasscare_preview_access.core_scope())='*');
+
 -- Read-only fixture queries using a transaction-local tester identity. No tester
 -- permissions or fixtures are changed on the project after rollback.
 do $check$

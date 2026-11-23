@@ -9,6 +9,7 @@ import { TESTER_PROJECT_REF } from '../config/tester-target.mjs';
 import { testerRpcRules, patchTesterRpc } from './tester-rpc-rules.mjs';
 import { buildTesterPackageGrant } from './tester-package-grant.mjs';
 import { guardTesterManualAttendance } from './tester-manual-attendance.mjs';
+import { buildTesterPointTriggerGuards } from './tester-point-trigger-guards.mjs';
 
 const web = new URL('../', import.meta.url);
 const app = new URL('../../IPASSCARE/app/', web);
@@ -86,6 +87,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (writeMode) {
       const probes = readFileSync(new URL('supabase/checks/tester_preview_write_probes.sql', web), 'utf8');
       const metadata = JSON.parse(readFileSync(new URL('.codex_tmp/environment-schema/preview.json', app), 'utf8'));
+      sql=sql.replace('-- Read-only fixture queries',()=>buildTesterPointTriggerGuards(metadata)+'\n-- Read-only fixture queries');
       sql = manualMode ? buildManualWriteCheck(sql,probes,metadata,
         readFileSync(new URL('supabase/migrations/202611170002_register_manual_ledger_attendance.sql', web),'utf8'),
         readFileSync(new URL('supabase/checks/tester_preview_manual_attendance_probes.sql', web),'utf8')+'\n'+
