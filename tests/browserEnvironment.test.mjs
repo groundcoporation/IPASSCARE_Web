@@ -5,9 +5,9 @@ import { createLocalFetchGuard } from '../config/local-network.mjs';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-test('production and local start commands remain explicit and separate', () => {
+test('default start is local and production requires an explicit command', () => {
   const scripts = JSON.parse(read('../package.json')).scripts;
-  assert.equal(scripts.dev, 'vite --mode production');
+  assert.equal(scripts.dev, 'vite --mode development');
   assert.equal(scripts['dev:local'], 'vite --mode development');
   assert.equal(scripts['dev:production'], 'vite --mode production');
 });

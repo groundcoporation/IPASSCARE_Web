@@ -49,6 +49,12 @@ test("local Docker is explicit, fixed to loopback, and development-only", () => 
 });
 
 const appContract = new URL("../../../IPASSCARE/app/config/environment.cjs", import.meta.url);
+
+test("default dev is local and production requires explicit selection", () => {
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(scripts.dev, 'vite --mode development');
+  assert.equal(scripts['dev:production'], 'vite --mode production');
+});
 test("app and web use the same environment validation", { skip: !existsSync(appContract) }, () => {
   const normalize = value => value.replace(/\r\n/g, "\n");
   assert.equal(normalize(readFileSync(appContract, "utf8")), normalize(readFileSync(new URL("../config/environment.cjs", import.meta.url), "utf8")));

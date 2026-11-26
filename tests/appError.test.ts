@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync, existsSync } from "node:fs";
-import { AppError, formatError, normalizeError, normalizeAsyncError, logError } from "../src/errors/appError.ts";
+import { AppError, errorMessages, formatError, normalizeError, normalizeAsyncError, logError } from "../src/errors/appError.ts";
 
 test("never expose raw SQL, personal data, or unknown error messages", () => {
   const result = normalizeError({ message: "secret token user@example.com SQL private_table" }, "BILL_CREATE_FAILED");
@@ -40,6 +40,32 @@ test("logger excludes cause and invalid transaction identifiers", () => {
   assert.ok(!JSON.stringify(logs).includes("person@example.com"));
 });
 const appSource = new URL("../../../IPASSCARE/app/src/errors/appError.ts", import.meta.url);
-test("app and web share the same contract", { skip: !existsSync(appSource) }, () => {
-  assert.equal(readFileSync(appSource, "utf8").replace(/\r\n/g, "\n"), readFileSync(new URL("../src/errors/appError.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n"));
+test("app and web share the same contract", { skip: !existsSync(appSource) && process.env.IPASSCARE_REQUIRE_APP_CONTRACT !== '1' }, () => {
+  assert.ok(existsSync(appSource), 'Full verification requires the sibling IPASSCARE/app checkout for contract comparison');
+  const app = readFileSync(appSource, "utf8").replace(/\r\n/g, "\n");
+  const web = readFileSync(new URL("../src/errors/appError.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const entries = (source: string) => new Map([...source.matchAll(/^  ([A-Z_]+): ("[^\n]*"),$/gm)].map(match => [match[1], match[2]]));
+  const appEntries = entries(app);
+  const webEntries = entries(web);
+  const differingCodes = [...new Set([...appEntries.keys(), ...webEntries.keys()])]
+    .filter(code => appEntries.get(code) !== webEntries.get(code));
+  assert.deepEqual(differingCodes, [], 'Catalog codes missing or changed; compare both error catalogs');
+  assert.ok(app === web, 'Catalog order or shared helper implementation differs; compare both appError.ts files');
+});
+
+test('every catalog code uses local text for direct markers and Edge responses', async () => {
+  for (const [code, text] of Object.entries(errorMessages)) {
+    const raw = { code, message: 'secret raw response' };
+    assert.equal(normalizeError(raw).code, code);
+    assert.equal(normalizeError({ message: '[' + code + '] secret raw response' }).userMessage, text);
+    const edge = await normalizeAsyncError({ context: new Response(JSON.stringify(raw), { status: 500 }) }, 'UNKNOWN_ERROR');
+    assert.equal(edge.code, code);
+    assert.ok(!formatError(edge).includes('secret raw response'));
+  }
+});
+
+test('unknown and prototype-like server codes cannot become local catalog messages', () => {
+  for (const code of ['UNKNOWN_SERVER_CODE', 'constructor', '__proto__', 'toString']) {
+    assert.equal(normalizeError({ code, message: 'secret raw response' }, 'BILL_SEND_FAILED').code, 'BILL_SEND_FAILED');
+  }
 });

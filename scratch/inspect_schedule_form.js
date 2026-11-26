@@ -1,6 +1,6 @@
 import fs from 'fs';
 
-const content = fs.readFileSync('src/components/admin/AdminPage.tsx', 'utf8');
+const content = fs.readFileSync('src/pages/admin/AdminPage.tsx', 'utf8');
 const lines = content.split('\n');
 
 console.log("Searching for schedule modals or input fields in AdminPage.tsx...");

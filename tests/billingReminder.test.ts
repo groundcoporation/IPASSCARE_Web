@@ -48,8 +48,12 @@ test('multiple bills linked to one request retain separate deletion IDs', () => 
 });
 
 test('billing screen uses the allowlist merge and deletes through the academy bill RPC', () => {
-  const source = readFileSync(new URL('../src/components/admin/AdminBillingTab.tsx', import.meta.url), 'utf8');
-  assert.match(source, /withBillingReminder\(bill, reminders\.get\(bill\.payment_request_id\)\)/);
-  assert.doesNotMatch(source, /\.\.\.reminders\.get/);
-  assert.match(source, /rpc\('delete_unpaid_academy_bill',\s*\{\s*p_bill_id: bill\.id/);
+  const source = readFileSync(new URL('../src/pages/admin/billing/views/AdminBillingTab.tsx', import.meta.url), 'utf8');
+  const readService = readFileSync(new URL('../src/pages/admin/billing/api/billingReads.ts', import.meta.url), 'utf8');
+  assert.match(source, /loadInvoiceData\(activeBranchId, selectedMonth/);
+  assert.match(readService, /withBillingReminder\(bill, reminders\.get\(bill\.payment_request_id \|\| ''\)\)/);
+  assert.doesNotMatch(readService, /\.\.\.reminders\.get/);
+  const actions = readFileSync(new URL('../src/pages/admin/billing/api/billActions.ts', import.meta.url), 'utf8');
+  assert.match(source, /deleteBill\(bill, \{ client: supabase \}\)/);
+  assert.match(actions, /rpc\('delete_unpaid_academy_bill',\s*\{\s*p_bill_id: bill\.id/);
 });

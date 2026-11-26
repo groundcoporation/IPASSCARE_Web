@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { normalizeError } from '../errors/appError';
+import { handleError } from '../errors/handleError';
 
 interface Partner {
   id?: string;
@@ -17,6 +19,7 @@ export const PartnerMarquee: React.FC = () => {
   const [partnersList, setPartnersList] = useState<Partner[]>([]);
 
   useEffect(() => {
+    let active = true;
     (async () => {
       try {
         const { data, error } = await supabase
@@ -24,14 +27,16 @@ export const PartnerMarquee: React.FC = () => {
           .select('*')
           .eq('is_visible', true)
           .order('display_order', { ascending: true });
+        if (error) throw normalizeError(error);
         
-        if (data) {
+        if (active && data) {
           setPartnersList(data);
         }
-      } catch (err) {
-        console.warn('Partner logos fetch error:', err);
+      } catch (error: unknown) {
+        if (active) await handleError(error, 'UNKNOWN_ERROR', { operation: 'site.partners.load' });
       }
     })();
+    return () => { active = false; };
   }, []);
 
   // If there are no partner logos registered or active, do not render the banner at all!

@@ -5,8 +5,11 @@ import ts from 'typescript';
 import { paginateAttendance } from '../src/utils/attendancePagination.ts';
 import { readAttendanceIdBatches, readAttendancePages } from '../src/utils/attendanceQuery.ts';
 import { AppError, normalizeError } from '../src/errors/appError.ts';
+import { loadAttendanceLedger } from '../src/pages/admin/attendance/api/attendanceLedger.ts';
+import { kstDateKey } from '../src/pages/admin/attendance/model/ledgerRules.ts';
+import { registerLedgerAttendance } from '../src/pages/admin/attendance/api/ledgerActions.ts';
 
-const source = readFileSync(new URL('../src/components/admin/AdminPage.tsx', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../src/pages/admin/AdminPage.tsx', import.meta.url), 'utf8');
 
 test('attendance pages preserve order, do not mutate the export data, and clamp the last page', () => {
   const rows = Array.from({ length: 41 }, (_, i) => i + 1);
@@ -29,7 +32,7 @@ function collect(node) {
   ts.forEachChild(node, collect);
 }
 collect(ast);
-const dependencies = ['MAX_SLOTS', 'excluded', 'firstJoined', 'kstDateKey', 'isBeforeChildDeletion', 'rangeOf', 'moveMonth', 'weeklyCount', 'scopedBranchId', 'loadAttendance'];
+const dependencies = ['scopedBranchId', 'loadAttendance'];
 const loaderCode = ts.transpile(dependencies.map((name) => `const ${name} = ${definitions.get(name)};`).join('\n'), { target: ts.ScriptTarget.ES2022 });
 const ids = ['keypad', 'app', 'web', 'manual', 'legacy', 'multi'];
 const reservationUsage = (child, date, attendance_status = '등원', deleted_at = null) => ({
@@ -69,7 +72,7 @@ function mockLedger({ errorTable } = {}) {
     return query;
   } };
   const scope = {
-    supabase, readAttendancePages, readAttendanceIdBatches, profile: { role: 'admin', id: 'mock' }, branchFilter: 'branch-test', month: '2026-11',
+    supabase, loadAttendanceLedger, AppError, profile: { role: 'admin', id: 'mock' }, branchFilter: 'branch-test', month: '2026-11',
     attendanceQueryKey: 'mock-key', attendanceLoadRequest: { current: 0 }, useCallback: (fn) => fn,
     setAttendanceLoading: (value) => { state.loading = value; }, setAttendanceLoadFailed: (value) => { state.failed = value; },
     setAttendance: (rows) => { state.rows = rows; }, setAttendanceLoadedKey: (key) => { state.key = key; },
@@ -104,7 +107,7 @@ test('ledger reports a read permission failure instead of showing partial data a
   assert.equal(state.loading, false);
   assert.equal(state.failed, true);
   assert.deepEqual(state.rows, []);
-  assert.deepEqual(state.errors, ['42501']);
+  assert.deepEqual(state.errors, ['PERMISSION_DENIED']);
 });
 
 test('DB paging continues below the requested page size and rejects partial results on a later error', async () => {
@@ -121,7 +124,7 @@ test('DB paging continues below the requested page size and rejects partial resu
 });
 
 test('attendance calendar uses Korean midnight rather than UTC midnight', () => {
-  const dateKey = new Function(ts.transpile(`return ${definitions.get('kstDateKey')};`, { target: ts.ScriptTarget.ES2022 }))();
+  const dateKey = kstDateKey;
   assert.equal(dateKey('2026-10-31T14:59:59Z'), '2026-10-31');
   assert.equal(dateKey('2026-10-31T15:00:00Z'), '2026-11-01');
 });
@@ -154,9 +157,10 @@ test('manual registration sends one RPC during a duplicate click and reports a m
   const inFlight = { current: false };
   let finish;
   const handleManual = evaluateHandler('handleManualAttendance', {
-    attendanceModal: { childId: 'student', packageId: 'pass' },
+    attendanceModal: { childId: '11111111-1111-4111-8111-111111111111', packageId: '22222222-2222-4222-8222-222222222222' },
     profile: { role: 'director' }, attendanceDate: '2026-11-17', month: '2026-11',
     manualAttendanceInFlight: inFlight, setActionLoading: (flag) => flags.push(flag),
+    ledgerCancelInFlight: { current: false }, timelineInFlight: { current: false }, attendanceLoadRequest: { current: 1 }, registerLedgerAttendance,
     supabase: { rpc: (...args) => { requests.push(args); return new Promise((resolve) => { finish = resolve; }); } },
     AppError, normalizeError, handleError: async (error) => reported.push(error.code),
     attendanceDialog: { current: { close() { throw new Error('closed after failure'); } } },
@@ -165,7 +169,7 @@ test('manual registration sends one RPC during a duplicate click and reports a m
   });
   const firstAttempt = handleManual();
   await handleManual();
-  assert.deepEqual(requests, [['register_manual_ledger_attendance', { p_child_id: 'student', p_date: '2026-11-17', p_package_id: 'pass' }]]);
+  assert.deepEqual(requests, [['register_manual_ledger_attendance', { p_child_id: '11111111-1111-4111-8111-111111111111', p_date: '2026-11-17', p_package_id: '22222222-2222-4222-8222-222222222222' }]]);
   finish({ data: null, error: { code: 'PGRST202' } });
   await firstAttempt;
   assert.deepEqual(reported, ['ATT_UPDATE_REQUIRED']);

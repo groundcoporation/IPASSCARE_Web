@@ -11,7 +11,7 @@ import { FaqSection } from './components/FaqSection';
 import { InquiryFormSection } from './components/InquiryFormSection';
 import { Footer } from './components/Footer';
 import { FloatingKakaoWidget } from './components/FloatingKakaoWidget';
-import { AdminPage } from './components/admin/AdminPage';
+import { AdminPage } from './pages/admin/AdminPage';
 import { supabase } from './lib/supabaseClient';
 
 export function App() {
