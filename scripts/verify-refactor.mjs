@@ -10,10 +10,10 @@ const suites = ['attendance', 'excel', 'billing', 'journals', 'students',
   'notice-writes', 'dashboard', 'class-management', 'referrals', 'shuttle-map', 'class-writes'];
 
 export function regressionFiles(scripts) {
-  const files = new Set(['tests/refactorVerification.test.mjs']);
+  const files = new Set(['tests/architecture/refactorVerification.test.mjs']);
   for (const suite of suites) {
     const command = scripts[`test:${suite}`];
-    if (typeof command !== 'string' || !/^node --test(?: tests\/[\w.-]+\.test\.(?:mjs|ts))+$/.test(command)) {
+    if (typeof command !== 'string' || !/^node --test(?: tests\/(?:[\w-]+\/)*[\w.-]+\.test\.(?:mjs|ts))+$/.test(command)) {
       throw new Error(`Invalid regression script: test:${suite}`);
     }
     for (const file of command.slice('node --test '.length).split(' ')) files.add(file);
@@ -40,8 +40,8 @@ export function verificationSteps(mode, scripts) {
     ['typecheck:node', ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.node.json', '--noEmit']],
     ['lint', ['node_modules/oxlint/bin/oxlint']],
     regression,
-    ['contracts/environment/marketing', ['--test', 'tests/appError.test.ts',
-      'tests/environment.test.mjs', 'tests/browserEnvironment.test.mjs', 'tests/marketingContent.test.mjs']],
+    ['contracts/environment/marketing', ['--test', 'tests/shared/appError.test.ts',
+      'tests/environment/environment.test.mjs', 'tests/environment/browserEnvironment.test.mjs', 'tests/marketing/marketingContent.test.mjs']],
     ['local build (not deployable)', ['node_modules/vite/bin/vite.js', 'build', '--mode', 'development', '--outDir', 'dist-local']],
   ];
 }

@@ -19,7 +19,7 @@
 ## 다음 담당자가 시작할 순서
 
 1. [폴더 구조](page-structure.md)와 해당 업무 README를 확인한다.
-2. `git status --short`로 수정·삭제·신규 파일을 모두 확인한다. 기존 `components/admin` 삭제와 신규 `pages/admin` 파일은 함께 검토해야 한다. **일반 diff 통계만으로는 미추적 신규 파일이 보이지 않는다.** 관련 없는 scratch 변경을 일괄 포함하지 않는다.
+2. `git status --short`로 수정·삭제·신규 파일을 모두 확인한다. 파일 이동 시 기존 경로 삭제와 새 경로 파일을 함께 검토해야 한다. **일반 diff 통계만으로는 미추적 신규 파일이 보이지 않는다.** 개인 가이드와 scratch는 로컬 전용으로 추적에서 제외한다. [공유 기준](repository-files.md)을 참고한다.
 3. 의존성이 없으면 `npm ci` 후 아래 명령을 실행한다. DB/로그인 없이 실행하는 검증이다.
 4. 공통 오류 코드 변경 시 앱/웹 양쪽의 사용처·호환성을 확인하고 계약 테스트를 다시 실행한다. 테스트를 삭제하거나 한쪽 파일을 무조건 덮어써서 통과시키지 않는다.
 5. [운영 반영 체크리스트](release-checklist.md)를 별도로 수행한다.
@@ -31,9 +31,11 @@ npm run verify:refactor
 
 `test:refactor`는 21개 지정 업무 회귀 묶음과 검증 도구 테스트만 실행한다. 전체 저장소 검증을 뜻하지 않는다.
 
+테스트는 `tests/admin/<업무>`, `shared`, `environment`, `marketing`, `architecture`로 구분했다. 브라우저 점검은 `tests/browser/marketing`, 로컬 SQL 자료는 `tests/integration/sql`이며 자동 회귀에서 제외한다. 자세한 경로·명령은 [테스트 안내](../tests/README.md)를 참고한다. 56개 파일 이동 전후 지정 테스트 개수는 1,070개로 같다.
+
 `verify:refactor`는 타입 검사 → lint → 회귀 → 오류 계약/환경/소개 페이지 테스트 → 로컬 빌드 순서다. 첫 실패에서 중단하고 종료 코드를 유지한다. 현재 모든 단계가 통과한다. 기존 lint·번들 경고는 남아 있다.
 
-전체 검증은 인접한 `IPASSCARE/app/src/errors/appError.ts` 파일을 요구한다. 해당 앱 체크아웃이 없으면 계약 테스트를 건너뛰어 성공으로 처리하지 않고 실패한다. 개별 `node --test tests/appError.test.ts` 실행은 앱 체크아웃이 없으면 기존처럼 동기화 항목만 건너뛰므로 전체 검증 명령과 구분한다.
+전체 검증은 인접한 `IPASSCARE/app/src/errors/appError.ts` 파일을 요구한다. 해당 앱 체크아웃이 없으면 계약 테스트를 건너뛰어 성공으로 처리하지 않고 실패한다. 개별 `node --test tests/shared/appError.test.ts` 실행은 앱 체크아웃이 없으면 기존처럼 동기화 항목만 건너뛰므로 전체 검증 명령과 구분한다.
 
 검증 도구는 자식 프로세스의 `VITE_*`를 공개 로컬 설정으로 교체하며, 환경파일을 수정하거나 서버를 시작하지 않는다. SQL·scratch·실제 브라우저 점검 스크립트는 실행하지 않는다. **이 설정은 임의의 외부 코드를 격리하는 보안 샌드박스가 아니다.** 테스트가 실제 전송을 하지 않는지 앞으로도 리뷰해야 한다. `dist-local`은 운영 배포에 사용하지 않는다.
 

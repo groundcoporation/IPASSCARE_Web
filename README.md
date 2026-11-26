@@ -6,6 +6,8 @@
 
 리팩토링 작업을 인수받는 경우 [현재 검증 결과·남은 작업](docs/refactor-handoff.md)과 [운영 반영 체크리스트](docs/release-checklist.md)를 먼저 확인합니다.
 
+테스트는 업무별로 분리했습니다. 폴더 구조와 기능별 실행 명령은 [테스트 안내](tests/README.md)를 참고합니다.
+
 검증 명령: `npm run test:refactor` (지정 업무 회귀), `npm run verify:refactor` (타입·lint·회귀·계약·환경·소개 페이지·로컬 빌드). 2026-11-26 기준 지정 테스트 총 1,070개 및 전체 검증이 통과했습니다. 실제 웹·DB 검수와 배포 승인은 별도입니다. 전체 검증의 앱/웹 계약 대조에는 인접한 `IPASSCARE/app` 체크아웃이 필요합니다.
 
 ```powershell
@@ -57,7 +59,7 @@ npm run dev
 - [구조·SQL 정리·작업 순서](docs/refactor-maintainability.md)
 - 수정 규칙: `AGENTS.md`
 
-운영 SQL 적용·배포는 별도 승인과 검증이 필요합니다. `scratch` 스크립트는 일괄 실행하지 않습니다.
+운영 SQL 적용·배포는 별도 승인과 검증이 필요합니다. 개인 AI 가이드와 `scratch/`는 로컬 전용으로 추적에서 제외합니다. 공유/제외 기준은 [저장소 파일 안내](docs/repository-files.md)를 참고합니다.
 
 ## 기존 도구 참고
 

@@ -18,6 +18,24 @@ dist-local/
 !environments/.env.*.example
 server/sms-relay/.env
 
+# Local AI tools and one-off diagnostics (keep on disk, not in Git)
+/.agent/
+/.agents/
+/.codex/
+/scratch/
+
+# Local hosting, test outputs and Supabase CLI state
+/.vercel/
+/coverage/
+/playwright-report/
+/test-results/
+/supabase/.temp/
+/supabase/.branches/
+
+# Generated Develop login credentials and expanded seed SQL
+**/IPASSCARE-develop-logins-*.json
+**/develop-smoke-*.sql
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
